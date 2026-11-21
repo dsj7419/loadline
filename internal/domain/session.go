@@ -23,22 +23,30 @@ func NewSession(id SessionID, dir ConfigDir, at time.Time) Session {
 
 // Apply returns s updated by e. It is pure, and total: an event no rule
 // covers, such as an unknown hook name, notification type or poll status,
-// changes nothing but LastSeenAt and, by the account rule below, Dir. A poll
-// still records what it shows about the process. These rules hold for every
-// event:
+// leaves the state alone. It still counts as a sighting and an observation,
+// and what it shows of the session's account and process is still recorded.
+// These rules hold for every event:
 //
 //   - A Hook, Poll or Status is a sighting: LastSeenAt moves forward to its
 //     time, never back. An Absent is not.
-//   - An event at or before EndedAt of an ended session changes nothing
-//     else. Whatever it reports happened before the end, so a late event can
-//     never bring a session back.
-//   - Only an event at or after StateAt may change the state or move the
-//     session to the event's account. An older one is stale: the session
-//     has been observed since.
-//   - An ended session comes back only on SessionStart; on a poll showing a
-//     live process other than the one it ended in (any process, if it
-//     ended lost); or on a background session's own verdict, which parks a
-//     finished one.
+//   - The newest observation wins. An event older than the session's last
+//     state change, or than its newest observation (a main-session hook, a
+//     poll or an absence, whether or not that changed anything), is stale:
+//     it changes neither the state nor the account nor the process ID. A
+//     status line observes nothing about the state, so its one state change,
+//     from starting to idle, is judged against the last state change alone.
+//   - On an ended session, an event at or before EndedAt changes nothing but
+//     LastSeenAt, and so does any later hook except the session's own
+//     SessionStart, which reopens it.
+//   - A poll reopens an ended session when it shows a live process other
+//     than the one the session ended in (any process, if it ended lost). A
+//     background session's own verdict applies after the end as well, and
+//     parks a finished one.
+//   - A poll entry without a live process never moves the account. From
+//     another account it is the record the session left behind there, and
+//     changes nothing.
+//   - An error lasts until a new turn: Stop, idle_prompt and an idle poll
+//     leave it in place.
 func Apply(s Session, e Event) Session {
 	switch e := e.(type) {
 	case Hook:
@@ -66,7 +74,7 @@ var hookRules = map[string]hookRule{
 	"Notification":      onNotification,
 	"PreToolUse":        onPreToolUse,
 	"PostToolUse":       onPostToolUse,
-	"Stop":              enter(StateIdle, ""),
+	"Stop":              onStop,
 	"StopFailure":       enter(StateError, ""),
 	"PreCompact":        enter(StateCompacting, ""),
 	"PostCompact":       onPostCompact,
@@ -75,29 +83,22 @@ var hookRules = map[string]hookRule{
 
 func applyHook(s Session, h Hook) Session {
 	s.LastSeenAt = latest(s.LastSeenAt, h.At)
-	if s.endedBy(h.At) {
-		return s
+	if s.State == StateEnded {
+		return reopenOnStart(s, h)
 	}
 	s.Subagents = countSubagents(s.Subagents, h.Name)
-	if h.At.Before(s.StateAt) {
+	if s.staleAt(h.At) {
 		return s
 	}
-	// Subagent hooks run in the session's own process, so they fill it too.
-	if h.PID > 0 {
-		s.PID = h.PID
-	}
-	s.Dir = h.Dir
+	// Subagent hooks run in the session's own process, so they record it too.
+	s = noteHook(s, h)
 	if h.AgentID != "" {
-		// A subagent's prompts still show as the session needing you: the
-		// poll sees its process waiting.
+		// A subagent's events say nothing about the session's own state. Its
+		// prompts still show as the session needing you: the poll sees the
+		// process waiting.
 		return s
 	}
-	if s.State == StateEnded {
-		if h.Name == "SessionStart" {
-			return moveTo(s, StateStarting, "", h.At)
-		}
-		return s
-	}
+	s.observedAt = h.At
 	rule, ok := hookRules[h.Name]
 	if !ok {
 		return s
@@ -105,9 +106,30 @@ func applyHook(s Session, h Hook) Session {
 	return rule(s, h)
 }
 
+// reopenOnStart applies a hook to an ended session. Only the session's own
+// SessionStart, newer than anything known, brings it back; any other hook is
+// a sighting and nothing more.
+func reopenOnStart(s Session, h Hook) Session {
+	if h.Name != "SessionStart" || h.AgentID != "" || s.endedBy(h.At) || s.staleAt(h.At) {
+		return s
+	}
+	s = noteHook(s, h)
+	s.observedAt = h.At
+	return moveTo(s, StateStarting, "", h.At)
+}
+
+// noteHook records the account and process a current hook comes from.
+func noteHook(s Session, h Hook) Session {
+	if h.PID > 0 {
+		s.PID = h.PID
+	}
+	s.Dir = h.Dir
+	return s
+}
+
 // countSubagents applies a subagent start or stop to the running count. It
-// runs even for a hook older than the current state: each hook is a delta,
-// and dropping one would leave the count wrong for good.
+// runs even for a stale hook: each hook is a delta, and dropping one would
+// leave the count wrong for good.
 func countSubagents(n int, hook string) int {
 	switch hook {
 	case "SubagentStart":
@@ -130,7 +152,7 @@ func onNotification(s Session, h Hook) Session {
 	case "elicitation_dialog", "agent_needs_input":
 		return moveTo(s, StateNeedsYou, reasonInput, h.At)
 	case "idle_prompt":
-		return moveTo(s, StateIdle, "", h.At)
+		return moveTo(s, idleUnlessError(s.State), "", h.At)
 	default:
 		return s
 	}
@@ -150,6 +172,19 @@ func onPostToolUse(s Session, h Hook) Session {
 	return moveTo(s, StateWorking, "", h.At)
 }
 
+func onStop(s Session, h Hook) Session {
+	return moveTo(s, idleUnlessError(s.State), "", h.At)
+}
+
+// idleUnlessError is where a session settles when its turn is over: idle,
+// unless the turn failed. The error stands until a new turn starts.
+func idleUnlessError(current State) State {
+	if current == StateError {
+		return StateError
+	}
+	return StateIdle
+}
+
 func onPostCompact(s Session, h Hook) Session {
 	if s.State != StateCompacting {
 		// A newer signal has already moved the session on.
@@ -166,9 +201,15 @@ func onSessionEnd(s Session, h Hook) Session {
 
 func applyPoll(s Session, p Poll) Session {
 	s.LastSeenAt = latest(s.LastSeenAt, p.At)
-	if s.endedBy(p.At) || p.At.Before(s.StateAt) {
+	if s.endedBy(p.At) || s.staleAt(p.At) {
 		return s
 	}
+	if p.PID == 0 && p.Dir != s.Dir {
+		// Without a live process the entry shows only where the session used
+		// to run: the record an account keeps after a resume under another.
+		return s
+	}
+	s.observedAt = p.At
 	// Decide before filling: whether an ended session reopens depends on the
 	// process ID known until now.
 	state, reason, ok := pollState(s, p)
@@ -247,12 +288,7 @@ func reportedState(current State, p Poll) (state State, reason string, ok bool) 
 	case "waiting":
 		return StateNeedsYou, p.WaitingFor, true
 	case "idle":
-		// A failed turn leaves the process idle. The error stands until the
-		// next prompt or a busy poll.
-		if current == StateError {
-			return current, "", true
-		}
-		return StateIdle, "", true
+		return idleUnlessError(current), "", true
 	default:
 		return current, "", false
 	}
@@ -281,9 +317,10 @@ func backgroundVerdict(p Poll) (verdict State, ok bool) {
 func applyAbsent(s Session, a Absent) Session {
 	// Only the poll of the session's own account can miss it. An absence is
 	// not a sighting, so LastSeenAt stays.
-	if a.Dir != s.Dir || a.At.Before(s.StateAt) || s.State == StateParked || s.State == StateEnded {
+	if a.Dir != s.Dir || s.staleAt(a.At) || s.State == StateParked || s.State == StateEnded {
 		return s
 	}
+	s.observedAt = a.At
 	// Until its first status line, a session is measured from its start, so
 	// a new one gets the full grace.
 	if a.At.Sub(latest(s.LastStatusAt, s.StartedAt)) <= HeartbeatGrace {
@@ -299,11 +336,13 @@ func applyStatus(s Session, st Status) Session {
 	if s.endedBy(st.At) {
 		return s
 	}
-	if !st.At.Before(s.StateAt) {
+	if !s.staleAt(st.At) {
 		s.Dir = st.Dir
-		if s.State == StateStarting {
-			s = moveTo(s, StateIdle, "", st.At)
-		}
+	}
+	// A status line shows that the session is up but not what it is doing,
+	// so it is no observation of the state and is not judged against one.
+	if s.State == StateStarting && !st.At.Before(s.StateAt) {
+		s = moveTo(s, StateIdle, "", st.At)
 	}
 	// Each status line is a full snapshot, so only the newest counts. Its
 	// rate limits belong to the account, which the tracker keeps.
@@ -338,6 +377,12 @@ func moveTo(s Session, state State, reason string, at time.Time) Session {
 	}
 	s.prev, s.State, s.StateAt = s.State, state, at
 	return s
+}
+
+// staleAt reports whether an event at t is older than what is already known
+// of the session: its last state change or its newest observation.
+func (s Session) staleAt(t time.Time) bool {
+	return t.Before(s.StateAt) || t.Before(s.observedAt)
 }
 
 // endedBy reports whether the session had already ended at t.

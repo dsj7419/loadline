@@ -45,8 +45,9 @@ func lostAt(sec int) domain.Session {
 	return s
 }
 
-func withPID(s domain.Session, processID int) domain.Session {
-	s.PID = processID
+// knownPID is s with the process ID the test events come from.
+func knownPID(s domain.Session) domain.Session {
+	s.PID = pid
 	return s
 }
 
@@ -332,6 +333,36 @@ func TestApply(t *testing.T) {
 			want:   wantIn(domain.StateWorking, 20),
 		},
 		{
+			name:   "error survives Stop",
+			start:  sessionIn(domain.StateError, 10),
+			events: []domain.Event{hook(20, "Stop")},
+			want:   wantIn(domain.StateError, 10),
+		},
+		{
+			name:   "error survives idle_prompt",
+			start:  sessionIn(domain.StateError, 10),
+			events: []domain.Event{notification(70, "idle_prompt")},
+			want:   wantIn(domain.StateError, 10),
+		},
+		{
+			name:   "error survives idle_prompt, cleared by the next prompt",
+			start:  sessionIn(domain.StateError, 10),
+			events: []domain.Event{notification(70, "idle_prompt"), hook(80, "UserPromptSubmit")},
+			want:   wantIn(domain.StateWorking, 80),
+		},
+		{
+			name:   "a prompt for permission clears an error",
+			start:  sessionIn(domain.StateError, 10),
+			events: []domain.Event{hook(20, "PermissionRequest")},
+			want:   wantNeedsYou(20, "permission prompt"),
+		},
+		{
+			name:   "compaction in error returns to error",
+			start:  sessionIn(domain.StateError, 10),
+			events: []domain.Event{hook(20, "PreCompact"), hook(30, "PostCompact")},
+			want:   wantIn(domain.StateError, 30),
+		},
+		{
 			name:   "SessionEnd ends with its reason",
 			start:  sessionIn(domain.StateIdle, 10),
 			events: []domain.Event{sessionEnd(20, "logout")},
@@ -371,6 +402,32 @@ func TestApply(t *testing.T) {
 			name:   "hooks other than SessionStart do not reopen",
 			start:  endedAt(20),
 			events: []domain.Event{hook(30, "UserPromptSubmit"), hook(31, "Stop")},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:  "hook after the end does not record its pid",
+			start: knownPID(endedAt(20)),
+			events: []domain.Event{
+				hookFrom(newPID, hook(30, "UserPromptSubmit")), pollFrom(newPID, poll(40, "busy")),
+			},
+			want: wantIn(domain.StateWorking, 40),
+		},
+		{
+			name:   "hook after the end does not move the account",
+			start:  endedAt(20),
+			events: []domain.Event{hookOnB(hook(30, "UserPromptSubmit"))},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "subagent SessionStart does not reopen",
+			start:  endedAt(20),
+			events: []domain.Event{inSubagent(sessionStart(30, "startup"))},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "subagent hook after the end does not count",
+			start:  endedAt(20),
+			events: []domain.Event{hook(30, "SubagentStart"), inSubagent(hook(31, "SubagentStart"))},
 			want:   wantEnded(20, "prompt_input_exit"),
 		},
 		{
@@ -559,13 +616,13 @@ func TestApply(t *testing.T) {
 		},
 		{
 			name:   "lost session reopened by poll",
-			start:  withPID(lostAt(20), pid),
+			start:  knownPID(lostAt(20)),
 			events: []domain.Event{poll(30, "busy")},
 			want:   wantIn(domain.StateWorking, 30),
 		},
 		{
 			name:   "live process with an unknown status reopens as starting",
-			start:  withPID(lostAt(20), pid),
+			start:  knownPID(lostAt(20)),
 			events: []domain.Event{poll(30, "paused")},
 			want:   wantIn(domain.StateStarting, 30),
 		},
@@ -577,7 +634,7 @@ func TestApply(t *testing.T) {
 		},
 		{
 			name:   "status without a process does not reopen",
-			start:  withPID(endedAt(20), pid),
+			start:  knownPID(endedAt(20)),
 			events: []domain.Event{pollFrom(0, poll(30, "busy"))},
 			want:   wantEnded(20, "prompt_input_exit"),
 		},
@@ -616,6 +673,14 @@ func TestApply(t *testing.T) {
 			start:  endedAt(20),
 			events: []domain.Event{liveBackground(30, "stopped", "idle")},
 			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:  "pid-0 background entry from the old dir does not move the account back",
+			start: sessionIn(domain.StateParked, 10),
+			events: []domain.Event{
+				hookOnB(sessionStart(20, "resume")), pollOnB(poll(25, "busy")), background(26, "done"),
+			},
+			want: outcome{State: domain.StateWorking, StateAt: at(25), Dir: dirB},
 		},
 
 		// Absent.
@@ -720,10 +785,12 @@ func TestApply(t *testing.T) {
 			want:   outcome{State: domain.StateIdle, StateAt: at(10), Dir: dirB},
 		},
 		{
-			name:   "stale event does not move the account",
-			start:  sessionIn(domain.StateWorking, 10),
-			events: []domain.Event{pollOnB(poll(9, "busy")), hookOnB(hook(9, "Stop"))},
-			want:   wantIn(domain.StateWorking, 10),
+			name:  "stale event does not move the account",
+			start: sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{
+				pollOnB(poll(9, "busy")), hookOnB(hook(9, "Stop")), domain.Status{At: at(9), Dir: dirB, Session: sid},
+			},
+			want: wantIn(domain.StateWorking, 10),
 		},
 
 		// No resurrection.
@@ -749,6 +816,58 @@ func TestApply(t *testing.T) {
 			name:   "event at the end time does not move the account",
 			start:  endedAt(20),
 			events: []domain.Event{hookOnB(sessionStart(20, "resume")), domain.Status{At: at(20), Dir: dirB, Session: sid}},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+
+		// Newest observation wins.
+		{
+			name:   "spooled PermissionRequest older than a busy poll is ignored",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{poll(20, "busy"), hook(17, "PermissionRequest")},
+			want:   wantIn(domain.StateWorking, 10),
+		},
+		{
+			name:  "spooled PreCompact older than PostCompact is ignored",
+			start: sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{
+				hook(19, "PostCompact"), hook(17, "PreCompact"), poll(25, "busy"), poll(30, "busy"),
+			},
+			want: wantIn(domain.StateWorking, 10),
+		},
+		{
+			name:   "hook older than an absent poll is ignored",
+			start:  fresh(),
+			events: []domain.Event{status(0), absent(20), hook(15, "UserPromptSubmit")},
+			want:   wantIn(domain.StateIdle, 0),
+		},
+		{
+			name:   "subagent hook does not make older main-session hooks stale",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{inSubagent(preToolUse(20, "Bash")), hook(15, "Stop")},
+			want:   wantIn(domain.StateIdle, 15),
+		},
+		{
+			name:   "status line does not make older hooks stale",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{status(20), hook(15, "Stop")},
+			want:   wantIn(domain.StateIdle, 15),
+		},
+		{
+			name:   "status line older than the newest poll does not move the account",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{poll(20, "busy"), domain.Status{At: at(15), Dir: dirB, Session: sid}},
+			want:   wantIn(domain.StateWorking, 10),
+		},
+		{
+			name:   "status line older than a poll still moves starting to idle",
+			start:  fresh(),
+			events: []domain.Event{poll(20, "paused"), status(15)},
+			want:   wantIn(domain.StateIdle, 15),
+		},
+		{
+			name:   "SessionStart older than a later poll does not reopen",
+			start:  knownPID(endedAt(20)),
+			events: []domain.Event{poll(30, "idle"), sessionStart(25, "resume")},
 			want:   wantEnded(20, "prompt_input_exit"),
 		},
 	}
@@ -799,6 +918,7 @@ func TestApply_LastSeenAt(t *testing.T) {
 		{"status line moves it forward", fresh(), status(20), at(20)},
 		{"stale event still counts as a sighting", sessionIn(domain.StateWorking, 30), poll(20, "idle"), at(20)},
 		{"event before the end still counts as a sighting", endedAt(30), hook(20, "PostToolUse"), at(20)},
+		{"hook after the end still counts as a sighting", endedAt(20), hook(30, "Stop"), at(30)},
 		{"older event never moves it back", seenAt(fresh(), 40), hook(20, "Stop"), at(40)},
 		{"absence is not a sighting", fresh(), absent(100), t0},
 	}
@@ -976,6 +1096,12 @@ func TestApply_HookFillsPID(t *testing.T) {
 			pid,
 		},
 		{"a stale hook fills nothing", sessionIn(domain.StateWorking, 30), []domain.Event{hook(20, "Stop")}, 0},
+		{"a hook after the end fills nothing", endedAt(20), []domain.Event{hook(30, "UserPromptSubmit")}, 0},
+		{
+			"the SessionStart that reopens fills it", endedAt(20),
+			[]domain.Event{hookFrom(newPID, sessionStart(30, "resume"))},
+			newPID,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1112,16 +1238,27 @@ func FuzzApply(f *testing.F) {
 func checkInvariants(t *testing.T, before domain.Session, te timedEvent, after domain.Session) {
 	t.Helper()
 
-	if before.State == domain.StateEnded && !te.at.After(before.EndedAt) {
+	if onlySighting(before, te) {
 		unchanged := before
 		unchanged.LastSeenAt = after.LastSeenAt
 		if !reflect.DeepEqual(after, unchanged) {
-			t.Fatalf("%#v at or before the end changed\n%+v\ninto\n%+v", te.event, before, after)
+			t.Fatalf("%#v on an ended session changed\n%+v\ninto\n%+v", te.event, before, after)
 		}
 	}
-	if after.LastSeenAt.Before(before.LastSeenAt) || after.StateAt.Before(before.StateAt) {
-		t.Fatalf("%#v moved time back: LastSeenAt %s -> %s, StateAt %s -> %s", te.event,
-			sinceT0(before.LastSeenAt), sinceT0(after.LastSeenAt), sinceT0(before.StateAt), sinceT0(after.StateAt))
+	if after.LastSeenAt.Before(before.LastSeenAt) || after.StateAt.Before(before.StateAt) ||
+		domain.ObservedAt(after).Before(domain.ObservedAt(before)) {
+		t.Fatalf("%#v moved time back: LastSeenAt %s -> %s, StateAt %s -> %s, observed %s -> %s", te.event,
+			sinceT0(before.LastSeenAt), sinceT0(after.LastSeenAt), sinceT0(before.StateAt), sinceT0(after.StateAt),
+			sinceT0(domain.ObservedAt(before)), sinceT0(domain.ObservedAt(after)))
+	}
+	if stateGuard, accountGuard := staleness(before, te); te.at.Before(stateGuard) && after.State != before.State {
+		t.Fatalf("%#v older than %s changed the state from %v to %v", te.event, sinceT0(stateGuard), before.State, after.State)
+	} else if te.at.Before(accountGuard) && (after.Dir != before.Dir || after.PID != before.PID) {
+		t.Fatalf("%#v older than %s moved the session from %s/%d to %s/%d", te.event, sinceT0(accountGuard),
+			before.Dir, before.PID, after.Dir, after.PID)
+	}
+	if before.State == domain.StateError && after.State == domain.StateIdle {
+		t.Fatalf("%#v cleared an error without a new turn", te.event)
 	}
 	if (after.State == domain.StateEnded) == after.EndedAt.IsZero() || (after.Lost && after.State != domain.StateEnded) {
 		t.Fatalf("%#v left state %v with EndedAt %s, Lost %t", te.event, after.State, sinceT0(after.EndedAt), after.Lost)
@@ -1132,4 +1269,32 @@ func checkInvariants(t *testing.T, before domain.Session, te timedEvent, after d
 	if after.Subagents < 0 {
 		t.Fatalf("%#v left %d subagents", te.event, after.Subagents)
 	}
+}
+
+// onlySighting reports whether the rules let te change nothing about an
+// ended session but LastSeenAt: anything from before the end, and any hook
+// other than the session's own SessionStart.
+func onlySighting(before domain.Session, te timedEvent) bool {
+	if before.State != domain.StateEnded {
+		return false
+	}
+	if !te.at.After(before.EndedAt) {
+		return true
+	}
+	h, isHook := te.event.(domain.Hook)
+	return isHook && (h.Name != "SessionStart" || h.AgentID != "")
+}
+
+// staleness gives the times before which te may change neither the state
+// nor the account and process. A status line is judged against StateAt for
+// the state, but against the newest observation for the account.
+func staleness(before domain.Session, te timedEvent) (state, account time.Time) {
+	newest := before.StateAt
+	if observed := domain.ObservedAt(before); observed.After(newest) {
+		newest = observed
+	}
+	if _, isStatus := te.event.(domain.Status); isStatus {
+		return before.StateAt, newest
+	}
+	return newest, newest
 }

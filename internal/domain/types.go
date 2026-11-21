@@ -170,6 +170,12 @@ type Session struct {
 
 	// StateAt is when State last changed.
 	StateAt time.Time
+	// observedAt is the newest main-session hook, poll or absence that was
+	// applied, whether or not it changed anything. With StateAt it decides
+	// whether an event is stale. Like prev it is unexported, so it is not
+	// persisted: a restored session starts without it, and only its first
+	// events are judged against StateAt alone.
+	observedAt time.Time
 	// StartedAt is when the session's process started, as far as Loadline
 	// knows: the earliest of first sight and the poll's start time.
 	StartedAt time.Time
