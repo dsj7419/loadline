@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	sid  domain.SessionID = "3f1c7a52-0d4e-4b8e-9a51-6c2f0e7d9b10"
-	dirA domain.ConfigDir = "/home/dev/.claude"
-	dirB domain.ConfigDir = "/home/dev/.claude-b"
-	pid                   = 4242
+	sid    domain.SessionID = "3f1c7a52-0d4e-4b8e-9a51-6c2f0e7d9b10"
+	dirA   domain.ConfigDir = "/home/dev/.claude"
+	dirB   domain.ConfigDir = "/home/dev/.claude-b"
+	pid                     = 4242
+	newPID                  = 5151
 )
 
 // t0 is when every test session is first seen.
@@ -41,6 +42,11 @@ func endedAt(sec int) domain.Session {
 func lostAt(sec int) domain.Session {
 	s := endedAt(sec)
 	s.EndReason, s.Lost = "lost", true
+	return s
+}
+
+func withPID(s domain.Session, processID int) domain.Session {
+	s.PID = processID
 	return s
 }
 
@@ -84,6 +90,11 @@ func hookOnB(h domain.Hook) domain.Hook {
 	return h
 }
 
+func hookFrom(processID int, h domain.Hook) domain.Hook {
+	h.PID = processID
+	return h
+}
+
 // poll is an interactive session's entry while its process is alive.
 func poll(sec int, status string) domain.Poll {
 	return domain.Poll{
@@ -121,6 +132,11 @@ func liveBackground(sec int, bgState, status string) domain.Poll {
 
 func pollOnB(p domain.Poll) domain.Poll {
 	p.Dir = dirB
+	return p
+}
+
+func pollFrom(processID int, p domain.Poll) domain.Poll {
+	p.PID = processID
 	return p
 }
 
@@ -516,21 +532,83 @@ func TestApply(t *testing.T) {
 			want:   wantEnded(20, ""),
 		},
 		{
-			name:   "poll with a live process reopens",
+			name:   "poll right after SessionEnd with same pid does not reopen",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{poll(15, "busy"), sessionEnd(20, "prompt_input_exit"), poll(21, "idle")},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "SessionEnd records the pid that guards the reopen",
+			start:  sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{sessionEnd(20, "prompt_input_exit"), poll(21, "idle")},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:  "poll with new pid reopens",
+			start: sessionIn(domain.StateWorking, 10),
+			events: []domain.Event{
+				poll(15, "busy"), sessionEnd(20, "prompt_input_exit"), pollFrom(newPID, poll(30, "busy")),
+			},
+			want: wantIn(domain.StateWorking, 30),
+		},
+		{
+			name:   "poll reopens a session whose pid was never known",
 			start:  endedAt(20),
 			events: []domain.Event{poll(30, "busy")},
 			want:   wantIn(domain.StateWorking, 30),
 		},
 		{
+			name:   "lost session reopened by poll",
+			start:  withPID(lostAt(20), pid),
+			events: []domain.Event{poll(30, "busy")},
+			want:   wantIn(domain.StateWorking, 30),
+		},
+		{
 			name:   "live process with an unknown status reopens as starting",
-			start:  lostAt(20),
+			start:  withPID(lostAt(20), pid),
 			events: []domain.Event{poll(30, "paused")},
 			want:   wantIn(domain.StateStarting, 30),
 		},
 		{
-			name:   "poll without a process does not reopen",
+			name:   "poll of an exited process does not reopen",
 			start:  endedAt(20),
-			events: []domain.Event{exited(30), background(31, "done")},
+			events: []domain.Event{exited(30)},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "status without a process does not reopen",
+			start:  withPID(endedAt(20), pid),
+			events: []domain.Event{pollFrom(0, poll(30, "busy"))},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "finished background session is parked after its end",
+			start:  endedAt(20),
+			events: []domain.Event{background(30, "done")},
+			want:   wantIn(domain.StateParked, 30),
+		},
+		{
+			name:   "blocked background session is parked after its end",
+			start:  endedAt(20),
+			events: []domain.Event{background(30, "blocked")},
+			want:   wantIn(domain.StateParked, 30),
+		},
+		{
+			name:   "failed background session is an error after its end",
+			start:  endedAt(20),
+			events: []domain.Event{background(30, "failed")},
+			want:   wantIn(domain.StateError, 30),
+		},
+		{
+			name:   "stopped background session stays ended",
+			start:  endedAt(20),
+			events: []domain.Event{background(30, "stopped")},
+			want:   wantEnded(20, "prompt_input_exit"),
+		},
+		{
+			name:   "background session without a verdict stays ended",
+			start:  endedAt(20),
+			events: []domain.Event{background(30, "working")},
 			want:   wantEnded(20, "prompt_input_exit"),
 		},
 		{
@@ -878,6 +956,40 @@ func TestApply_PollFills(t *testing.T) {
 	})
 }
 
+func TestApply_HookFillsPID(t *testing.T) {
+	tests := []struct {
+		name   string
+		start  domain.Session
+		events []domain.Event
+		want   int
+	}{
+		{"a hook with a pid fills it", fresh(), []domain.Event{hook(10, "UserPromptSubmit")}, pid},
+		{"a subagent hook fills it too", fresh(), []domain.Event{inSubagent(preToolUse(10, "Bash"))}, pid},
+		{
+			"a hook from a new process replaces it", fresh(),
+			[]domain.Event{poll(5, "busy"), hookFrom(newPID, sessionStart(10, "resume"))},
+			newPID,
+		},
+		{
+			"a hook without a pid keeps the known one", fresh(),
+			[]domain.Event{poll(5, "busy"), hookFrom(0, hook(10, "Stop"))},
+			pid,
+		},
+		{"a stale hook fills nothing", sessionIn(domain.StateWorking, 30), []domain.Event{hook(20, "Stop")}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.start
+			for _, e := range tc.events {
+				s = domain.Apply(s, e)
+			}
+			if s.PID != tc.want {
+				t.Errorf("PID = %d, want %d", s.PID, tc.want)
+			}
+		})
+	}
+}
+
 // Fuzzing decodes the input into a sequence of small events, fuzzEventSize
 // bytes each: event type, time in seconds after t0, two selectors, flags and
 // a process start time. Times go up to 255 s and arrive in any order, so the
@@ -891,6 +1003,7 @@ const (
 	fuzzSubagent
 	fuzzBackground
 	fuzzNamed
+	fuzzNewProcess
 )
 
 var (
@@ -926,7 +1039,11 @@ func fuzzEvents(data []byte) []timedEvent {
 			dir = dirB
 		}
 		processID := 0
-		if flags&fuzzLiveProcess != 0 {
+		switch {
+		case flags&fuzzLiveProcess == 0:
+		case flags&fuzzNewProcess != 0:
+			processID = newPID
+		default:
 			processID = pid
 		}
 		name := ""

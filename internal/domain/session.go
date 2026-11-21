@@ -35,8 +35,10 @@ func NewSession(id SessionID, dir ConfigDir, at time.Time) Session {
 //   - Only an event at or after StateAt may change the state or move the
 //     session to the event's account. An older one is stale: the session
 //     has been observed since.
-//   - An ended session reopens only on SessionStart, or on a poll that shows
-//     its process alive.
+//   - An ended session comes back only on SessionStart; on a poll showing a
+//     live process other than the one it ended in (any process, if it
+//     ended lost); or on a background session's own verdict, which parks a
+//     finished one.
 func Apply(s Session, e Event) Session {
 	switch e := e.(type) {
 	case Hook:
@@ -79,6 +81,10 @@ func applyHook(s Session, h Hook) Session {
 	s.Subagents = countSubagents(s.Subagents, h.Name)
 	if h.At.Before(s.StateAt) {
 		return s
+	}
+	// Subagent hooks run in the session's own process, so they fill it too.
+	if h.PID > 0 {
+		s.PID = h.PID
 	}
 	s.Dir = h.Dir
 	if h.AgentID != "" {
@@ -163,21 +169,13 @@ func applyPoll(s Session, p Poll) Session {
 	if s.endedBy(p.At) || p.At.Before(s.StateAt) {
 		return s
 	}
+	// Decide before filling: whether an ended session reopens depends on the
+	// process ID known until now.
+	state, reason, ok := pollState(s, p)
 	s.Dir = p.Dir
 	s = fillFromPoll(s, p)
-
-	state, reason, known := pollState(s.State, p)
-	switch {
-	case s.State != StateEnded:
-		if !known {
-			return s
-		}
-	case p.PID == 0:
-		// Only a live process brings an ended session back.
+	if !ok {
 		return s
-	case !known:
-		// The process is alive but doing something this version can't name.
-		state, reason = StateStarting, ""
 	}
 	return moveTo(s, state, reason, p.At)
 }
@@ -202,21 +200,42 @@ func fillFromPoll(s Session, p Poll) Session {
 	return s
 }
 
-// pollState is the state a poll entry reports for a session currently in
-// current. known is false when the entry reports nothing this version
+// pollState is the state a poll entry moves the session to. ok is false when
+// the entry gives no reason to move it.
+func pollState(s Session, p Poll) (state State, reason string, ok bool) {
+	if s.State == StateEnded {
+		return reopenState(s, p)
+	}
+	return reportedState(s.State, p)
+}
+
+// reopenState is the state a poll entry brings an ended session back to.
+// Without a process, only a background session's own verdict counts, and a
+// finished one is parked rather than ended because it can be resumed. A live
+// process counts unless it is the one the session ended in: the poll that
+// follows SessionEnd can still list the exiting process. A session that
+// ended lost had no such exit, so any live process brings it back.
+func reopenState(s Session, p Poll) (state State, reason string, ok bool) {
+	if p.PID == 0 {
+		state, ok = backgroundVerdict(p)
+		return state, "", ok
+	}
+	if !s.Lost && p.PID == s.PID {
+		return s.State, "", false
+	}
+	if state, reason, ok = reportedState(s.State, p); !ok {
+		// The process is alive but doing something this version can't name.
+		state, reason = StateStarting, ""
+	}
+	return state, reason, true
+}
+
+// reportedState is the state a poll entry reports for a session currently in
+// current. ok is false when the entry reports nothing this version
 // understands.
-func pollState(current State, p Poll) (state State, reason string, known bool) {
-	if p.Kind == KindBackground {
-		switch p.BgState {
-		case "failed":
-			return StateError, "", true
-		case "stopped":
-			return StateEnded, "", true
-		case "done", "blocked":
-			if p.PID == 0 {
-				return StateParked, "", true
-			}
-		}
+func reportedState(current State, p Poll) (state State, reason string, ok bool) {
+	if verdict, settled := backgroundVerdict(p); settled {
+		return verdict, "", true
 	}
 	switch p.Status {
 	case "busy":
@@ -237,6 +256,26 @@ func pollState(current State, p Poll) (state State, reason string, known bool) {
 	default:
 		return current, "", false
 	}
+}
+
+// backgroundVerdict is the state a background session's own state settles,
+// if it settles one. A finished session is parked only once its process has
+// gone; while the process lives, its status says what it is doing.
+func backgroundVerdict(p Poll) (verdict State, ok bool) {
+	if p.Kind != KindBackground {
+		return verdict, false
+	}
+	switch p.BgState {
+	case "failed":
+		return StateError, true
+	case "stopped":
+		return StateEnded, true
+	case "done", "blocked":
+		if p.PID == 0 {
+			return StateParked, true
+		}
+	}
+	return verdict, false
 }
 
 func applyAbsent(s Session, a Absent) Session {
