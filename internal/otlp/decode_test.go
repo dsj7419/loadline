@@ -2,6 +2,7 @@ package otlp_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -253,6 +254,17 @@ func TestDecodeLogs_ResourceAttributesFallback(t *testing.T) {
 	}
 }
 
+func TestDecodeLogs_FirstDuplicateAttributeWins(t *testing.T) {
+	resource := attrs(strAttr("model", "resource-first"), strAttr("model", "resource-second"), strAttr("user.email", "resource@example.com"))
+	rec := apiRequest(strAttr("user.email", "record-first@example.com"), strAttr("user.email", "record-second@example.com"))
+
+	got := decodeOne(t, export(resource, rec))
+
+	if got.Model != "resource-first" || got.Email != "record-first@example.com" {
+		t.Errorf("request = %+v, want the first of each duplicated attribute", got)
+	}
+}
+
 func TestDecodeLogs_StringAttributes(t *testing.T) {
 	got := decodeOne(t, export(attrs(), apiRequest(
 		strAttr("user.email", "dev@example.com"),
@@ -279,75 +291,109 @@ func TestDecodeLogs_OptionalFieldsAbsent(t *testing.T) {
 func TestDecodeLogs_Timestamp(t *testing.T) {
 	const wantAt = "2026-11-21T22:23:17.642Z"
 	nanos := fmt.Sprint(fixtureAt.UnixNano())
+	quotedNanos := `"` + nanos + `"`
 
 	tests := []struct {
-		name    string
-		rec     string
-		want    string // RFC 3339, or "" when the record is skipped
-		wantNil bool
+		name           string
+		timeUnixNano   string // JSON value, or "" for none
+		eventTimestamp string // attribute JSON, or "" for none
+		want           string // RFC 3339, or "" when the record is skipped
 	}{
+		{name: "event.timestamp", eventTimestamp: strAttr("event.timestamp", wantAt), want: wantAt},
 		{
-			name: "event.timestamp",
-			rec:  record("claude_code.api_request", "", strAttr("session.id", testSession), strAttr("event.timestamp", wantAt)),
-			want: wantAt,
+			name:           "event.timestamp with offset is normalized to UTC",
+			eventTimestamp: strAttr("event.timestamp", "2026-11-21T17:23:17.642-05:00"),
+			want:           wantAt,
 		},
 		{
-			name: "event.timestamp with offset is normalized to UTC",
-			rec:  record("claude_code.api_request", "", strAttr("session.id", testSession), strAttr("event.timestamp", "2026-11-21T17:23:17.642-05:00")),
-			want: wantAt,
+			name:           "event.timestamp wins over timeUnixNano",
+			timeUnixNano:   `"1000000000"`,
+			eventTimestamp: strAttr("event.timestamp", wantAt),
+			want:           wantAt,
+		},
+		{name: "timeUnixNano as a string", timeUnixNano: quotedNanos, want: wantAt},
+		{name: "timeUnixNano as a number", timeUnixNano: nanos, want: wantAt},
+		{
+			name:           "unparsable event.timestamp falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "yesterday"),
+			want:           wantAt,
 		},
 		{
-			name: "event.timestamp wins over timeUnixNano",
-			rec:  record("claude_code.api_request", `"1000000000"`, strAttr("session.id", testSession), strAttr("event.timestamp", wantAt)),
-			want: wantAt,
+			name:           "zero event.timestamp falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "0001-01-01T00:00:00Z"),
+			want:           wantAt,
 		},
 		{
-			name: "timeUnixNano as a string",
-			rec:  record("claude_code.api_request", `"`+nanos+`"`, strAttr("session.id", testSession)),
-			want: wantAt,
+			name:           "event.timestamp of the wrong type falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: intAttr("event.timestamp", 5),
+			want:           wantAt,
 		},
 		{
-			name: "timeUnixNano as a number",
-			rec:  record("claude_code.api_request", nanos, strAttr("session.id", testSession)),
-			want: wantAt,
+			name:           "event.timestamp before the epoch falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "1969-12-31T23:59:59Z"),
+			want:           wantAt,
 		},
 		{
-			name: "unparsable event.timestamp falls back to timeUnixNano",
-			rec:  record("claude_code.api_request", `"`+nanos+`"`, strAttr("session.id", testSession), strAttr("event.timestamp", "yesterday")),
-			want: wantAt,
+			name:           "event.timestamp at the epoch falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "1970-01-01T00:00:00Z"),
+			want:           wantAt,
 		},
 		{
-			name: "zero event.timestamp falls back to timeUnixNano",
-			rec:  record("claude_code.api_request", `"`+nanos+`"`, strAttr("session.id", testSession), strAttr("event.timestamp", "0001-01-01T00:00:00Z")),
-			want: wantAt,
+			name:           "event.timestamp before year 1 once in UTC falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "0000-01-01T00:00:00+05:00"),
+			want:           wantAt,
 		},
 		{
-			name: "event.timestamp of the wrong type falls back to timeUnixNano",
-			rec:  record("claude_code.api_request", `"`+nanos+`"`, strAttr("session.id", testSession), intAttr("event.timestamp", 5)),
-			want: wantAt,
+			name:           "event.timestamp past year 9999 once in UTC falls back to timeUnixNano",
+			timeUnixNano:   quotedNanos,
+			eventTimestamp: strAttr("event.timestamp", "9999-12-31T23:59:59-05:00"),
+			want:           wantAt,
 		},
 		{
-			name:    "no time at all skips the record",
-			rec:     record("claude_code.api_request", "", strAttr("session.id", testSession)),
-			wantNil: true,
+			name:           "latest event.timestamp that can be stored",
+			eventTimestamp: strAttr("event.timestamp", "9999-12-31T23:59:59Z"),
+			want:           "9999-12-31T23:59:59Z",
+		},
+		{name: "first instant after the epoch", timeUnixNano: `"1"`, want: "1970-01-01T00:00:00.000000001Z"},
+		{name: "timeUnixNano at the integer maximum", timeUnixNano: `"9223372036854775807"`, want: "2262-04-11T23:47:16.854775807Z"},
+		{name: "no time at all skips the record"},
+		{name: "timeUnixNano zero means unset", timeUnixNano: `"0"`},
+		{name: "negative timeUnixNano skips the record", timeUnixNano: `"-1"`},
+		{
+			name:           "event.timestamp before year 1 once in UTC and no fallback skips the record",
+			eventTimestamp: strAttr("event.timestamp", "0000-01-01T00:00:00+05:00"),
 		},
 		{
-			name:    "timeUnixNano zero means unset",
-			rec:     record("claude_code.api_request", `"0"`, strAttr("session.id", testSession)),
-			wantNil: true,
+			name:           "event.timestamp past year 9999 once in UTC and no fallback skips the record",
+			eventTimestamp: strAttr("event.timestamp", "9999-12-31T23:59:59-05:00"),
 		},
 		{
-			name:    "unparsable times skip the record",
-			rec:     record("claude_code.api_request", `"soon"`, strAttr("session.id", testSession), strAttr("event.timestamp", "later")),
-			wantNil: true,
+			name:           "event.timestamp before the epoch and no fallback skips the record",
+			eventTimestamp: strAttr("event.timestamp", "1969-12-31T23:59:59Z"),
+		},
+		{
+			name:           "unparsable times skip the record",
+			timeUnixNano:   `"soon"`,
+			eventTimestamp: strAttr("event.timestamp", "later"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := decode(t, export(attrs(), tt.rec))
+			attributes := []string{strAttr("session.id", testSession)}
+			if tt.eventTimestamp != "" {
+				attributes = append(attributes, tt.eventTimestamp)
+			}
 
-			if tt.wantNil {
+			got := decode(t, export(attrs(), record("claude_code.api_request", tt.timeUnixNano, attributes...)))
+
+			if tt.want == "" {
 				if len(got) != 0 {
 					t.Errorf("DecodeLogs = %+v, want the record skipped", got)
 				}
@@ -366,6 +412,9 @@ func TestDecodeLogs_Timestamp(t *testing.T) {
 			if got[0].At.Location() != time.UTC {
 				t.Errorf("At location = %v, want UTC", got[0].At.Location())
 			}
+			if _, err := json.Marshal(got[0].At); err != nil {
+				t.Errorf("At %v does not marshal: %v", got[0].At, err)
+			}
 		})
 	}
 }
@@ -382,10 +431,15 @@ func TestDecodeLogs_Cost(t *testing.T) {
 		{"micros as string", []string{intStrAttr("cost_usd_micros", 1_500_000)}, 1.5},
 		{"whole-dollar cost arrives as an int", []string{intAttr("cost_usd", 2)}, 2},
 		{"zero cost arrives as an int", []string{intAttr("cost_usd", 0), intAttr("cost_usd_micros", 5)}, 0},
-		{"cost_usd as a numeric string", []string{strAttr("cost_usd", "0.25")}, 0.25},
-		{"unusable cost_usd falls back to micros", []string{strAttr("cost_usd", "free"), intAttr("cost_usd_micros", 42)}, 0.000042},
-		{"infinite cost is dropped", []string{strAttr("cost_usd", "Inf"), intAttr("cost_usd_micros", 42)}, 0.000042},
-		{"NaN cost is dropped", []string{strAttr("cost_usd", "NaN")}, 0},
+		{"cost_usd as a string value is not a number", []string{strAttr("cost_usd", "0.25")}, 0},
+		{"unusable cost_usd falls back to micros", []string{attribute("cost_usd", `{"doubleValue":"free"}`), intAttr("cost_usd_micros", 42)}, 0.000042},
+		{"infinite cost is dropped", []string{attribute("cost_usd", `{"doubleValue":"Infinity"}`), intAttr("cost_usd_micros", 42)}, 0.000042},
+		{"NaN cost is dropped", []string{attribute("cost_usd", `{"doubleValue":"NaN"}`)}, 0},
+		{"cost_usd at the cap", []string{costAttr(1_000_000)}, 1_000_000},
+		{"cost_usd over the cap falls back to micros", []string{costAttr(1_000_000.01), intAttr("cost_usd_micros", 42)}, 0.000042},
+		{"cost_usd over the cap", []string{costAttr(1_000_000.01)}, 0},
+		{"micros at the cap", []string{intAttr("cost_usd_micros", 1_000_000_000_000)}, 1_000_000},
+		{"micros over the cap", []string{intAttr("cost_usd_micros", 1_000_000_000_001)}, 0},
 		{"negative cost clamps to zero", []string{costAttr(-3)}, 0},
 		{"negative micros clamp to zero", []string{intAttr("cost_usd_micros", -3)}, 0},
 		{"no cost", nil, 0},
@@ -413,6 +467,91 @@ func TestDecodeLogs_NegativeCountsClampToZero(t *testing.T) {
 
 	if got.Input != 0 || got.Output != 0 || got.CacheRead != 0 || got.CacheWrite != 0 || got.DurationMS != 0 {
 		t.Errorf("request = %+v, want every negative count clamped to 0", got)
+	}
+}
+
+func TestDecodeLogs_CountsAboveTheCapReadAsAbsent(t *testing.T) {
+	const maxCount = 1 << 40
+
+	tests := []struct {
+		name string
+		attr func(key string, value int64) string
+	}{
+		{"number", intAttr},
+		{"string", intStrAttr},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			atCap := decodeOne(t, export(attrs(), apiRequest(
+				tt.attr("input_tokens", maxCount),
+				tt.attr("output_tokens", maxCount),
+				tt.attr("cache_read_tokens", maxCount),
+				tt.attr("cache_creation_tokens", maxCount),
+				tt.attr("duration_ms", maxCount),
+			)))
+			if atCap.Input != maxCount || atCap.Output != maxCount || atCap.CacheRead != maxCount || atCap.CacheWrite != maxCount || atCap.DurationMS != maxCount {
+				t.Errorf("request = %+v, want every count at the cap kept", atCap)
+			}
+
+			overCap := decodeOne(t, export(attrs(), apiRequest(
+				tt.attr("input_tokens", maxCount+1),
+				tt.attr("output_tokens", maxCount+1),
+				tt.attr("cache_read_tokens", maxCount+1),
+				tt.attr("cache_creation_tokens", maxCount+1),
+				tt.attr("duration_ms", maxCount+1),
+			)))
+			if overCap.Input != 0 || overCap.Output != 0 || overCap.CacheRead != 0 || overCap.CacheWrite != 0 || overCap.DurationMS != 0 {
+				t.Errorf("request = %+v, want every count over the cap read as 0", overCap)
+			}
+		})
+	}
+}
+
+func TestDecodeLogs_NumbersAreNotReadFromStringValues(t *testing.T) {
+	got := decodeOne(t, export(attrs(), apiRequest(
+		strAttr("input_tokens", "11"),
+		strAttr("output_tokens", "22"),
+		strAttr("cache_read_tokens", "33"),
+		strAttr("cache_creation_tokens", "44"),
+		strAttr("duration_ms", "55"),
+		strAttr("cost_usd_micros", "66"),
+	)))
+
+	want := domain.APIRequest{Session: testSession}
+	got.At = time.Time{}
+	if got != want {
+		t.Errorf("request = %+v, want every string-typed number left at zero", got)
+	}
+}
+
+func TestDecodeLogs_EventNameComesFromTheRecordOnly(t *testing.T) {
+	resourceNamed := attrs(strAttr("event.name", "api_request"))
+	own := []string{strAttr("session.id", testSession), strAttr("event.timestamp", testTime)}
+	tests := []struct {
+		name string
+		rec  string
+	}{
+		{"another event named on the record", record("claude_code.user_prompt", "", append([]string{strAttr("event.name", "user_prompt")}, own...)...)},
+		{"unnamed record", record("", "", own...)},
+		{"record with an unrelated body", record("hello", "", own...)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := decode(t, export(resourceNamed, tt.rec)); len(got) != 0 {
+				t.Errorf("DecodeLogs = %+v, want none: a resource's event.name does not name its records", got)
+			}
+		})
+	}
+}
+
+func TestDecodeLogs_EventTimeComesFromTheRecordOnly(t *testing.T) {
+	rec := record("claude_code.api_request", "", strAttr("session.id", testSession))
+
+	got := decode(t, export(attrs(strAttr("event.timestamp", testTime)), rec))
+
+	if len(got) != 0 {
+		t.Errorf("DecodeLogs = %+v, want none: a resource's event.timestamp is not any record's time", got)
 	}
 }
 
@@ -637,6 +776,9 @@ func FuzzDecodeLogs(f *testing.F) {
 	f.Add([]byte(export(attrs(), apiRequest(intAttr("input_tokens", -9), strAttr("cost_usd", "NaN"), strAttr("cost_usd", "Inf")))))
 	f.Add([]byte(export(attrs(), record("claude_code.api_request", `"9223372036854775807"`, strAttr("session.id", "s")))))
 	f.Add([]byte(export(attrs(), record("claude_code.api_request", `-9223372036854775808`, strAttr("session.id", "s")))))
+	f.Add([]byte(export(attrs(), record("claude_code.api_request", "", strAttr("session.id", "s"), strAttr("event.timestamp", "0000-01-01T00:00:00+05:00")))))
+	f.Add([]byte(export(attrs(), record("claude_code.api_request", "", strAttr("session.id", "s"), strAttr("event.timestamp", "9999-12-31T23:59:59-05:00")))))
+	f.Add([]byte(export(attrs(), apiRequest(intAttr("input_tokens", 1<<41), costAttr(2e6)))))
 	f.Add([]byte(`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"event.name","value":{"stringValue":"api_request"}},{"key":"session.id","value":"x"}]}]}]}]}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -652,14 +794,19 @@ func FuzzDecodeLogs(f *testing.F) {
 			if request.Session == "" {
 				t.Errorf("request %+v has no session", request)
 			}
-			if request.At.IsZero() || request.At.Location() != time.UTC {
-				t.Errorf("request %+v has no UTC time", request)
+			if !request.At.After(time.Unix(0, 0)) || request.At.Location() != time.UTC {
+				t.Errorf("request %+v has no UTC time after the epoch", request)
 			}
-			if request.Input < 0 || request.Output < 0 || request.CacheRead < 0 || request.CacheWrite < 0 || request.DurationMS < 0 {
-				t.Errorf("request %+v has a negative count", request)
+			if _, err := json.Marshal(request.At); err != nil {
+				t.Errorf("request %+v has a time that does not marshal: %v", request, err)
 			}
-			if request.CostUSD < 0 || math.IsNaN(request.CostUSD) || math.IsInf(request.CostUSD, 0) {
-				t.Errorf("request %+v has an unusable cost", request)
+			for _, count := range []int64{request.Input, request.Output, request.CacheRead, request.CacheWrite, request.DurationMS} {
+				if count < 0 || count > 1<<40 {
+					t.Errorf("request %+v has a count outside 0 to 2^40", request)
+				}
+			}
+			if request.CostUSD < 0 || request.CostUSD > 1_000_000 || math.IsNaN(request.CostUSD) {
+				t.Errorf("request %+v has a cost outside 0 to 1e6 USD", request)
 			}
 		}
 

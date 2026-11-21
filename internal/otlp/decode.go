@@ -45,15 +45,25 @@ const (
 
 const microsPerUnit = 1e6
 
+// Bounds on what a record may report. Anything above them reads as absent, so
+// that sums over many records cannot overflow or reach infinity.
+const (
+	maxCount   = 1 << 40
+	maxCostUSD = 1_000_000
+)
+
 // DecodeLogs reads an OTLP/HTTP JSON logs export and returns the model calls
 // it reports, in the order they appear. Every other event is ignored, and only
 // the attributes a domain.APIRequest holds are ever read, so no content
 // leaves the decoder.
 //
 // A record that cannot become a domain.APIRequest, because it has no session
-// or no usable time, is skipped; so is an attribute of an unexpected type,
-// which reads as absent. Negative counts and costs read as zero. A record's
-// attributes take precedence over those of its resource.
+// or no usable time, is skipped. A usable time is after the Unix epoch and
+// before year 10000, so it always marshals. An attribute of an unexpected
+// type, or beyond the bounds a call can plausibly reach, reads as absent.
+// Negative counts and costs read as zero. A record's attributes take
+// precedence over those of its resource, which supplies none of a record's
+// event name or time.
 //
 // DecodeLogs reads at most limit bytes of r and returns ErrTooLarge when the
 // body is longer. Malformed JSON is an error.
@@ -74,10 +84,11 @@ func DecodeLogs(r io.Reader, limit int64) ([]domain.APIRequest, error) {
 	}
 
 	var requests []domain.APIRequest
-	for _, resourceLogs := range export.ResourceLogs {
-		for _, scopeLogs := range resourceLogs.ScopeLogs {
-			for _, rec := range scopeLogs.LogRecords {
-				if request, ok := rec.apiRequest(resourceLogs.Resource.Attributes); ok {
+	for _, rl := range export.ResourceLogs {
+		inherited := inheritedAttributes(rl.Resource.Attributes)
+		for _, sl := range rl.ScopeLogs {
+			for _, rec := range sl.LogRecords {
+				if request, ok := rec.apiRequest(inherited); ok {
 					requests = append(requests, request)
 				}
 			}
@@ -150,11 +161,10 @@ func (v anyValue) text() (string, bool) {
 	return s, true
 }
 
-// number returns the text of a numeric value. It reads an intValue or a
-// doubleValue, as a JSON number or a JSON string, and also a stringValue
-// holding a number, which Claude Code uses for some attributes.
+// number returns the text of a numeric value: an intValue or a doubleValue,
+// as a JSON number or a JSON string. A stringValue is never a number.
 func (v anyValue) number() (string, bool) {
-	for _, raw := range []json.RawMessage{v.IntValue, v.DoubleValue, v.StringValue} {
+	for _, raw := range []json.RawMessage{v.IntValue, v.DoubleValue} {
 		if text, ok := numberText(raw); ok {
 			return text, true
 		}
@@ -205,21 +215,52 @@ func (v anyValue) float() (float64, bool) {
 	return f, true
 }
 
-// attributes looks attribute values up in a log record first and in its
-// resource second.
+// inheritable reports whether a record may take the attribute from its
+// resource. A resource describes the process that emits events, not any one
+// event, so the attributes that name an event and say when it happened are
+// the record's own.
+func inheritable(key string) bool {
+	switch key {
+	case attrSession, attrEmail, attrModel, attrInput, attrOutput, attrCacheRead, attrCacheWrite,
+		attrCostUSD, attrCostUSDMicros, attrDurationMS, attrQuerySource, attrAgentName:
+		return true
+	}
+	return false
+}
+
+// inheritedAttributes picks out of a resource's attributes the ones its
+// records may inherit, once per resource rather than once per record.
+func inheritedAttributes(list []keyValue) map[string]anyValue {
+	var inherited map[string]anyValue
+	for _, kv := range list {
+		if !inheritable(kv.Key) {
+			continue
+		}
+		if _, seen := inherited[kv.Key]; seen {
+			continue
+		}
+		if inherited == nil {
+			inherited = make(map[string]anyValue)
+		}
+		inherited[kv.Key] = kv.Value
+	}
+	return inherited
+}
+
+// attributes looks attribute values up in a log record first and, for the
+// inheritable ones, in its resource second.
 type attributes struct {
-	record, resource []keyValue
+	record    []keyValue
+	inherited map[string]anyValue
 }
 
 func (a attributes) find(key string) anyValue {
-	for _, list := range [][]keyValue{a.record, a.resource} {
-		for _, kv := range list {
-			if kv.Key == key {
-				return kv.Value
-			}
+	for _, kv := range a.record {
+		if kv.Key == key {
+			return kv.Value
 		}
 	}
-	return anyValue{}
+	return a.inherited[key]
 }
 
 func (a attributes) text(key string) string {
@@ -227,17 +268,20 @@ func (a attributes) text(key string) string {
 	return s
 }
 
-// count returns a non-negative integer attribute, or zero when it is absent
-// or unusable.
+// count returns a non-negative integer attribute, or zero when it is absent,
+// unusable or above maxCount.
 func (a attributes) count(key string) int64 {
-	n, _ := a.find(key).integer()
+	n, ok := a.find(key).integer()
+	if !ok || n > maxCount {
+		return 0
+	}
 	return max(n, 0)
 }
 
 // apiRequest returns the model call the record reports, and false when the
 // record is another event or cannot be mapped.
-func (rec logRecord) apiRequest(resourceAttributes []keyValue) (domain.APIRequest, bool) {
-	attrs := attributes{record: rec.Attributes, resource: resourceAttributes}
+func (rec logRecord) apiRequest(inherited map[string]anyValue) (domain.APIRequest, bool) {
+	attrs := attributes{record: rec.Attributes, inherited: inherited}
 	if !isAPIRequest(rec, attrs) {
 		return domain.APIRequest{}, false
 	}
@@ -264,8 +308,8 @@ func (rec logRecord) apiRequest(resourceAttributes []keyValue) (domain.APIReques
 	}, true
 }
 
-// isAPIRequest reports whether the record is a model call. The event.name
-// attribute decides when it is present; otherwise the body does.
+// isAPIRequest reports whether the record is a model call. The record's
+// event.name attribute decides when it has one; otherwise its body does.
 func isAPIRequest(rec logRecord, attrs attributes) bool {
 	name, ok := attrs.find(attrEventName).text()
 	if !ok {
@@ -275,10 +319,11 @@ func isAPIRequest(rec logRecord, attrs attributes) bool {
 }
 
 // eventTime returns when the call happened: the event.timestamp attribute
-// (RFC 3339), or else the record's timeUnixNano.
+// (RFC 3339), or else the record's timeUnixNano. A time that fails
+// storable counts as missing.
 func eventTime(rec logRecord, attrs attributes) (time.Time, bool) {
 	if text, ok := attrs.find(attrEventTime).text(); ok {
-		if at, err := time.Parse(time.RFC3339Nano, text); err == nil && !at.IsZero() {
+		if at, err := time.Parse(time.RFC3339Nano, text); err == nil && storable(at.UTC()) {
 			return at.UTC(), true
 		}
 	}
@@ -288,19 +333,28 @@ func eventTime(rec logRecord, attrs attributes) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	nanos, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || nanos <= 0 {
+	if err != nil {
 		return time.Time{}, false
 	}
-	return time.Unix(0, nanos).UTC(), true
+	at := time.Unix(0, nanos).UTC()
+	return at, storable(at)
+}
+
+// storable reports whether a time, in UTC, is after the Unix epoch and before
+// year 10000, which is as far as a time.Time marshals to JSON. It also rules
+// out the zero time and the 0 an exporter writes for an unset timestamp.
+func storable(at time.Time) bool {
+	return at.After(time.Unix(0, 0)) && at.Year() < 10000
 }
 
 // cost returns the call's cost in US dollars, from cost_usd or else from
-// cost_usd_micros. A whole-dollar cost arrives as an intValue.
+// cost_usd_micros. A whole-dollar cost arrives as an intValue. A figure above
+// maxCostUSD is unusable, like one that is not a number.
 func cost(attrs attributes) float64 {
-	if usd, ok := attrs.find(attrCostUSD).float(); ok {
+	if usd, ok := attrs.find(attrCostUSD).float(); ok && usd <= maxCostUSD {
 		return max(usd, 0)
 	}
-	if micros, ok := attrs.find(attrCostUSDMicros).float(); ok {
+	if micros, ok := attrs.find(attrCostUSDMicros).float(); ok && micros <= maxCostUSD*microsPerUnit {
 		return max(micros, 0) / microsPerUnit
 	}
 	return 0
