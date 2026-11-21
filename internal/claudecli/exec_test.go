@@ -19,14 +19,18 @@ import (
 )
 
 const (
-	inherited domain.ConfigDir = `C:\x\.claude`
-	account   domain.ConfigDir = `C:\x\.claude-work`
+	// defaultDir is where claude looks with no CLAUDE_CONFIG_DIR set, inherited
+	// is what a parent shell for another account may have exported, and account
+	// is the account being asked about.
+	defaultDir domain.ConfigDir = `C:\x\.claude`
+	inherited  domain.ConfigDir = `C:\x\.claude-b`
+	account    domain.ConfigDir = `C:\x\.claude-work`
 )
 
 func TestExecEnv_DefaultDirUnsetsInherited(t *testing.T) {
 	base := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=" + string(inherited), "HOME=/home/x"}
 
-	got := ExecEnv(base, inherited, inherited)
+	got := ExecEnv(base, defaultDir, defaultDir)
 
 	want := []string{"PATH=/bin", "HOME=/home/x"}
 	if !slices.Equal(got, want) {
@@ -42,7 +46,7 @@ func TestExecEnv_OtherDirSetsExactlyOnce(t *testing.T) {
 		"CLAUDE_CONFIG_DIR=C:\\second",
 	}
 
-	got := ExecEnv(base, account, inherited)
+	got := ExecEnv(base, account, defaultDir)
 
 	want := []string{"PATH=/bin", "HOME=/home/x", "CLAUDE_CONFIG_DIR=" + string(account)}
 	if !slices.Equal(got, want) {
@@ -51,7 +55,7 @@ func TestExecEnv_OtherDirSetsExactlyOnce(t *testing.T) {
 }
 
 func TestExecEnv_OtherDirAddsWhenNoneInherited(t *testing.T) {
-	got := ExecEnv([]string{"PATH=/bin"}, account, inherited)
+	got := ExecEnv([]string{"PATH=/bin"}, account, defaultDir)
 
 	want := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=" + string(account)}
 	if !slices.Equal(got, want) {
@@ -68,7 +72,7 @@ func TestExecEnv_LeavesBaseAndLookalikesAlone(t *testing.T) {
 	}
 	snapshot := slices.Clone(base)
 
-	got := execEnv(base, account, inherited, false)
+	got := execEnv(base, account, defaultDir, false)
 
 	if !slices.Equal(base, snapshot) {
 		t.Errorf("base was modified: %q, want %q", base, snapshot)
@@ -87,19 +91,19 @@ func TestExecEnv_LeavesBaseAndLookalikesAlone(t *testing.T) {
 func TestExecEnv_KeyCase(t *testing.T) {
 	base := []string{"Claude_Config_Dir=" + string(inherited), "PATH=/bin"}
 
-	folded := execEnv(base, inherited, inherited, true)
+	folded := execEnv(base, defaultDir, defaultDir, true)
 	if want := []string{"PATH=/bin"}; !slices.Equal(folded, want) {
 		t.Errorf("case-insensitive env = %q, want %q", folded, want)
 	}
 
-	exact := execEnv(base, inherited, inherited, false)
+	exact := execEnv(base, defaultDir, defaultDir, false)
 	if !slices.Equal(exact, base) {
 		t.Errorf("case-sensitive env = %q, want %q: a differently cased name is another variable", exact, base)
 	}
 }
 
 func TestExecEnv_NamesFoldCaseOnWindowsOnly(t *testing.T) {
-	got := ExecEnv([]string{"Claude_Config_Dir=" + string(inherited)}, inherited, inherited)
+	got := ExecEnv([]string{"Claude_Config_Dir=" + string(inherited)}, defaultDir, defaultDir)
 
 	if dropped, want := len(got) == 0, runtime.GOOS == "windows"; dropped != want {
 		t.Errorf("env = %q on %s: dropped a differently cased name = %v, want %v", got, runtime.GOOS, dropped, want)
@@ -118,6 +122,7 @@ const (
 	helperStartedEnv = "LOADLINE_CLAUDECLI_STARTED"
 	helperReleaseEnv = "LOADLINE_CLAUDECLI_RELEASE"
 	helperDoneEnv    = "LOADLINE_CLAUDECLI_DONE"
+	helperPIDEnv     = "LOADLINE_CLAUDECLI_PIDFILE"
 
 	// helperPatience bounds how long a helper waits for the test to release
 	// it, so that one that is never released cannot outlive the test run.
@@ -186,6 +191,31 @@ func runHelper(mode string) int {
 			return 2
 		}
 		return 0
+	case "tree":
+		// Start a descendant that outlives a kill of this process alone, then
+		// wait to be killed.
+		child := exec.CommandContext(context.Background(), os.Args[0]) //nolint:gosec // G204: re-executes the test binary as a stand-in for claude
+		child.Env = append(os.Environ(), helperModeEnv+"=sleeper")
+		if err := child.Start(); err != nil {
+			return 2
+		}
+		time.Sleep(helperPatience)
+		return 0
+	case "daemonize":
+		// Leave a descendant running and exit at once, as a launcher that
+		// starts a daemon on purpose does.
+		child := exec.CommandContext(context.Background(), os.Args[0]) //nolint:gosec // G204: re-executes the test binary as a stand-in for claude
+		child.Env = append(os.Environ(), helperModeEnv+"=sleeper")
+		if err := child.Start(); err != nil {
+			return 2
+		}
+		return 0
+	case "sleeper":
+		if err := writePIDFile(os.Getenv(helperPIDEnv)); err != nil {
+			return 2
+		}
+		time.Sleep(helperPatience)
+		return 0
 	default:
 		return 3
 	}
@@ -195,6 +225,16 @@ type helperEcho struct {
 	Args         []string
 	ConfigDir    string
 	ConfigDirSet bool
+}
+
+// writePIDFile records the process's ID at path. It writes a temporary file
+// and renames it, so a reader that sees path sees the whole ID.
+func writePIDFile(path string) error {
+	temp := path + ".tmp"
+	if err := os.WriteFile(temp, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil { //nolint:gosec // G703: path is a file in the test's own temp dir
+		return err
+	}
+	return os.Rename(temp, path) //nolint:gosec // G703: path is a file in the test's own temp dir
 }
 
 func printTo(f *os.File, text string) error {
@@ -232,7 +272,7 @@ func helperExec(t *testing.T, mode string) Exec {
 	t.Helper()
 
 	t.Setenv(helperModeEnv, mode)
-	return Exec{Path: os.Args[0], DefaultDir: inherited, Timeout: 30 * time.Second}
+	return Exec{Path: os.Args[0], DefaultDir: defaultDir, Timeout: 30 * time.Second}
 }
 
 func TestExec_RunPassesArgsAndEnvironment(t *testing.T) {
@@ -260,7 +300,7 @@ func TestExec_RunPassesArgsAndEnvironment(t *testing.T) {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q, want %q", other.ConfigDir, account)
 	}
 
-	if def := run(inherited); def.ConfigDirSet {
+	if def := run(defaultDir); def.ConfigDirSet {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q for the default dir, want it unset", def.ConfigDir)
 	}
 }
@@ -448,6 +488,91 @@ func TestExec_RunDoesNotWaitForAGrandchildHoldingThePipes(t *testing.T) {
 	}
 }
 
+// descendantPID returns the process ID that the descendant recorded in
+// pidFile, and makes sure that no helper outlives the test, whatever the
+// outcome.
+func descendantPID(t *testing.T, pidFile string) int {
+	t.Helper()
+
+	if !waitForFile(pidFile) {
+		t.Fatal("the descendant never reported its process ID")
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read the descendant's process ID: %v", err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatalf("descendant process ID %q: %v", data, err)
+	}
+	t.Cleanup(func() {
+		if process, err := os.FindProcess(pid); err == nil && processAlive(pid) {
+			_ = process.Kill()
+		}
+	})
+	return pid
+}
+
+// awaitGone fails the test unless the process has exited within a few
+// seconds.
+func awaitGone(t *testing.T, pid int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(10 * time.Second); processAlive(pid); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d, a descendant of the killed child, is still running", pid)
+		}
+	}
+}
+
+// runUntilDescendantStarts runs e until the descendant that pidFile belongs
+// to has started, then cancels the call, as a timeout would, and returns the
+// call's error.
+func runUntilDescendantStarts(t *testing.T, e Exec, pidFile string) error {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		// Cancel only once the descendant exists, so that the call kills a
+		// tree and not a start that never happened.
+		waitForFile(pidFile)
+		cancel()
+	}()
+
+	_, err := e.Run(ctx, account, "agents")
+	return err
+}
+
+func TestExec_RunKillsTheWholeProcessTree(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Setenv(helperPIDEnv, pidFile)
+
+	err := runUntilDescendantStarts(t, helperExec(t, "tree"), pidFile)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	awaitGone(t, descendantPID(t, pidFile))
+}
+
+func TestExec_RunLeavesWhatAChildStartedBeforeExitingByItself(t *testing.T) {
+	// A launcher can start a daemon on purpose, such as the one that
+	// supervises background sessions. Stopping the tree is for a call that is
+	// given up on, not for one that finished.
+	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Setenv(helperPIDEnv, pidFile)
+
+	_, err := helperExec(t, "daemonize").Run(context.Background(), account, "agents")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	pid := descendantPID(t, pidFile)
+	if !processAlive(pid) {
+		t.Errorf("process %d, left running by a child that exited by itself, was stopped", pid)
+	}
+}
+
 func TestExec_RunReportsAMissingBinary(t *testing.T) {
 	e := Exec{Path: filepath.Join(t.TempDir(), "no-such-claude")}
 
@@ -470,7 +595,7 @@ func TestExec_RunWithoutPathLooksUpClaudeOnPATH(t *testing.T) {
 
 func TestExec_RunRunsAShim(t *testing.T) {
 	shim := writeShim(t, t.TempDir())
-	e := Exec{Path: shim, DefaultDir: inherited}
+	e := Exec{Path: shim, DefaultDir: defaultDir}
 
 	out, err := e.Run(context.Background(), account, "agents", "--json", "--all")
 	if err != nil {
@@ -485,7 +610,7 @@ func TestExec_RunRunsAShim(t *testing.T) {
 func TestExec_RunWithoutPathFindsAShimOnPATH(t *testing.T) {
 	t.Setenv("PATH", filepath.Dir(writeShim(t, t.TempDir())))
 
-	out, err := Exec{DefaultDir: inherited}.Run(context.Background(), account, "auth", "status", "--json")
+	out, err := Exec{DefaultDir: defaultDir}.Run(context.Background(), account, "auth", "status", "--json")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

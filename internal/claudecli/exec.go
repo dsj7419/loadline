@@ -54,6 +54,11 @@ type Exec struct {
 // to stdout. The child's stdin is empty, and its stderr is quoted, cut short,
 // in the error.
 //
+// When Run gives up on the child, because of the timeout, a canceled context
+// or too much output, it stops the child's descendants as well: an npm-installed
+// claude is a script that runs the real program as a child of its own. A child
+// that exits by itself is not followed: what it left running stays.
+//
 // When claude exits with a non-zero code Run returns its output along with an
 // error that wraps the *exec.ExitError, because some commands report through
 // the exit code and the output together. For every other failure (a start
@@ -79,8 +84,14 @@ func (e Exec) Run(ctx context.Context, dir domain.ConfigDir, args ...string) ([]
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = e.waitDelayOrDefault()
 	hideWindow(cmd)
+	tree := newProcessTree(cmd)
+	defer tree.close()
 
-	runErr := cmd.Run()
+	runErr := cmd.Start()
+	if runErr == nil {
+		tree.adopt(cmd.Process)
+		runErr = cmd.Wait()
+	}
 
 	command := describe(args)
 	switch {

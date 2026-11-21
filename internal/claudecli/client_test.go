@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,6 +233,12 @@ func TestAgents_Errors(t *testing.T) {
 		{"truncated JSON", &fakeRunner{out: []byte(`[{"sessionId":"a"`)}, nil},
 		{"not JSON", &fakeRunner{out: []byte("update available")}, nil},
 		{"object instead of array", &fakeRunner{out: []byte(`{"sessionId":"a"}`)}, nil},
+		{"scalar instead of array", &fakeRunner{out: []byte(`7`)}, nil},
+		{"data after the array", &fakeRunner{out: []byte(`[{"sessionId":"a"}] {"sessionId":"b"}`)}, nil},
+		{"unterminated array", &fakeRunner{out: []byte(`[{"sessionId":"a"},`)}, nil},
+		{"missing closing bracket", &fakeRunner{out: []byte(`[{"sessionId":"a"}`)}, nil},
+		{"opening bracket only", &fakeRunner{out: []byte(`[`)}, nil},
+		{"syntax error inside an entry", &fakeRunner{out: []byte(`[{"sessionId":}]`)}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -244,6 +252,62 @@ func TestAgents_Errors(t *testing.T) {
 			}
 			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
 				t.Errorf("err = %v, want it to wrap %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// maxAgentEntries is the most entries Agents accepts: far more than any
+// machine runs, so that the output cap of four MiB cannot multiply into
+// memory.
+const maxAgentEntries = 5000
+
+func TestAgents_EntryCap(t *testing.T) {
+	list := func(n int) string {
+		entries := make([]string, n)
+		for i := range entries {
+			entries[i] = fmt.Sprintf(`{"sessionId":"s%d"}`, i)
+		}
+		return "[" + strings.Join(entries, ",") + "]"
+	}
+
+	if polls := agents(t, list(maxAgentEntries)); len(polls) != maxAgentEntries {
+		t.Errorf("got %d polls for %d entries, want all of them", len(polls), maxAgentEntries)
+	}
+
+	polls, err := claudecli.Client{R: &fakeRunner{out: []byte(list(maxAgentEntries + 1))}}.Agents(context.Background(), testDir, pollTime)
+	if err == nil || polls != nil {
+		t.Errorf("Agents = %d polls, %v, want an error for %d entries", len(polls), err, maxAgentEntries+1)
+	}
+}
+
+func TestAgents_CapCountsEntriesItSkips(t *testing.T) {
+	out := "[" + strings.Repeat("0,", maxAgentEntries) + "0]"
+
+	if polls, err := (claudecli.Client{R: &fakeRunner{out: []byte(out)}}).Agents(context.Background(), testDir, pollTime); err == nil {
+		t.Errorf("Agents = %+v, want an error for %d elements that are not sessions", polls, maxAgentEntries+1)
+	}
+}
+
+func TestAgents_OutputAtTheCapDoesNotMultiplyIntoMemory(t *testing.T) {
+	const outputCap = 4 << 20
+	const memoryCeiling = 64 << 20
+
+	for name, element := range map[string]string{"numbers": "0", "empty objects": "{}", "tiny sessions": `{"sessionId":"s"}`} {
+		t.Run(name, func(t *testing.T) {
+			out := []byte("[" + strings.Repeat(element+",", outputCap/(len(element)+1)) + element + "]")
+			runner := &fakeRunner{out: out}
+
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			_, err := claudecli.Client{R: runner}.Agents(context.Background(), testDir, pollTime)
+			runtime.ReadMemStats(&after)
+
+			if err == nil {
+				t.Error("err = nil, want the entry cap to refuse the output")
+			}
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > memoryCeiling {
+				t.Errorf("Agents allocated %d MiB for %d bytes of output, want under %d MiB", allocated>>20, len(out), memoryCeiling>>20)
 			}
 		})
 	}
@@ -331,7 +395,7 @@ func TestAuthStatus_InvalidJSONIsAnError(t *testing.T) {
 }
 
 func TestAuthStatus_MistypedOptionalFieldsReadAsAbsent(t *testing.T) {
-	status, err := authStatus(t, `{"loggedIn":true,"authMethod":"claude.ai","email":["a"],"orgName":7,"planTier":{},"subscriptionType":"pro"}`, nil)
+	status, err := authStatus(t, `{"loggedIn":true,"authMethod":"claude.ai","email":["a"],"orgName":7,"planTier":{},"subscriptionType":"pro","configDirectory":["x"],"apiProvider":false}`, nil)
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -342,13 +406,29 @@ func TestAuthStatus_MistypedOptionalFieldsReadAsAbsent(t *testing.T) {
 	}
 }
 
+func TestAuthStatus_ReportWithoutLoggedInIsAnError(t *testing.T) {
+	// An error object, or a report from a future version that renames the
+	// field, must not read as "logged out": that would hide a signed-in
+	// account.
+	for _, out := range []string{`{}`, `{"error":"unauthorized"}`, `{"loggedIn":null}`, `{"authMethod":"claude.ai","email":"dev@example.com"}`} {
+		if status, err := authStatus(t, out, nil); err == nil {
+			t.Errorf("exit 0, output %s: status = %+v, want an error", out, status)
+		}
+
+		_, err := authStatus(t, out, fakeExitError{code: 1})
+		var exit fakeExitError
+		if !errors.As(err, &exit) {
+			t.Errorf("exit 1, output %s: err = %v, want the exit error", out, err)
+		}
+	}
+}
+
 func TestAuthStatus_MistypedDocumentedFieldsAreErrors(t *testing.T) {
 	// Reading these as absent would turn a signed-in account into a signed-out
 	// one, or lose its sign-in method.
 	for _, out := range []string{
 		`{"loggedIn":"yes"}`,
 		`{"loggedIn":true,"authMethod":3}`,
-		`{"loggedIn":true,"configDirectory":["x"]}`,
 	} {
 		if status, err := authStatus(t, out, nil); err == nil {
 			t.Errorf("output %s: status = %+v, want an error", out, status)

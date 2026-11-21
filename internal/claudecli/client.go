@@ -5,10 +5,12 @@
 package claudecli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode"
@@ -37,33 +39,86 @@ const loggedOutExitCode = 1
 // Client reads session and account state from claude.
 type Client struct{ R Runner }
 
+// maxAgentEntries is the most entries Agents accepts, counting those it
+// skips. Far more sessions than any machine runs, it keeps the output cap of
+// four MiB from multiplying into memory: four MiB of `0,` is two million
+// elements.
+const maxAgentEntries = 5000
+
 // Agents lists the sessions of the account in dir, as `claude agents --json
 // --all` reports them, with every poll stamped at. An entry without a
 // sessionId has nothing to key on and is skipped.
 //
 // Claude Code's output evolves, so a field of an unexpected type reads as
 // absent instead of failing the poll, and unknown fields and kinds are
-// ignored. Output that is not a JSON array is an error.
+// ignored. Output that is not a JSON array, or lists more than 5000 entries,
+// is an error.
 func (c Client) Agents(ctx context.Context, dir domain.ConfigDir, at time.Time) ([]domain.Poll, error) {
 	out, err := c.R.Run(ctx, dir, "agents", "--json", "--all")
 	if err != nil {
 		return nil, fmt.Errorf("list sessions of %s: %w", dir, err)
 	}
 
-	var entries []json.RawMessage
-	if err := json.Unmarshal(out, &entries); err != nil {
+	polls, err := decodeAgents(out, dir, at)
+	if err != nil {
 		return nil, fmt.Errorf("decode sessions of %s: %w", dir, err)
 	}
+	return polls, nil
+}
 
-	polls := make([]domain.Poll, 0, len(entries))
-	for _, raw := range entries {
+// decodeAgents reads the array one element at a time. Growing the result from
+// empty, rather than sizing it from a count in the input, keeps what a hostile
+// or broken output can make it allocate in proportion to what it holds.
+func decodeAgents(out []byte, dir domain.ConfigDir, at time.Time) ([]domain.Poll, error) {
+	dec := json.NewDecoder(bytes.NewReader(out))
+
+	opening, err := dec.Token()
+	if err != nil {
+		return nil, unexpectedEOF(err)
+	}
+	if opening == nil {
+		return nil, nil // JSON null: no sessions
+	}
+	if delim, ok := opening.(json.Delim); !ok || delim != '[' {
+		return nil, errors.New("not a JSON array")
+	}
+
+	var polls []domain.Poll
+	for count := 0; dec.More(); count++ {
+		if count == maxAgentEntries {
+			return nil, fmt.Errorf("more than %d entries", maxAgentEntries)
+		}
 		var entry agentEntry
-		if err := json.Unmarshal(raw, &entry); err != nil || entry.SessionID.V == "" {
+		if err := dec.Decode(&entry); err != nil {
+			var notObject *json.UnmarshalTypeError
+			if errors.As(err, &notObject) {
+				// The decoder has consumed the element and is still in step.
+				continue
+			}
+			return nil, unexpectedEOF(err)
+		}
+		if entry.SessionID.V == "" {
 			continue
 		}
 		polls = append(polls, entry.poll(dir, at))
 	}
+
+	if _, err := dec.Token(); err != nil { // the closing bracket
+		return nil, unexpectedEOF(err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("unexpected data after the array")
+	}
 	return polls, nil
+}
+
+// unexpectedEOF reports a decoder that ran out of input as the truncation it
+// is, rather than as a bare EOF.
+func unexpectedEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
 }
 
 // lenient decodes a JSON value of type T, and reads a value of any other type
@@ -140,13 +195,14 @@ type AuthStatus struct {
 	Email, OrgName, SubscriptionType, PlanTier, ConfigDirectory string
 }
 
-// authStatusReport mirrors the JSON of `claude auth status`. The documented
-// fields are strict, since reading one as absent could turn a signed-in
-// account into a signed-out one. The others are lenient.
+// authStatusReport mirrors the JSON of `claude auth status`. loggedIn is
+// required and authMethod strict, because reading either as absent could turn
+// a signed-in account into a signed-out one, or hide how it signs in. The
+// rest are lenient.
 type authStatusReport struct {
-	LoggedIn         bool            `json:"loggedIn"`
+	LoggedIn         *bool           `json:"loggedIn"`
 	AuthMethod       string          `json:"authMethod"`
-	ConfigDirectory  string          `json:"configDirectory"`
+	ConfigDirectory  lenient[string] `json:"configDirectory"`
 	APIProvider      lenient[string] `json:"apiProvider"`
 	Email            lenient[string] `json:"email"`
 	OrgName          lenient[string] `json:"orgName"`
@@ -157,30 +213,42 @@ type authStatusReport struct {
 // AuthStatus asks claude who the account in dir is signed in as. Exit code 1
 // with a readable report is how claude says nobody is logged in; it is a
 // result, with LoggedIn false, and not an error. Any other failure, or output
-// that is not a JSON object, is an error.
+// that is not a JSON object with a loggedIn field, is an error: an error
+// object is not a logout.
 func (c Client) AuthStatus(ctx context.Context, dir domain.ConfigDir) (AuthStatus, error) {
 	out, runErr := c.R.Run(ctx, dir, "auth", "status", "--json")
 	if runErr != nil && !exitedLoggedOut(runErr) {
 		return AuthStatus{}, fmt.Errorf("read auth status of %s: %w", dir, runErr)
 	}
 
-	var report authStatusReport
-	if err := json.Unmarshal(out, &report); err != nil {
+	status, err := decodeAuthStatus(out)
+	if err != nil {
 		if runErr != nil {
 			// Exit code 1 without a report is a failure, not a logout.
 			return AuthStatus{}, fmt.Errorf("read auth status of %s: %w", dir, runErr)
 		}
 		return AuthStatus{}, fmt.Errorf("decode auth status of %s: %w", dir, err)
 	}
+	return status, nil
+}
+
+func decodeAuthStatus(out []byte) (AuthStatus, error) {
+	var report authStatusReport
+	if err := json.Unmarshal(out, &report); err != nil {
+		return AuthStatus{}, err
+	}
+	if report.LoggedIn == nil {
+		return AuthStatus{}, errors.New(`no "loggedIn" field`)
+	}
 	return AuthStatus{
-		LoggedIn:         report.LoggedIn,
+		LoggedIn:         *report.LoggedIn,
 		AuthMethod:       report.AuthMethod,
 		APIProvider:      report.APIProvider.V,
 		Email:            report.Email.V,
 		OrgName:          report.OrgName.V,
 		SubscriptionType: report.SubscriptionType.V,
 		PlanTier:         report.PlanTier.V,
-		ConfigDirectory:  report.ConfigDirectory,
+		ConfigDirectory:  report.ConfigDirectory.V,
 	}, nil
 }
 
