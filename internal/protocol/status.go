@@ -100,6 +100,30 @@ type StatusWindow struct {
 	ResetsAt int64 `json:"resets_at,omitempty"`
 }
 
+// UnmarshalJSON reads a window leniently. A percentage that is absent, null
+// or not a number leaves UsedPercentage nil, which encoding/json cannot do on
+// its own: it allocates the pointer before it finds the type wrong, and a
+// percentage nobody reported would read as 0%. A reset time that is not a
+// whole number of seconds is left at zero, and a window that is not an object
+// stays empty.
+func (w *StatusWindow) UnmarshalJSON(b []byte) error {
+	var fields struct {
+		UsedPercentage json.RawMessage `json:"used_percentage"`
+		ResetsAt       json.RawMessage `json:"resets_at"`
+	}
+	_ = json.Unmarshal(b, &fields) // the mismatches this reports are the leniency above
+
+	var used *float64
+	if json.Unmarshal(fields.UsedPercentage, &used) == nil {
+		w.UsedPercentage = used
+	}
+	var resetsAt int64
+	if json.Unmarshal(fields.ResetsAt, &resetsAt) == nil {
+		w.ResetsAt = resetsAt
+	}
+	return nil
+}
+
 // StatusSpendLimit is the spend limit behind a Claude apps gateway. Loadline
 // decodes it but does not use it yet.
 type StatusSpendLimit struct {
@@ -113,10 +137,10 @@ type StatusSpendLimit struct {
 }
 
 // DecodeStatus decodes a status-line payload. Fields it does not mirror are
-// dropped.
+// dropped, and a field holding a value of the wrong type is left empty.
 func DecodeStatus(b []byte) (StatusInput, error) {
 	var in StatusInput
-	if err := json.Unmarshal(b, &in); err != nil {
+	if err := ignoreFieldTypeError(json.Unmarshal(b, &in)); err != nil {
 		return StatusInput{}, fmt.Errorf("decode status input: %w", err)
 	}
 	return in, nil

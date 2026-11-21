@@ -222,9 +222,9 @@ func TestReadHookInput_RejectsUnreadableInput(t *testing.T) {
 		"truncated":     `{"session_id":"s","prompt":"unfinished`,
 		"not an object": `["session_id"]`,
 		"a string":      `"session_id"`,
+		"a number":      `42`,
+		"a boolean":     `true`,
 		"bad syntax":    `{session_id: s}`,
-		"wrong type":    `{"session_id":42}`,
-		"object field":  `{"source":{"kind":"resume"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			in, err := protocol.ReadHookInput(strings.NewReader(input))
@@ -234,6 +234,41 @@ func TestReadHookInput_RejectsUnreadableInput(t *testing.T) {
 			}
 			if in != (protocol.HookInput{}) {
 				t.Errorf("ReadHookInput(%q) returned %+v alongside an error", input, in)
+			}
+		})
+	}
+}
+
+func TestReadHookInput_ToleratesMistypedFields(t *testing.T) {
+	tests := map[string]struct {
+		payload string
+		want    protocol.HookInput
+	}{
+		"number for a string": {
+			`{"session_id":"s","hook_event_name":"Stop","tool_name":7}`,
+			protocol.HookInput{SessionID: "s", HookEventName: "Stop"},
+		},
+		"object for a string": {
+			`{"session_id":"s","source":{"kind":"resume"},"hook_event_name":"SessionStart"}`,
+			protocol.HookInput{SessionID: "s", HookEventName: "SessionStart"},
+		},
+		"array and boolean for strings": {
+			`{"reason":["other"],"session_id":"s","cwd":true,"hook_event_name":"SessionEnd"}`,
+			protocol.HookInput{SessionID: "s", HookEventName: "SessionEnd"},
+		},
+		"the mistyped field comes first": {
+			`{"session_id":42,"hook_event_name":"Stop","cwd":"/work"}`,
+			protocol.HookInput{HookEventName: "Stop", Cwd: "/work"},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			in, err := protocol.ReadHookInput(strings.NewReader(tt.payload))
+			if err != nil {
+				t.Fatalf("ReadHookInput(%s): %v", tt.payload, err)
+			}
+			if in != tt.want {
+				t.Errorf("ReadHookInput(%s) = %+v, want %+v", tt.payload, in, tt.want)
 			}
 		})
 	}

@@ -28,11 +28,12 @@ type HookInput struct {
 }
 
 // ReadHookInput decodes the first JSON value of r into a HookInput. Every
-// field is optional. It does not cap the input: the decoder holds one value
-// at a time, and nothing outside the allowlist outlives the call.
+// field is optional, and one holding a value of the wrong type is left empty.
+// It does not cap the input: the decoder holds one value at a time, and
+// nothing outside the allowlist outlives the call.
 func ReadHookInput(r io.Reader) (HookInput, error) {
 	var in HookInput
-	if err := json.NewDecoder(r).Decode(&in); err != nil {
+	if err := ignoreFieldTypeError(json.NewDecoder(r).Decode(&in)); err != nil {
 		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
 	return in, nil

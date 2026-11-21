@@ -141,9 +141,10 @@ func TestDecodeStatus_RejectsUnreadableInput(t *testing.T) {
 		"empty":         ``,
 		"truncated":     `{"session_id":"s"`,
 		"not an object": `[]`,
+		"a string":      `"session_id"`,
+		"a number":      `42`,
+		"a boolean":     `true`,
 		"trailing data": `{"session_id":"s"}{}`,
-		"wrong type":    `{"cost":{"total_cost_usd":"free"}}`,
-		"window object": `{"rate_limits":{"seven_day":98}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			in, err := protocol.DecodeStatus([]byte(payload))
@@ -152,6 +153,82 @@ func TestDecodeStatus_RejectsUnreadableInput(t *testing.T) {
 				t.Errorf("DecodeStatus(%q) = %+v, want an error", payload, in)
 			}
 		})
+	}
+}
+
+func TestDecodeStatus_ToleratesMistypedFields(t *testing.T) {
+	const wellFormed = `"model":{"display_name":"Opus 5.5"},` +
+		`"rate_limits":{"seven_day":{"used_percentage":98,"resets_at":1800000000}}`
+
+	for name, mistyped := range map[string]string{
+		"string for a number":   `"context_window":{"used_percentage":"42"}`,
+		"string for a counter":  `"cost":{"total_duration_ms":"90","total_cost_usd":"free"}`,
+		"number for a string":   `"session_name":7`,
+		"number for a boolean":  `"fast_mode":1`,
+		"number for an object":  `"effort":3`,
+		"array for an object":   `"workspace":["/work"]`,
+		"string for a ratio":    `"prompt_cache":{"hit_ratio":"high","warm":true}`,
+		"number out of range":   `"context_window":{"context_window_size":1e30}`,
+		"object for a string":   `"version":{"major":2}`,
+		"mistyped nested field": `"workspace":{"project_dir":false,"repo":{"host":1,"owner":"o"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := `{"session_id":"s",` + mistyped + `,` + wellFormed + `}`
+
+			in, err := protocol.DecodeStatus([]byte(payload))
+			if err != nil {
+				t.Fatalf("DecodeStatus(%s): %v", payload, err)
+			}
+			if in.SessionID != "s" || in.Model == nil || in.Model.DisplayName != "Opus 5.5" {
+				t.Errorf("DecodeStatus(%s) lost the well-formed fields: %+v", payload, in)
+			}
+			sevenDay := in.RateLimits.SevenDay
+			if sevenDay == nil || sevenDay.UsedPercentage == nil || *sevenDay.UsedPercentage != 98 ||
+				sevenDay.ResetsAt != fixtureResetsAt {
+				t.Errorf("DecodeStatus(%s) lost the seven-day window: %+v", payload, sevenDay)
+			}
+		})
+	}
+}
+
+func TestDecodeStatus_MistypedFieldStaysZero(t *testing.T) {
+	in := decodeStatus(t, []byte(`{"session_id":"s","session_name":7,`+
+		`"context_window":{"used_percentage":"42","context_window_size":200000},`+
+		`"rate_limits":{"five_hour":{"used_percentage":"half","resets_at":1800000000}}}`))
+
+	if in.SessionName != "" {
+		t.Errorf("SessionName = %q, want the mistyped field left empty", in.SessionName)
+	}
+	if in.ContextWindow == nil || in.ContextWindow.UsedPercentage != 0 || in.ContextWindow.ContextWindowSize != 200000 {
+		t.Errorf("ContextWindow = %+v, want 0%% of 200000", in.ContextWindow)
+	}
+	event, err := protocol.StatusEvent(validEnvelope(t), in)
+	if err != nil {
+		t.Fatalf("StatusEvent: %v", err)
+	}
+	if event.Limits.FiveHour != nil {
+		t.Errorf("FiveHour = %+v, want nil: a mistyped percentage is unknown, not 0%%", event.Limits.FiveHour)
+	}
+}
+
+func TestDecodeStatus_MistypedWindowIsNotReported(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","rate_limits":{"five_hour":98,`+
+		`"seven_day":{"used_percentage":40,"resets_at":1800000000}}}`)
+
+	if event.Limits.FiveHour != nil {
+		t.Errorf("FiveHour = %+v, want nil: the window was not an object", event.Limits.FiveHour)
+	}
+	if seven := event.Limits.SevenDay; seven == nil || seven.UsedPct != 40 {
+		t.Errorf("SevenDay = %+v, want 40%%", seven)
+	}
+}
+
+func TestStatusEvent_FractionalResetTimeKeepsUsage(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","rate_limits":{"five_hour":{"used_percentage":10,"resets_at":1800000000.5}}}`)
+
+	window := event.Limits.FiveHour
+	if window == nil || window.UsedPct != 10 || !window.ResetsAt.IsZero() {
+		t.Errorf("FiveHour = %+v, want 10%% with no reset time: resets_at is whole seconds", window)
 	}
 }
 
@@ -412,6 +489,7 @@ func FuzzDecodeStatus(f *testing.F) {
 	f.Add([]byte(`{"context_window":{"used_percentage":null},"rate_limits":{"five_hour":{"used_percentage":1e400}}}`))
 	f.Add([]byte(`{"rate_limits":{"seven_day":{"used_percentage":0,"resets_at":9223372036854775807}}}`))
 	f.Add([]byte(`{"session_id":"s","cost":{"total_cost_usd":-0},"fast_mode":true}`))
+	f.Add([]byte(`{"session_id":7,"effort":"high","rate_limits":{"seven_day":98,"five_hour":{"resets_at":1.5}}}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		in, err := protocol.DecodeStatus(data)
