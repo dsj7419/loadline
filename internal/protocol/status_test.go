@@ -141,6 +141,7 @@ func TestDecodeStatus_RejectsUnreadableInput(t *testing.T) {
 		"empty":         ``,
 		"truncated":     `{"session_id":"s"`,
 		"not an object": `[]`,
+		"null":          `null`,
 		"a string":      `"session_id"`,
 		"a number":      `42`,
 		"a boolean":     `true`,
@@ -440,27 +441,42 @@ func TestStatusEvent_RequiresSessionID(t *testing.T) {
 	}
 }
 
-func TestStatusEvent_RejectsResetTimeOutsideTheCalendar(t *testing.T) {
-	for _, resetsAt := range []int64{-1, 253402300800, math.MaxInt64, math.MinInt64} {
-		for _, window := range []string{"five_hour", "seven_day"} {
-			in := protocol.StatusInput{
-				SessionID:  "s",
-				RateLimits: &protocol.StatusRateLimits{},
-			}
+func TestStatusEvent_UnusableResetTimeDegradesToUnknown(t *testing.T) {
+	// 1800000000000 is a milliseconds value where seconds belong.
+	for _, resetsAt := range []int64{-1, 253402300800, 1800000000000, math.MaxInt64, math.MinInt64} {
+		for _, name := range []string{"five_hour", "seven_day"} {
 			used := 50.0
-			bad := &protocol.StatusWindow{UsedPercentage: &used, ResetsAt: resetsAt}
-			if window == "five_hour" {
-				in.RateLimits.FiveHour = bad
+			window := &protocol.StatusWindow{UsedPercentage: &used, ResetsAt: resetsAt}
+			in := protocol.StatusInput{SessionID: "s", RateLimits: &protocol.StatusRateLimits{}}
+			if name == "five_hour" {
+				in.RateLimits.FiveHour = window
 			} else {
-				in.RateLimits.SevenDay = bad
+				in.RateLimits.SevenDay = window
 			}
 
 			event, err := protocol.StatusEvent(validEnvelope(t), in)
+			if err != nil {
+				t.Fatalf("%s resets_at %d: StatusEvent: %v", name, resetsAt, err)
+			}
 
-			if err == nil {
-				t.Errorf("%s resets_at %d: StatusEvent() = %+v, want an error", window, resetsAt, event)
+			got := event.Limits.FiveHour
+			if name == "seven_day" {
+				got = event.Limits.SevenDay
+			}
+			if got == nil || got.UsedPct != 50 || !got.ResetsAt.IsZero() {
+				t.Errorf("%s resets_at %d: window = %+v, want 50%% with no reset time", name, resetsAt, got)
 			}
 		}
+	}
+}
+
+func TestStatusEvent_MillisecondResetTimeFromPayloadKeepsUsage(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","rate_limits":{`+
+		`"seven_day":{"used_percentage":98,"resets_at":1800000000000}}}`)
+
+	window := event.Limits.SevenDay
+	if window == nil || window.UsedPct != 98 || !window.ResetsAt.IsZero() {
+		t.Errorf("SevenDay = %+v, want 98%% with no reset time", window)
 	}
 }
 
@@ -503,13 +519,14 @@ func FuzzDecodeStatus(f *testing.F) {
 			t.Errorf("re-decoding %+v = %+v, %v", in, again, err)
 		}
 
+		// Only a missing session_id may stop a decoded input from becoming an
+		// event, and what the event holds must be storable.
 		event, err := protocol.StatusEvent(validEnvelope(t), in)
-		if err != nil {
-			return
+		if (err != nil) != (in.SessionID == "") {
+			t.Errorf("StatusEvent(%+v) = %v, want an error exactly when session_id is empty", in, err)
 		}
-		// Whatever the server accepts, the store must be able to persist.
 		if _, err := json.Marshal(event.Limits); err != nil {
-			t.Errorf("accepted limits do not marshal: %v", err)
+			t.Errorf("limits do not marshal: %v", err)
 		}
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,10 +191,28 @@ func TestReadHookInput_NoFixtureContentSurvives(t *testing.T) {
 	}
 }
 
+func TestHookInput_AllowlistIsExactlyTheDocumentedFields(t *testing.T) {
+	typ := reflect.TypeFor[protocol.HookInput]()
+	var got []string
+	for field := range typ.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			t.Errorf("field %s has no JSON name; every field must be a deliberate, named allowlist entry", field.Name)
+		}
+		got = append(got, name)
+	}
+
+	slices.Sort(got)
+	want := slices.Sorted(slices.Values(allowlistedHookKeys))
+	if !slices.Equal(got, want) {
+		t.Errorf("HookInput carries the keys %v, want exactly %v: changing the allowlist is a privacy decision, "+
+			"so update this test with it", got, want)
+	}
+}
+
 func TestReadHookInput_AllFieldsOptional(t *testing.T) {
 	for _, input := range []string{
 		`{}`,
-		`null`,
 		`{"session_id":null,"source":null,"agent_id":null}`,
 		`{"unrelated":{"nested":[1,2,{"a":null}]}}`,
 	} {
@@ -221,6 +240,7 @@ func TestReadHookInput_RejectsUnreadableInput(t *testing.T) {
 		"blank":         "  \n",
 		"truncated":     `{"session_id":"s","prompt":"unfinished`,
 		"not an object": `["session_id"]`,
+		"null":          `null`,
 		"a string":      `"session_id"`,
 		"a number":      `42`,
 		"a boolean":     `true`,

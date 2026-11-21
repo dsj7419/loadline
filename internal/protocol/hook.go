@@ -27,16 +27,20 @@ type HookInput struct {
 	Cwd              string `json:"cwd,omitempty"`
 }
 
-// ReadHookInput decodes the first JSON value of r into a HookInput. Every
-// field is optional, and one holding a value of the wrong type is left empty.
-// It does not cap the input: the decoder holds one value at a time, and
-// nothing outside the allowlist outlives the call.
+// ReadHookInput decodes the first JSON value of r, which must be an object,
+// into a HookInput. Every field is optional, and one holding a value of the
+// wrong type is left empty. It does not cap the input: the decoder holds one
+// value at a time, and nothing outside the allowlist outlives the call.
 func ReadHookInput(r io.Reader) (HookInput, error) {
-	var in HookInput
+	// A pointer target tells a top-level null, which decodes to nil, from {}.
+	var in *HookInput
 	if err := ignoreFieldTypeError(json.NewDecoder(r).Decode(&in)); err != nil {
 		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
-	return in, nil
+	if in == nil {
+		return HookInput{}, errors.New("decode hook input: the value is null, not an object")
+	}
+	return *in, nil
 }
 
 // HookEvent maps a hook payload to the domain event, stamped with the

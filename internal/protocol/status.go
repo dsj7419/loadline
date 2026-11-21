@@ -136,14 +136,19 @@ type StatusSpendLimit struct {
 	Period string `json:"period,omitempty"`
 }
 
-// DecodeStatus decodes a status-line payload. Fields it does not mirror are
-// dropped, and a field holding a value of the wrong type is left empty.
+// DecodeStatus decodes a status-line payload, which must be a JSON object.
+// Fields it does not mirror are dropped, and a field holding a value of the
+// wrong type is left empty.
 func DecodeStatus(b []byte) (StatusInput, error) {
-	var in StatusInput
+	// A pointer target tells a top-level null, which decodes to nil, from {}.
+	var in *StatusInput
 	if err := ignoreFieldTypeError(json.Unmarshal(b, &in)); err != nil {
 		return StatusInput{}, fmt.Errorf("decode status input: %w", err)
 	}
-	return in, nil
+	if in == nil {
+		return StatusInput{}, errors.New("decode status input: the value is null, not an object")
+	}
+	return *in, nil
 }
 
 // StatusEvent maps a status-line payload to the domain event, stamped with
@@ -155,15 +160,6 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 	}
 
 	rateLimits := orZero(in.RateLimits)
-	fiveHour, err := window(rateLimits.FiveHour)
-	if err != nil {
-		return domain.Status{}, fmt.Errorf("rate_limits.five_hour: %w", err)
-	}
-	sevenDay, err := window(rateLimits.SevenDay)
-	if err != nil {
-		return domain.Status{}, fmt.Errorf("rate_limits.seven_day: %w", err)
-	}
-
 	model, effort, cost := orZero(in.Model), orZero(in.Effort), orZero(in.Cost)
 	contextWindow, promptCache := orZero(in.ContextWindow), orZero(in.PromptCache)
 	return domain.Status{
@@ -188,8 +184,8 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 			FastMode:      in.FastMode,
 		},
 		Limits: domain.Limits{
-			FiveHour:   fiveHour,
-			SevenDay:   sevenDay,
+			FiveHour:   window(rateLimits.FiveHour),
+			SevenDay:   window(rateLimits.SevenDay),
 			ObservedAt: env.At,
 		},
 	}, nil
@@ -197,29 +193,22 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 
 // window maps a reported window. One that is absent, or whose usage is
 // unknown, is nil: unknown usage must not pass for 0%. A window without a
-// reset time keeps its usage and has a zero ResetsAt.
-func window(w *StatusWindow) (*domain.Window, error) {
+// usable reset time keeps its usage and has a zero ResetsAt.
+func window(w *StatusWindow) *domain.Window {
 	if w == nil || w.UsedPercentage == nil {
-		return nil, nil
+		return nil
 	}
-	resetsAt, err := unixSeconds(w.ResetsAt)
-	if err != nil {
-		return nil, err
-	}
-	return &domain.Window{UsedPct: *w.UsedPercentage, ResetsAt: resetsAt}, nil
+	return &domain.Window{UsedPct: *w.UsedPercentage, ResetsAt: unixSeconds(w.ResetsAt)}
 }
 
-// unixSeconds converts a resets_at value. Zero means the payload gave none.
-// A value no calendar date can hold is an error rather than a time that
-// could not be stored.
-func unixSeconds(seconds int64) (time.Time, error) {
-	if seconds == 0 {
-		return time.Time{}, nil
+// unixSeconds converts a resets_at value. Zero, a negative number and a number
+// no calendar date can hold, such as a time in milliseconds, give the zero
+// time: the reset is unknown, and the line that reported it is still good.
+func unixSeconds(seconds int64) time.Time {
+	if seconds <= 0 || seconds > maxResetsAt {
+		return time.Time{}
 	}
-	if seconds < 0 || seconds > maxResetsAt {
-		return time.Time{}, fmt.Errorf("resets_at %d is outside the calendar", seconds)
-	}
-	return time.Unix(seconds, 0).UTC(), nil
+	return time.Unix(seconds, 0).UTC()
 }
 
 // orZero returns what p points to, or the zero value when p is nil.
