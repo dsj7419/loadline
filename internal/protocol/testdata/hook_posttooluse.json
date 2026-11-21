@@ -1,0 +1,18 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\example\\.claude\\projects\\C--Users-example-projects-demo\\00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "C:\\Users\\example\\projects\\demo",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "C:\\Users\\example\\projects\\demo\\notes.txt",
+    "content": "CONTENT-LEAK tool input body"
+  },
+  "tool_response": {
+    "filePath": "C:\\Users\\example\\projects\\demo\\notes.txt",
+    "success": true,
+    "output": "CONTENT-LEAK tool response body"
+  },
+  "tool_use_id": "toolu_00000000000000000000demo"
+}

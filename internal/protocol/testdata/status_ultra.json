@@ -1,0 +1,77 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\example\\.claude\\projects\\C--Users-example-projects-demo\\00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "C:\\Users\\example\\projects\\demo",
+  "scratchpad_dir": "C:\\Users\\example\\AppData\\Local\\Temp\\claude\\0000000000000000\\00000000-0000-4000-8000-000000000001\\scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "effort": {
+    "level": "xhigh"
+  },
+  "session_name": "demo-session",
+  "model": {
+    "id": "claude-opus-5-5",
+    "display_name": "Opus 5.5"
+  },
+  "workspace": {
+    "current_dir": "C:\\Users\\example\\projects\\demo",
+    "project_dir": "C:\\Users\\example\\projects\\demo",
+    "added_dirs": []
+  },
+  "version": "2.1.329",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 1146.6823081900031,
+    "total_duration_ms": 7200000,
+    "total_api_duration_ms": 2400000,
+    "total_lines_added": 1200,
+    "total_lines_removed": 340
+  },
+  "context_window": {
+    "total_input_tokens": 679604,
+    "total_output_tokens": 78,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 2,
+      "output_tokens": 78,
+      "cache_creation_input_tokens": 331,
+      "cache_read_input_tokens": 679271
+    },
+    "used_percentage": 68,
+    "remaining_percentage": 32
+  },
+  "exceeds_200k_tokens": true,
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "1h",
+    "expires_at": 1700003600,
+    "requests": 917,
+    "misses": 3,
+    "expected_rebuilds": 2,
+    "hit_ratio": 0.990277427070115,
+    "cache_write_tokens": 4322747,
+    "miss_recache_tokens": 2105698,
+    "last_miss_at": 1699990000,
+    "last_miss_cause": {
+      "causes": [
+        "ttl_expired_1h"
+      ]
+    },
+    "miss_causes": {
+      "ttl_expired_1h": 3
+    },
+    "recache_tokens_if_cold": 679604
+  },
+  "fast_mode": false,
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "seven_day": {
+      "used_percentage": 98,
+      "resets_at": 1800000000
+    }
+  }
+}

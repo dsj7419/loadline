@@ -1,0 +1,10 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\example\\.claude\\projects\\C--Users-example-projects-demo\\00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "C:\\Users\\example\\projects\\demo",
+  "permission_mode": "default",
+  "hook_event_name": "Notification",
+  "notification_type": "permission_prompt",
+  "title": "Permission needed",
+  "message": "CONTENT-LEAK Claude needs your permission to use Bash"
+}

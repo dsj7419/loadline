@@ -1,0 +1,9 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\example\\.claude\\projects\\C--Users-example-projects-demo\\00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "C:\\Users\\example\\projects\\demo",
+  "permission_mode": "default",
+  "hook_event_name": "SubagentStart",
+  "agent_id": "agent-00000000000000demo",
+  "agent_type": "Explore"
+}
