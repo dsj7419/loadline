@@ -1,0 +1,670 @@
+{
+  "generatedAt": "2026-11-21T18:00:00Z",
+  "accounts": [
+    {
+      "dir": "/home/dev/.claude",
+      "label": "Main",
+      "email": "dev@example.com",
+      "plan": "Max 20x",
+      "auth": "subscription",
+      "fiveHour": {
+        "usedPct": 40,
+        "resetsAt": null,
+        "observedAt": "2026-11-21T18:00:00Z",
+        "projection": null
+      },
+      "sevenDay": {
+        "usedPct": 92,
+        "resetsAt": "2026-11-23T18:00:00Z",
+        "observedAt": "2026-11-21T18:00:00Z",
+        "projection": {
+          "ratePerHour": 4,
+          "atReset": 100,
+          "eta": "2026-11-21T20:00:00Z",
+          "runsOutBeforeReset": true
+        }
+      },
+      "spendTodayUSD": 4,
+      "spendWeekUSD": 4.75,
+      "spendMonthUSD": 4.75,
+      "budgetUSD": 0,
+      "models": [
+        {
+          "model": "Opus 5.5",
+          "input": 6200,
+          "output": 3200,
+          "cacheRead": 230000,
+          "cacheWrite": 8000,
+          "costUSD": 3.75,
+          "requests": 2
+        },
+        {
+          "model": "Haiku 5.5",
+          "input": 3000,
+          "output": 600,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "costUSD": 0.25,
+          "requests": 1
+        }
+      ],
+      "modelsWeek": [
+        {
+          "model": "Opus 5.5",
+          "input": 7100,
+          "output": 3600,
+          "cacheRead": 260000,
+          "cacheWrite": 9500,
+          "costUSD": 4.5,
+          "requests": 5
+        },
+        {
+          "model": "Haiku 5.5",
+          "input": 3000,
+          "output": 600,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "costUSD": 0.25,
+          "requests": 1
+        }
+      ]
+    },
+    {
+      "dir": "/home/dev/.claude-b",
+      "label": "other",
+      "email": "other@example.com",
+      "plan": "Pro",
+      "auth": "subscription",
+      "fiveHour": {
+        "usedPct": 10,
+        "resetsAt": "2026-11-21T21:00:00Z",
+        "observedAt": "2026-11-21T18:00:00Z",
+        "projection": null
+      },
+      "sevenDay": {
+        "usedPct": 4,
+        "resetsAt": "2026-11-26T18:00:00Z",
+        "observedAt": "2026-11-21T18:00:00Z",
+        "projection": {
+          "ratePerHour": 0,
+          "atReset": 4,
+          "eta": null,
+          "runsOutBeforeReset": false
+        }
+      },
+      "spendTodayUSD": 6,
+      "spendWeekUSD": 6,
+      "spendMonthUSD": 6,
+      "budgetUSD": 5,
+      "models": [
+        {
+          "model": "Sonnet 5.5",
+          "input": 58000,
+          "output": 7500,
+          "cacheRead": 230000,
+          "cacheWrite": 15000,
+          "costUSD": 6,
+          "requests": 2
+        }
+      ],
+      "modelsWeek": [
+        {
+          "model": "Sonnet 5.5",
+          "input": 58000,
+          "output": 7500,
+          "cacheRead": 230000,
+          "cacheWrite": 15000,
+          "costUSD": 6,
+          "requests": 2
+        }
+      ]
+    },
+    {
+      "dir": "/home/dev/.claude-work",
+      "label": ".claude-work",
+      "email": "",
+      "plan": "",
+      "auth": "api_key",
+      "fiveHour": null,
+      "sevenDay": null,
+      "spendTodayUSD": 0,
+      "spendWeekUSD": 0,
+      "spendMonthUSD": 1.5,
+      "budgetUSD": 0,
+      "models": [],
+      "modelsWeek": []
+    }
+  ],
+  "sessions": [
+    {
+      "id": "3f1c7a52-0d4e-4b8e-9a51-6c2f0e7d9b10",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "interactive",
+      "state": "needs_you",
+      "waitReason": "permission prompt",
+      "name": "copper-lantern",
+      "project": "/home/dev/src/loadline",
+      "pid": 4101,
+      "startedAt": "2026-11-21T17:35:00Z",
+      "stateAt": "2026-11-21T17:58:48Z",
+      "lastSeenAt": "2026-11-21T17:59:55Z",
+      "subagents": 0,
+      "model": "Opus 5.5",
+      "effort": "xhigh",
+      "contextPct": 31,
+      "contextLeft": 138000,
+      "costUSD": 1.75,
+      "cacheHitRatio": 0.87,
+      "linesAdded": 120,
+      "linesRemoved": 14,
+      "share": 0.25,
+      "lost": false,
+      "replaces": "",
+      "models": [
+        {
+          "model": "Opus 5.5",
+          "input": 2100,
+          "output": 1200,
+          "cacheRead": 80000,
+          "cacheWrite": 3500,
+          "costUSD": 1.75,
+          "requests": 4
+        }
+      ],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:35:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:36:00Z",
+          "state": "idle",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:37:00Z",
+          "state": "working",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:58:48Z",
+          "state": "needs_you",
+          "reason": "permission prompt"
+        }
+      ]
+    },
+    {
+      "id": "8a2b9c41-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "interactive",
+      "state": "working",
+      "waitReason": "",
+      "name": "harbor-api",
+      "project": "/home/dev/src/harbor-api",
+      "pid": 4102,
+      "startedAt": "2026-11-21T17:20:00Z",
+      "stateAt": "2026-11-21T17:57:00Z",
+      "lastSeenAt": "2026-11-21T18:00:00Z",
+      "subagents": 2,
+      "model": "Opus 5.5",
+      "effort": "high",
+      "contextPct": 88,
+      "contextLeft": 24000,
+      "costUSD": 3.2,
+      "cacheHitRatio": 0.92,
+      "linesAdded": 340,
+      "linesRemoved": 52,
+      "share": 0.75,
+      "lost": false,
+      "replaces": "",
+      "models": [
+        {
+          "model": "Opus 5.5",
+          "input": 5000,
+          "output": 2400,
+          "cacheRead": 180000,
+          "cacheWrite": 6000,
+          "costUSD": 2.75,
+          "requests": 1
+        },
+        {
+          "model": "Haiku 5.5",
+          "input": 3000,
+          "output": 600,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "costUSD": 0.25,
+          "requests": 1
+        }
+      ],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:20:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:21:00Z",
+          "state": "idle",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:57:00Z",
+          "state": "working",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "c4d5e6f7-0819-4a2b-9c3d-4e5f6a7b8c9d",
+      "dir": "/home/dev/.claude-b",
+      "account": "other",
+      "kind": "interactive",
+      "state": "compacting",
+      "waitReason": "",
+      "name": "",
+      "project": "/home/dev/src/notes",
+      "pid": 5201,
+      "startedAt": "2026-11-21T17:10:00Z",
+      "stateAt": "2026-11-21T17:59:00Z",
+      "lastSeenAt": "2026-11-21T17:59:00Z",
+      "subagents": 0,
+      "model": "Sonnet 5.5",
+      "effort": "medium",
+      "contextPct": 12,
+      "contextLeft": 176000,
+      "costUSD": 2.4,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0.5,
+      "lost": false,
+      "replaces": "",
+      "models": [
+        {
+          "model": "Sonnet 5.5",
+          "input": 30000,
+          "output": 4000,
+          "cacheRead": 120000,
+          "cacheWrite": 8000,
+          "costUSD": 3,
+          "requests": 1
+        }
+      ],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:10:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:11:00Z",
+          "state": "idle",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:52:00Z",
+          "state": "working",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:59:00Z",
+          "state": "compacting",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6",
+      "dir": "/home/dev/.claude-b",
+      "account": "other",
+      "kind": "interactive",
+      "state": "error",
+      "waitReason": "",
+      "name": "flaky-build",
+      "project": "/home/dev/src/ci",
+      "pid": 5202,
+      "startedAt": "2026-11-21T17:30:00Z",
+      "stateAt": "2026-11-21T17:49:00Z",
+      "lastSeenAt": "2026-11-21T17:49:00Z",
+      "subagents": 0,
+      "model": "Sonnet 5.5",
+      "effort": "medium",
+      "contextPct": 12,
+      "contextLeft": 176000,
+      "costUSD": 2.4,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0,
+      "lost": false,
+      "replaces": "",
+      "models": [],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:30:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:31:00Z",
+          "state": "idle",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:48:00Z",
+          "state": "working",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:49:00Z",
+          "state": "error",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "e7f8a9b0-c1d2-4e3f-a4b5-c6d7e8f90a1b",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "interactive",
+      "state": "starting",
+      "waitReason": "",
+      "name": "",
+      "project": "",
+      "pid": 4103,
+      "startedAt": "2026-11-21T17:59:56Z",
+      "stateAt": "2026-11-21T17:59:56Z",
+      "lastSeenAt": "2026-11-21T17:59:56Z",
+      "subagents": 0,
+      "model": "",
+      "effort": "",
+      "contextPct": 0,
+      "contextLeft": 0,
+      "costUSD": 0,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0,
+      "lost": false,
+      "replaces": "",
+      "models": [],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:59:56Z",
+          "state": "starting",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "f0a1b2c3-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+      "dir": "/home/dev/.claude-b",
+      "account": "other",
+      "kind": "interactive",
+      "state": "idle",
+      "waitReason": "",
+      "name": "quiet-ledger",
+      "project": "/home/dev/notes",
+      "pid": 5203,
+      "startedAt": "2026-11-21T17:15:00Z",
+      "stateAt": "2026-11-21T17:56:00Z",
+      "lastSeenAt": "2026-11-21T18:00:00Z",
+      "subagents": 0,
+      "model": "Sonnet 5.5",
+      "effort": "medium",
+      "contextPct": 12,
+      "contextLeft": 176000,
+      "costUSD": 2.4,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0.5,
+      "lost": false,
+      "replaces": "",
+      "models": [
+        {
+          "model": "Sonnet 5.5",
+          "input": 28000,
+          "output": 3500,
+          "cacheRead": 110000,
+          "cacheWrite": 7000,
+          "costUSD": 3,
+          "requests": 1
+        }
+      ],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:15:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:50:00Z",
+          "state": "working",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:56:00Z",
+          "state": "idle",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "interactive",
+      "state": "idle",
+      "waitReason": "",
+      "name": "",
+      "project": "/home/dev/src/web",
+      "pid": 4105,
+      "startedAt": "2026-11-21T17:55:01Z",
+      "stateAt": "2026-11-21T17:56:00Z",
+      "lastSeenAt": "2026-11-21T17:56:00Z",
+      "subagents": 0,
+      "model": "Opus 5.5",
+      "effort": "medium",
+      "contextPct": 3,
+      "contextLeft": 194000,
+      "costUSD": 0,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0,
+      "lost": false,
+      "replaces": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "models": [],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:55:01Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:56:00Z",
+          "state": "idle",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "a9b8c7d6-e5f4-4a3b-9c2d-1e0f9a8b7c6d",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "background",
+      "state": "parked",
+      "waitReason": "",
+      "name": "nightly-triage",
+      "project": "/home/dev/src/triage",
+      "pid": 0,
+      "startedAt": "2026-11-21T16:00:00Z",
+      "stateAt": "2026-11-21T17:50:00Z",
+      "lastSeenAt": "2026-11-21T17:50:00Z",
+      "subagents": 0,
+      "model": "",
+      "effort": "",
+      "contextPct": 0,
+      "contextLeft": 0,
+      "costUSD": 0,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0,
+      "lost": false,
+      "replaces": "",
+      "models": [],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:50:00Z",
+          "state": "parked",
+          "reason": ""
+        }
+      ]
+    },
+    {
+      "id": "b3c4d5e6-f7a8-4b9c-8d0e-1f2a3b4c5d6e",
+      "dir": "/home/dev/.claude",
+      "account": "Main",
+      "kind": "interactive",
+      "state": "ended",
+      "waitReason": "",
+      "name": "scratch",
+      "project": "/home/dev/scratch",
+      "pid": 4104,
+      "startedAt": "2026-11-21T17:25:00Z",
+      "stateAt": "2026-11-21T17:30:00Z",
+      "lastSeenAt": "2026-11-21T17:26:00Z",
+      "subagents": 0,
+      "model": "Opus 5.5",
+      "effort": "low",
+      "contextPct": 5,
+      "contextLeft": 190000,
+      "costUSD": 0.1,
+      "cacheHitRatio": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "share": 0,
+      "lost": true,
+      "replaces": "",
+      "models": [],
+      "timeline": [
+        {
+          "at": "2026-11-21T17:25:00Z",
+          "state": "starting",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:26:00Z",
+          "state": "idle",
+          "reason": ""
+        },
+        {
+          "at": "2026-11-21T17:30:00Z",
+          "state": "ended",
+          "reason": "lost"
+        }
+      ]
+    }
+  ],
+  "models": [
+    {
+      "model": "Sonnet 5.5",
+      "input": 58000,
+      "output": 7500,
+      "cacheRead": 230000,
+      "cacheWrite": 15000,
+      "costUSD": 6,
+      "requests": 2
+    },
+    {
+      "model": "Opus 5.5",
+      "input": 6200,
+      "output": 3200,
+      "cacheRead": 230000,
+      "cacheWrite": 8000,
+      "costUSD": 3.75,
+      "requests": 2
+    },
+    {
+      "model": "Haiku 5.5",
+      "input": 3000,
+      "output": 600,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "costUSD": 0.25,
+      "requests": 1
+    }
+  ],
+  "modelsWeek": [
+    {
+      "model": "Sonnet 5.5",
+      "input": 58000,
+      "output": 7500,
+      "cacheRead": 230000,
+      "cacheWrite": 15000,
+      "costUSD": 6,
+      "requests": 2
+    },
+    {
+      "model": "Opus 5.5",
+      "input": 7100,
+      "output": 3600,
+      "cacheRead": 260000,
+      "cacheWrite": 9500,
+      "costUSD": 4.5,
+      "requests": 5
+    },
+    {
+      "model": "Haiku 5.5",
+      "input": 3000,
+      "output": 600,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "costUSD": 0.25,
+      "requests": 1
+    }
+  ],
+  "alerts": [
+    {
+      "kind": "needs_you",
+      "dir": "/home/dev/.claude",
+      "session": "3f1c7a52-0d4e-4b8e-9a51-6c2f0e7d9b10",
+      "since": "2026-11-21T17:58:48Z",
+      "message": "copper-lantern needs you: permission prompt"
+    },
+    {
+      "kind": "runs_out",
+      "dir": "/home/dev/.claude",
+      "session": "",
+      "since": "2026-11-21T18:00:00Z",
+      "message": "Main is on pace to run out of its weekly limit before it resets"
+    },
+    {
+      "kind": "budget",
+      "dir": "/home/dev/.claude-b",
+      "session": "",
+      "since": "2026-11-21T18:00:00Z",
+      "message": "other has spent $6.00 today, reaching its $5.00 daily budget"
+    },
+    {
+      "kind": "weekly_threshold",
+      "dir": "/home/dev/.claude",
+      "session": "",
+      "since": "2026-11-21T18:00:00Z",
+      "message": "Main is at 92% of its weekly limit"
+    },
+    {
+      "kind": "context_high",
+      "dir": "/home/dev/.claude",
+      "session": "8a2b9c41-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "since": "2026-11-21T18:00:00Z",
+      "message": "harbor-api is at 88% of its context window"
+    }
+  ]
+}
