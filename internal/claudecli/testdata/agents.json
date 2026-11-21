@@ -1,0 +1,49 @@
+[
+  {
+    "pid": 41001,
+    "cwd": "C:\\Users\\example\\projects\\demo",
+    "kind": "interactive",
+    "startedAt": 1795293100000,
+    "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+    "name": "api-refactor",
+    "status": "busy"
+  },
+  {
+    "pid": 41002,
+    "cwd": "C:\\Users\\example\\projects\\demo",
+    "kind": "interactive",
+    "startedAt": 1795293150000,
+    "sessionId": "aaaaaaaa-0000-4000-8000-000000000002",
+    "name": "release-notes",
+    "status": "waiting",
+    "waitingFor": "permission prompt"
+  },
+  {
+    "pid": 41003,
+    "cwd": "C:\\Users\\example\\projects\\widgets",
+    "kind": "interactive",
+    "startedAt": 1795293200000,
+    "sessionId": "aaaaaaaa-0000-4000-8000-000000000003",
+    "status": "idle"
+  },
+  {
+    "id": "bg000001",
+    "cwd": "C:\\Users\\example\\projects\\demo",
+    "kind": "background",
+    "startedAt": 1795293250123,
+    "sessionId": "bbbbbbbb-0000-4000-8000-000000000001",
+    "name": "nightly-build",
+    "state": "stopped"
+  },
+  {
+    "pid": 41004,
+    "id": "bg000002",
+    "cwd": "C:\\Users\\example\\projects\\demo",
+    "kind": "background",
+    "startedAt": 1795293900456,
+    "sessionId": "bbbbbbbb-0000-4000-8000-000000000002",
+    "name": "docs-scan",
+    "status": "busy",
+    "state": "working"
+  }
+]
