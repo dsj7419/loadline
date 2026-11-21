@@ -1,0 +1,57 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - govet
+    - staticcheck
+    - errcheck
+    - errorlint
+    - ineffassign
+    - unused
+    - unparam
+    - nilerr
+    - durationcheck
+    - exhaustive
+    - unconvert
+    # Security and network hygiene
+    - gosec
+    - bodyclose
+    - noctx
+    - contextcheck
+    # Style and idiom
+    - revive
+    - gocritic
+    - errname
+    - thelper
+    - usestdlibvars
+    - misspell
+    - nolintlint
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    rules:
+      # Tests build fixtures under t.TempDir(): they create files and
+      # directories with ordinary permissions and open paths assembled from
+      # that directory. Only those four gosec rules are relaxed; every other
+      # gosec rule still applies to test code.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "^G(301|302|304|306):"
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/dsj7419/loadline

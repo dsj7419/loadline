@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Coverage reports
+*.cover
+*.coverprofile
+coverage.html
+
+# Web UI tooling (the built bundle in internal/web/dist is committed)
+web/node_modules/
+web/test-results/
+web/playwright-report/

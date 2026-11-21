@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.go text eol=lf
+
+# The embedded UI bundle is generated: keep it out of diffs and language stats.
+internal/web/dist/** -diff linguist-generated
+
+*.woff2 binary
+*.png binary
