@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -10,8 +11,8 @@ const (
 	// four a second however fast events arrive.
 	publishInterval = 250 * time.Millisecond
 	// needsYouRecheck is how often the alerts are evaluated again while a
-	// session waits on the user, so a needs-you alert appears on time
-	// without another event.
+	// session waits on the user and its alert is still to come, so the alert
+	// appears on time without another event.
 	needsYouRecheck = time.Second
 )
 
@@ -35,6 +36,10 @@ func (wallTicker) AfterFunc(d time.Duration, f func()) func() bool {
 type publisher struct {
 	subscribers map[chan View]struct{}
 	lastAt      time.Time
+	// lastAlerts are the alerts of the last view published. A recheck
+	// publishes only when they change: the page counts how long a session
+	// has waited from its stateAt.
+	lastAlerts []AlertView
 	// flushing and rechecking say whether a coalesced publish and a needs-you
 	// recheck are scheduled; stopFlush and stopRecheck cancel them.
 	flushing, rechecking   bool
@@ -123,7 +128,7 @@ func (t *Tracker) flush() {
 func (t *Tracker) publish() {
 	now := t.clock()
 	v := t.buildView(now)
-	t.pub.lastAt = now
+	t.pub.lastAt, t.pub.lastAlerts = now, v.Alerts
 	for ch := range t.pub.subscribers {
 		select {
 		case <-ch:
@@ -133,11 +138,13 @@ func (t *Tracker) publish() {
 		// emptied is still free.
 		ch <- v
 	}
-	t.scheduleRecheck()
+	t.scheduleRecheck(now)
 }
 
-func (t *Tracker) scheduleRecheck() {
-	if t.pub.rechecking || !t.anyNeedsYou() {
+// scheduleRecheck arranges a recheck while some session waits on the user
+// without its alert yet.
+func (t *Tracker) scheduleRecheck(now time.Time) {
+	if t.pub.rechecking || !t.awaitingNeedsYouAlert(now) {
 		return
 	}
 	t.pub.rechecking = true
@@ -151,5 +158,15 @@ func (t *Tracker) recheck() {
 		return
 	}
 	t.pub.rechecking, t.pub.stopRecheck = false, nil
-	t.changed()
+	now := t.clock()
+	if !sameAlerts(t.buildView(now).Alerts, t.pub.lastAlerts) {
+		t.changed()
+	}
+	t.scheduleRecheck(now)
+}
+
+func sameAlerts(a, b []AlertView) bool {
+	return slices.EqualFunc(a, b, func(x, y AlertView) bool {
+		return x.Kind == y.Kind && x.Dir == y.Dir && x.Session == y.Session && x.Since.Equal(y.Since) && x.Message == y.Message
+	})
 }

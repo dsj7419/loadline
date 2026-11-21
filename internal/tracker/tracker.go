@@ -50,7 +50,10 @@ type Config struct {
 	Ticker Ticker
 }
 
-// Restored is the state a store kept from an earlier run.
+// Restored is the state a store kept from an earlier run. A session needs its
+// StartedAt, StateAt and LastSeenAt, and a transition its At: Restore skips a
+// session that lacks one and drops such a transition, so the view never shows
+// a zero time.
 type Restored struct {
 	Accounts  []domain.Account
 	Sessions  []domain.Session
@@ -91,8 +94,12 @@ type Tracker struct {
 }
 
 // New returns an empty tracker that reads the time from clock and reports
-// each change to rec, which must not block (see Recorder).
+// each change to rec, which must not block (see Recorder). A nil rec keeps
+// nothing.
 func New(clock Clock, cfg Config, rec Recorder) *Tracker {
+	if rec == nil {
+		rec = NopRecorder{}
+	}
 	cfg.Labels, cfg.Budgets = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets)
 	if cfg.ShareWindow <= 0 {
 		cfg.ShareWindow = defaultShareWindow
@@ -172,21 +179,24 @@ func onePerSession(polls []domain.Poll) []domain.Poll {
 }
 
 // RecordAPI attributes a model call to its session's account. A call for a
-// session not yet known waits up to ten minutes for it to appear.
+// session not yet known waits up to ten minutes for it to appear, and shows
+// nothing until then.
 func (t *Tracker) RecordAPI(r domain.APIRequest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if e, ok := t.sessions[r.Session]; ok {
-		t.attach(e.session.Dir, r)
-	} else {
+	e, ok := t.sessions[r.Session]
+	if !ok {
 		t.pending.hold(r, t.clock())
+		return
 	}
+	t.attach(e.session.Dir, r)
 	t.changed()
 }
 
 // SetAccount records who an account belongs to. Its rate limits are left as
 // they are, since status lines report them, and so is its email when a has
-// none.
+// none. A probe that finds the account as it was changes only ProbedAt, and
+// is neither recorded nor published.
 func (t *Tracker) SetAccount(a domain.Account) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -197,10 +207,25 @@ func (t *Tracker) SetAccount(a domain.Account) {
 	if a.Email != "" {
 		entry.account.Email = a.Email
 	}
-	if isNew || entry.account != before {
-		t.rec.AccountChanged(entry.account)
+	after := entry.account
+	if isNew || !sameIdentity(before, after) {
+		t.rec.AccountChanged(after)
 	}
-	t.changed()
+	if isNew || t.shownDifferently(before, after) {
+		t.changed()
+	}
+}
+
+// sameIdentity reports whether a and b describe the same owner and sign-in,
+// however far apart they were probed.
+func sameIdentity(a, b domain.Account) bool {
+	return a.Label == b.Label && a.Email == b.Email && a.Plan == b.Plan && a.Org == b.Org && a.Auth == b.Auth
+}
+
+// shownDifferently reports whether the view shows who owns a differently
+// from b.
+func (t *Tracker) shownDifferently(a, b domain.Account) bool {
+	return t.label(a) != t.label(b) || a.Email != b.Email || a.Plan != b.Plan || a.Auth != b.Auth
 }
 
 // Restore installs the state a store kept from an earlier run. It is meant
@@ -227,15 +252,14 @@ func (t *Tracker) Restore(s Restored) {
 
 	var restored []*sessionEntry
 	for _, session := range s.Sessions {
-		if _, known := t.sessions[session.ID]; known {
+		if _, known := t.sessions[session.ID]; known || !isDated(session) {
 			continue
 		}
 		t.accountEntry(session.Dir)
-		timeline := s.Timelines[session.ID]
 		e := &sessionEntry{
 			session:   session,
 			firstSeen: session.StartedAt,
-			timeline:  slices.Clone(timeline[max(0, len(timeline)-maxTimeline):]),
+			timeline:  datedTimeline(s.Timelines[session.ID]),
 		}
 		t.sessions[session.ID] = e
 		restored = append(restored, e)
@@ -247,6 +271,17 @@ func (t *Tracker) Restore(s Restored) {
 		t.link(e)
 	}
 	t.changed()
+}
+
+func isDated(s domain.Session) bool {
+	return !s.StartedAt.IsZero() && !s.StateAt.IsZero() && !s.LastSeenAt.IsZero()
+}
+
+// datedTimeline returns the last maxTimeline of the transitions that carry a
+// time, in a new slice.
+func datedTimeline(timeline []domain.Transition) []domain.Transition {
+	dated := slices.DeleteFunc(slices.Clone(timeline), func(tr domain.Transition) bool { return tr.At.IsZero() })
+	return dated[max(0, len(dated)-maxTimeline):]
 }
 
 // KnownDirs returns the config dir of every account seen, in order.
@@ -335,8 +370,9 @@ func subjectOf(e domain.Event) (id domain.SessionID, dir domain.ConfigDir, at ti
 
 // opensSession reports whether e makes a session known that was not. An
 // absence never does, and neither does the record `claude agents --all`
-// keeps of a background session that finished long ago: it lists those
-// forever, and each would come back every time the old one expired.
+// keeps of a background session that started over a day ago and has no
+// process: it lists those forever, and each would come back every time the
+// old one expired.
 func opensSession(e domain.Event) bool {
 	switch e := e.(type) {
 	case domain.Hook, domain.Status:
@@ -353,7 +389,7 @@ func finishedLongAgo(p domain.Poll) bool {
 		return false
 	}
 	switch p.BgState {
-	case "done", "stopped", "failed":
+	case "done", "blocked", "stopped", "failed":
 		return p.At.Sub(p.StartedAt) > finishedKeep
 	default:
 		return false
@@ -373,11 +409,10 @@ func appendTransition(timeline []domain.Transition, tr domain.Transition) []doma
 // from.
 func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits) {
 	entry := t.account(dir)
-	changed, sampled := entry.observe(l)
-	if !changed {
-		return
+	moved, sampled := entry.observe(l)
+	if moved {
+		t.rec.AccountChanged(entry.account)
 	}
-	t.rec.AccountChanged(entry.account)
 	if sampled.FiveHour != nil || sampled.SevenDay != nil {
 		t.rec.LimitSampled(dir, sampled)
 	}
@@ -482,10 +517,11 @@ func (t *Tracker) expire(now time.Time) {
 	}
 }
 
-// anyNeedsYou reports whether any session is waiting on the user.
-func (t *Tracker) anyNeedsYou() bool {
+// awaitingNeedsYouAlert reports whether a session waits on the user but has
+// not yet waited long enough to alert.
+func (t *Tracker) awaitingNeedsYouAlert(now time.Time) bool {
 	for _, e := range t.sessions {
-		if e.session.State == domain.StateNeedsYou {
+		if e.session.State == domain.StateNeedsYou && now.Sub(e.session.StateAt) < t.cfg.Alerts.NeedsYouAfter {
 			return true
 		}
 	}

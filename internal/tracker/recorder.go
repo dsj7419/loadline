@@ -15,7 +15,9 @@ type Recorder interface {
 	// it, including when the event first made it known.
 	SessionChanged(domain.Session)
 	// AccountChanged reports an account when it is first seen and each time
-	// what is known of it changes.
+	// who it belongs to or a window's values change. A probe that finds the
+	// account as it was, or a status line that reports the same windows
+	// again, is not reported: LimitSampled carries how fresh the windows are.
 	AccountChanged(domain.Account)
 	// LimitSampled reports the rate-limit windows that gained a sample, as of
 	// the limits' ObservedAt. A window that gained none is nil.

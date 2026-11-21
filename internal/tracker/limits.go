@@ -30,14 +30,17 @@ type accountEntry struct {
 // observe applies the rate limits a status line reports. A line that reports
 // no window is no observation of them. A newer line replaces both windows,
 // since Claude Code drops a window from the line once it resets. It returns
-// whether the limits changed and the windows that gained a sample.
-func (a *accountEntry) observe(l domain.Limits) (changed bool, sampled domain.Limits) {
+// whether a window's values moved, as opposed to being observed afresh, and
+// the windows that gained a sample.
+func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limits) {
 	if l.FiveHour == nil && l.SevenDay == nil {
 		return false, domain.Limits{}
 	}
-	if !l.ObservedAt.After(a.account.Limits.ObservedAt) {
+	current := a.account.Limits
+	if !l.ObservedAt.After(current.ObservedAt) {
 		return false, domain.Limits{}
 	}
+	moved = !sameWindow(current.FiveHour, l.FiveHour) || !sameWindow(current.SevenDay, l.SevenDay)
 	a.account.Limits = domain.Limits{FiveHour: cloneWindow(l.FiveHour), SevenDay: cloneWindow(l.SevenDay), ObservedAt: l.ObservedAt}
 
 	sampled.ObservedAt = l.ObservedAt
@@ -48,7 +51,14 @@ func (a *accountEntry) observe(l domain.Limits) (changed bool, sampled domain.Li
 	if a.samples.SevenDay, ok = appendSample(a.samples.SevenDay, l.SevenDay, l.ObservedAt); ok {
 		sampled.SevenDay = cloneWindow(l.SevenDay)
 	}
-	return true, sampled
+	return moved, sampled
+}
+
+func sameWindow(a, b *domain.Window) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.UsedPct == b.UsedPct && a.ResetsAt.Equal(b.ResetsAt)
 }
 
 // appendSample adds w's usage at at to samples when it differs from the last

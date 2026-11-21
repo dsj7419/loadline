@@ -1,6 +1,8 @@
 package tracker_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"slices"
 	"sync"
@@ -188,13 +190,21 @@ type harness struct {
 
 func newHarness(t *testing.T, cfg tracker.Config) *harness {
 	t.Helper()
+	h := newUnclosedHarness(t, cfg)
+	t.Cleanup(h.tr.Close)
+	return h
+}
+
+// newUnclosedHarness leaves closing the tracker to the test, for a test that
+// must fail rather than hang when the tracker's lock is stuck.
+func newUnclosedHarness(t *testing.T, cfg tracker.Config) *harness {
+	t.Helper()
 	h := &harness{t: t, clock: &fakeClock{now: t0}, ticker: &fakeTicker{}, rec: &fakeRecorder{}}
 	cfg.Ticker = h.ticker
 	if cfg.Location == nil {
 		cfg.Location = testZone
 	}
 	h.tr = tracker.New(h.clock.Now, cfg, h.rec)
-	t.Cleanup(h.tr.Close)
 	return h
 }
 
@@ -351,6 +361,17 @@ func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // Tests.
 
+func TestNew_NilRecorderRecordsNothing(t *testing.T) {
+	tr := tracker.New(func() time.Time { return t0 }, tracker.Config{Ticker: &fakeTicker{}}, nil)
+	defer tr.Close()
+	tr.SetAccount(domain.Account{Dir: dirA, Email: "dev@example.com"})
+	tr.Apply(withWindows(statusLine(0, s1), nil, window(50, at(0).Add(48*time.Hour))))
+	tr.RecordAPI(request(at(0), s1, "Opus 5.5", 1))
+	if v := tr.Snapshot(); len(v.Sessions) != 1 || len(v.Models) != 1 {
+		t.Errorf("sessions %v and models %v, want the session and its usage", sessionIDs(v), v.Models)
+	}
+}
+
 func TestTracker_HookThenPollReconciles(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	h.tr.Apply(hook(0, s1, "SessionStart"))
@@ -417,7 +438,7 @@ func TestApplyPoll_LiveEntryWinsOverItsRecord(t *testing.T) {
 
 func TestApplyPoll_LongFinishedRecordsCreateNoSession(t *testing.T) {
 	dayAndAnHourAgo := at(0).Add(-25 * time.Hour)
-	for _, bgState := range []string{"done", "stopped", "failed"} {
+	for _, bgState := range []string{"done", "blocked", "stopped", "failed"} {
 		t.Run(bgState, func(t *testing.T) {
 			h := newHarness(t, tracker.Config{})
 			h.tr.ApplyPoll(dirA, at(0), []domain.Poll{
@@ -435,13 +456,39 @@ func TestApplyPoll_LongFinishedRecordsCreateNoSession(t *testing.T) {
 	}
 }
 
-func TestApplyPoll_BlockedRecordsAreKeptHowEverOld(t *testing.T) {
-	// A blocked background session waits on the user and can be resumed,
-	// so its record is shown however long ago it started.
+func TestApplyPoll_WorkingRecordIsShownHowEverOld(t *testing.T) {
+	// A background session still at work is no finished record.
 	h := newHarness(t, tracker.Config{})
-	h.tr.ApplyPoll(dirA, at(0), []domain.Poll{backgroundRecord(0, s1, "blocked", at(0).Add(-72*time.Hour))})
-	if got := h.session(s1).State; got != domain.StateParked {
-		t.Errorf("state %v, want parked", got)
+	h.tr.ApplyPoll(dirA, at(0), []domain.Poll{backgroundRecord(0, s1, "working", at(0).Add(-72*time.Hour))})
+	if _, ok := findSession(h.tr.Snapshot(), s1); !ok {
+		t.Error("a background session started three days ago and still working is not shown")
+	}
+}
+
+func TestApplyPoll_ExpiredRecordIsNotRecreated(t *testing.T) {
+	// `claude agents --all` keeps listing a finished background session after
+	// it has left the view.
+	for _, bgState := range []string{"done", "blocked"} {
+		t.Run(bgState, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			startedAt := at(0).Add(-time.Hour)
+			pollAt := func(d time.Duration) tracker.View {
+				h.clock.Set(at(0).Add(d))
+				record := backgroundRecord(0, s1, bgState, startedAt)
+				record.At = h.clock.Now()
+				h.tr.ApplyPoll(dirA, record.At, []domain.Poll{record})
+				return h.tr.Snapshot()
+			}
+			if _, ok := findSession(pollAt(0), s1); !ok {
+				t.Fatal("the record of a session that just finished is not shown")
+			}
+			if _, ok := findSession(pollAt(24*time.Hour), s1); ok {
+				t.Fatal("the session is still shown a day after it was parked")
+			}
+			if _, ok := findSession(pollAt(24*time.Hour+5*time.Second), s1); ok {
+				t.Error("the next poll brought the expired session back")
+			}
+		})
 	}
 }
 
@@ -663,6 +710,41 @@ func TestTracker_PendingRequestsExpireOneByOne(t *testing.T) {
 	}
 }
 
+func TestTracker_RequestWaitingForItsSessionPublishesNothing(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	views, cancel := h.tr.Subscribe()
+	defer cancel()
+	h.tr.Apply(hook(0, s1, "SessionStart"))
+	receive(t, views)
+
+	h.clock.Set(at(1))
+	h.tr.RecordAPI(request(at(1), s2, "Opus 5.5", 1))
+	assertNoView(t, views)
+	if got := h.ticker.pending(); len(got) != 0 {
+		t.Fatalf("pending timers %v after a request that changes nothing shown, want none", got)
+	}
+
+	h.tr.RecordAPI(request(at(1), s1, "Opus 5.5", 1))
+	if v := receive(t, views); len(v.Models) != 1 {
+		t.Errorf("models %v after a request of a known session, want it shown", v.Models)
+	}
+}
+
+func TestTracker_ExpiredRequestsFreeTheirPlace(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	const limit = 10000
+	for range limit {
+		h.tr.RecordAPI(request(at(0), s1, "Opus 5.5", 0.01))
+	}
+	h.clock.Set(at(660))
+	h.tr.Snapshot()
+	h.tr.RecordAPI(request(at(660), s2, "Opus 5.5", 1))
+	h.tr.Apply(hook(661, s2, "SessionStart"))
+	if got := h.session(s2).Models; len(got) != 1 {
+		t.Errorf("models %v, want the request that arrived after the full queue expired", got)
+	}
+}
+
 func TestTracker_PendingRequestsAreBounded(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	const limit = 10000
@@ -796,9 +878,7 @@ func TestTracker_AlertsInView(t *testing.T) {
 	}
 	h.clock.Set(at(19))
 	h.ticker.fire()
-	if v := receive(t, views); len(v.Alerts) != 0 {
-		t.Fatalf("alerts %+v after 19 s, want none", v.Alerts)
-	}
+	assertNoView(t, views)
 	h.clock.Set(at(20))
 	h.ticker.fire()
 	v := receive(t, views)
@@ -881,6 +961,45 @@ func TestTracker_AlertsKeepFirstSeenOrder(t *testing.T) {
 	}
 }
 
+func TestTracker_NeedsYouRecheckPublishesOnlyNewAlerts(t *testing.T) {
+	h := newHarness(t, tracker.Config{Alerts: defaultAlerts})
+	views, cancel := h.tr.Subscribe()
+	defer cancel()
+	h.tr.Apply(hook(0, s1, "PermissionRequest"))
+	receive(t, views)
+
+	// A recheck that finds the same alerts publishes nothing: the page counts
+	// the wait from stateAt itself.
+	h.clock.Set(at(10))
+	h.ticker.fire()
+	assertNoView(t, views)
+	h.clock.Set(at(20))
+	h.ticker.fire()
+	if v := receive(t, views); len(v.Alerts) != 1 || v.Alerts[0].Kind != domain.AlertNeedsYou {
+		t.Fatalf("alerts %+v after 20 s, want needs_you", v.Alerts)
+	}
+
+	// Once every waiting session has alerted there is nothing to recheck,
+	// until another session starts waiting.
+	if got := h.ticker.pending(); len(got) != 0 {
+		t.Fatalf("pending timers %v once the alert is up, want none", got)
+	}
+	h.clock.Set(at(30))
+	h.tr.Apply(hook(30, s2, "PermissionRequest"))
+	if got := h.ticker.pending(); !slices.Equal(got, []time.Duration{time.Second}) {
+		t.Fatalf("pending timers %v once another session waits, want a one-second recheck", got)
+	}
+	receive(t, views)
+	h.clock.Set(at(31))
+	h.ticker.fire()
+	assertNoView(t, views)
+	h.clock.Set(at(50))
+	h.ticker.fire()
+	if v := receive(t, views); len(v.Alerts) != 2 {
+		t.Errorf("alerts %+v once the second session has waited 20 s, want both", v.Alerts)
+	}
+}
+
 func TestTracker_NeedsYouRecheckStopsWhenNothingWaits(t *testing.T) {
 	h := newHarness(t, tracker.Config{Alerts: defaultAlerts})
 	h.tr.Apply(hook(0, s1, "PermissionRequest"))
@@ -895,9 +1014,10 @@ func TestTracker_NeedsYouRecheckStopsWhenNothingWaits(t *testing.T) {
 }
 
 func TestTracker_SubscribeCoalescesAndNeverBlocks(t *testing.T) {
-	h := newHarness(t, tracker.Config{})
+	// Nothing here may take the tracker's lock after a failure: if Apply is
+	// stuck holding it, the test must fail rather than hang.
+	h := newUnclosedHarness(t, tracker.Config{})
 	views, cancel := h.tr.Subscribe()
-	defer cancel()
 
 	addSubagent := hook(0, s1, "SubagentStart")
 	addSubagent.AgentID = "agent-1"
@@ -924,7 +1044,6 @@ func TestTracker_SubscribeCoalescesAndNeverBlocks(t *testing.T) {
 	// A subscriber that never reads holds only the latest view, and never
 	// holds up Apply.
 	idle, cancelIdle := h.tr.Subscribe()
-	defer cancelIdle()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -941,6 +1060,9 @@ func TestTracker_SubscribeCoalescesAndNeverBlocks(t *testing.T) {
 	if s, _ := findSession(receive(t, idle), s1); s.Subagents != 1999 {
 		t.Errorf("the waiting view shows %d subagents, want the latest 1999", s.Subagents)
 	}
+	cancelIdle()
+	cancel()
+	h.tr.Close()
 }
 
 func TestTracker_ViewsWaitNoLongerThanTheInterval(t *testing.T) {
@@ -1161,6 +1283,49 @@ func TestTracker_RestoreKeepsWhatIsAlreadyKnown(t *testing.T) {
 	}
 }
 
+func TestTracker_RestoreSkipsUndatedState(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	noStart := restoredSession(s1, domain.StateIdle, at(-60))
+	noStart.StartedAt = time.Time{}
+	noStateAt := restoredSession(s2, domain.StateIdle, at(-60))
+	noStateAt.StateAt = time.Time{}
+	neverSeen := restoredSession("s4", domain.StateIdle, at(-60))
+	neverSeen.LastSeenAt = time.Time{}
+	dated := restoredSession(s3, domain.StateIdle, at(-60))
+	h.tr.Restore(tracker.Restored{
+		Sessions: []domain.Session{noStart, noStateAt, neverSeen, dated},
+		Timelines: map[domain.SessionID][]domain.Transition{s3: {
+			{State: domain.StateStarting},
+			{At: at(-60), State: domain.StateIdle},
+		}},
+	})
+
+	v := h.tr.Snapshot()
+	if got := sessionIDs(v); !slices.Equal(got, []domain.SessionID{s3}) {
+		t.Fatalf("sessions %v, want only the dated s3", got)
+	}
+	want := []tracker.TransitionView{{At: at(-60), State: domain.StateIdle}}
+	if got := v.Sessions[0].Timeline; !slices.Equal(got, want) {
+		t.Errorf("timeline %v, want only the dated change %v", got, want)
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("0001-01-01")) {
+		t.Errorf("the view holds a zero time: %s", data)
+	}
+}
+
+func TestTracker_RestoreAttachesWaitingRequests(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.RecordAPI(request(at(-30), s1, "Opus 5.5", 2))
+	h.tr.Restore(tracker.Restored{Sessions: []domain.Session{restoredSession(s1, domain.StateIdle, at(-60))}})
+	if got := costsOf(h.session(s1).Models); !slices.Equal(got, []modelCost{{"Opus 5.5", 2, 1}}) {
+		t.Errorf("models %v, want the request that waited for the restored session", got)
+	}
+}
+
 func TestTracker_TimelineRecordsStateChanges(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	h.tr.Apply(hook(0, s1, "SessionStart"))
@@ -1311,6 +1476,64 @@ func TestTracker_SessionFigures(t *testing.T) {
 	h.tr.Apply(st)
 	if got := h.session(s1).Model; got != "claude-opus-5-5" {
 		t.Errorf("model %q without a display name, want the model ID", got)
+	}
+}
+
+func TestTracker_AccountChangesOnlyWithItsValues(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	views, cancel := h.tr.Subscribe()
+	defer cancel()
+	probe := domain.Account{Dir: dirA, Email: "dev@example.com", Plan: "Pro", Auth: domain.AuthSubscription, ProbedAt: at(0)}
+	h.tr.SetAccount(probe)
+	receive(t, views)
+
+	// The probe six hours later finds the same account.
+	h.clock.Set(at(1))
+	probe.ProbedAt = at(1)
+	h.tr.SetAccount(probe)
+	assertNoView(t, views)
+	// The organization is kept but not shown.
+	probe.Org = "Example"
+	h.tr.SetAccount(probe)
+	assertNoView(t, views)
+
+	resets5h, resets7d := at(0).Add(3*time.Hour), at(0).Add(48*time.Hour)
+	h.tr.Apply(withWindows(statusLine(2, s1), nil, window(50, resets7d)))
+	// The same windows observed again are only fresher.
+	h.tr.Apply(withWindows(statusLine(3, s1), nil, window(50, resets7d)))
+	if got := h.account(dirA).SevenDay; got == nil || !time.Time(got.ObservedAt).Equal(at(3)) {
+		t.Errorf("seven-day window %+v, want it observed at +3s", got)
+	}
+	h.tr.Apply(withWindows(statusLine(4, s1), nil, window(51, resets7d)))
+	h.tr.Apply(withWindows(statusLine(5, s1), window(10, resets5h), window(51, resets7d)))
+	probe.Plan = "Max 20x"
+	h.tr.SetAccount(probe)
+
+	_, accounts, _, _ := h.rec.recorded()
+	type change struct {
+		plan               string
+		fiveHour, sevenDay float64 // -1 when the window is absent
+	}
+	pct := func(w *domain.Window) float64 {
+		if w == nil {
+			return -1
+		}
+		return w.UsedPct
+	}
+	got := make([]change, len(accounts))
+	for i, a := range accounts {
+		got[i] = change{a.Plan, pct(a.Limits.FiveHour), pct(a.Limits.SevenDay)}
+	}
+	want := []change{
+		{"Pro", -1, -1},     // the first probe
+		{"Pro", -1, -1},     // the organization
+		{"Pro", -1, 50},     // the first window
+		{"Pro", -1, 51},     // its usage moved
+		{"Pro", 10, 51},     // another window appeared
+		{"Max 20x", 10, 51}, // the plan changed
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("accounts recorded\n got %v\nwant %v", got, want)
 	}
 }
 

@@ -256,6 +256,27 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 			noWindow, unknownReset, noProjection, withETA, withoutETA)
 	}
 
+	var lost, subagents, share, waitReason, backgroundWithoutProcess bool
+	for _, s := range v.Sessions {
+		lost = lost || s.Lost
+		subagents = subagents || s.Subagents > 0
+		share = share || s.Share > 0
+		waitReason = waitReason || s.WaitReason != ""
+		backgroundWithoutProcess = backgroundWithoutProcess || (s.Kind == domain.KindBackground && s.PID == 0)
+	}
+	if !lost || !subagents || !share || !waitReason || !backgroundWithoutProcess {
+		t.Errorf("sessions: lost %v, with subagents %v, with a share %v, with a wait reason %v, background without a process %v; want all",
+			lost, subagents, share, waitReason, backgroundWithoutProcess)
+	}
+	var budget, weekBelowMonth bool
+	for _, a := range v.Accounts {
+		budget = budget || a.BudgetUSD > 0
+		weekBelowMonth = weekBelowMonth || a.SpendWeekUSD != a.SpendMonthUSD
+	}
+	if !budget || !weekBelowMonth {
+		t.Errorf("accounts: with a budget %v, with week and month spend differing %v; want both", budget, weekBelowMonth)
+	}
+
 	successor, _ := findSession(v, successorID)
 	if successor.Replaces != clearedID {
 		t.Errorf("the successor replaces %q, want %s", successor.Replaces, clearedID)
