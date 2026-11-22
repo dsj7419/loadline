@@ -285,7 +285,7 @@ func (p *planner) statusLine() error {
 	}
 
 	command := line.Get("command")
-	if !line.IsObject() || command.Type != gjson.String || strings.TrimSpace(command.Str) == "" {
+	if !line.IsObject() || command.Type != gjson.String || hasNoCommand(command.Str) {
 		p.skip("statusLine", "it has no command to run",
 			"statusLine has no command, so Loadline left it alone and sessions will report only through hooks")
 		return nil
@@ -303,11 +303,9 @@ func (p *planner) statusLine() error {
 	case tapped:
 		// Rebuilt below for this exe and shell.
 	}
-	want, ok := tap.literal(p.opts.Exe, p.opts.Shell)
-	if !ok {
-		p.skip("statusLine.command", "it ends in a backslash",
-			"statusLine.command ends in a backslash, which would join it to the line Loadline adds after it, "+
-				"so Loadline left it alone")
+	want, refusal := tap.literal(p.opts.Exe, p.opts.Shell)
+	if refusal != "" {
+		p.skip("statusLine.command", "it "+refusal, "statusLine.command "+refusal+", so Loadline left it alone")
 		return nil
 	}
 	if decodeString(want) == command.Str {

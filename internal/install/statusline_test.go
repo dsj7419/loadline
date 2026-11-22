@@ -42,8 +42,30 @@ var bashFormCases = []struct {
 	{"time cat", groupedForm},
 	{"if true; then cat; fi", groupedForm},
 	{"cat # a trailing comment", groupedForm},
+	{"cat #", groupedForm},
 	{"for word in a b; do echo $word; done; cat", groupedForm},
-	{"cat <<'EOF'\nfrom a here-document\nEOF", groupedForm},
+	{`cat <<< "a here-string"`, groupedForm},
+	{"cat; exit 4", groupedForm},
+	{"exit 3", plainForm},
+	{"exec cat", plainForm},
+	{"FOO=1 cat", plainForm},
+	{"cat\n", plainForm},
+	{"echo 'a\"b'", plainForm},
+	{`echo a\ `, groupedForm},
+	{"true \\\n&& cat", groupedForm},
+	{"case x in x) cat;; esac", groupedForm},
+	{"cat 2>&1 1>/dev/null; echo done", groupedForm},
+	{"set -o pipefail; false | cat", groupedForm},
+	{"trap 'echo bye' EXIT; cat", groupedForm},
+	{`printf '%s\n' 'a\\b'`, groupedForm},
+	// A here-document would take the group's closing line as its own when
+	// it is not terminated, so none is grouped.
+	{"cat <<'EOF'\nfrom a here-document\nEOF", leftAlone},
+	{"cat <<EOF\nan unterminated here-document", leftAlone},
+	{"cat <<-EOF\n\tindented\n\tEOF", leftAlone},
+	// Nothing to run, and an empty group is a syntax error.
+	{"# just a comment", leftAlone},
+	{"\n  # one\n\n\t# two\n", leftAlone},
 	// A trailing backslash, escaped or not, can turn the group's closing
 	// line into a continuation once Windows and Git Bash have passed the
 	// command along.

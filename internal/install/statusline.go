@@ -75,12 +75,11 @@ const (
 	edited
 )
 
-// literal returns the command for shell as a JSON string literal; a blank
-// original gets the print form, never an empty group. It reports false for a
-// bash original that ends in a backslash: escaped or not, it can join the
-// group's closing line to the command, because on Windows the command line
-// that reaches Git Bash may have one backslash where the file has two.
-func (t tapCommand) literal(exe string, shell Shell) (string, bool) {
+// literal returns the command for shell as a JSON string literal; an
+// original with nothing to run gets the print form, never an empty group.
+// When the command cannot be built it returns instead why, as a phrase that
+// follows "statusLine.command".
+func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 	launcher := `"` + exe + `"`
 	if shell == ShellPowerShell {
 		launcher = powerShellCall + launcher
@@ -89,18 +88,47 @@ func (t tapCommand) literal(exe string, shell Shell) (string, bool) {
 
 	var body string
 	switch {
-	case t.print || strings.TrimSpace(original) == "":
+	case t.print || hasNoCommand(original):
 		body = escapeJSON(launcher + printSuffix)
 	case shell == ShellPowerShell:
 		body = escapeJSON(launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close)
 	case isPlainCommand(original):
 		body = escapeJSON(launcher+tapPipe) + raw(t.original)
 	case strings.HasSuffix(original, `\`):
-		return "", false
+		// Escaped or not: on Windows the command line that reaches Git Bash
+		// may have one backslash where the file has two.
+		return "", "ends in a backslash, which can join it to the line Loadline adds after it"
+	case holdsHereDocument(original):
+		return "", "holds a here-document, which would take the line Loadline adds after it as its own " +
+			"unless it is terminated"
 	default:
 		body = escapeJSON(launcher+tapPipe+groupOpen) + raw(t.original) + escapeJSON(groupClose)
 	}
-	return `"` + body + `"`, true
+	return `"` + body + `"`, ""
+}
+
+// hasNoCommand reports whether every line of command is blank or a comment,
+// in bash and PowerShell alike.
+func hasNoCommand(command string) bool {
+	for line := range strings.SplitSeq(command, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			return false
+		}
+	}
+	return true
+}
+
+// holdsHereDocument reports whether command uses the here-document operator
+// << or <<-, as opposed to the here-string <<<. It errs towards yes: a << in
+// quotes counts too.
+func holdsHereDocument(command string) bool {
+	for i := strings.Index(command, "<<"); i >= 0; i = strings.Index(command, "<<") {
+		if !strings.HasPrefix(command[i:], "<<<") {
+			return true
+		}
+		command = command[i+3:]
+	}
+	return false
 }
 
 // originalLiteral returns the user's own command as a JSON string literal:
@@ -208,10 +236,10 @@ func parsePipe(rest []char) (tapCommand, tapMatch) {
 }
 
 // tappedOriginal is a tapped command with the user's own original. Nothing
-// but blanks behind the prefix means there was no status line of the user's
-// own, so tap prints its own.
+// to run behind the prefix, only blanks or comments, means there was no
+// status line of the user's own, so tap prints its own.
 func tappedOriginal(original []char) (tapCommand, tapMatch) {
-	if strings.TrimSpace(text(original)) == "" {
+	if hasNoCommand(text(original)) {
 		return tapCommand{print: true}, tapped
 	}
 	return tapCommand{original: original}, tapped

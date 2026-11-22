@@ -430,23 +430,62 @@ func TestPlan_LeavesStatusLineWithoutCommand(t *testing.T) {
 		`{"statusLine": {"type": "command", "padding": 2}}`,
 		`{"statusLine": {"type": "command", "command": ""}}`,
 		`{"statusLine": {"type": "command", "command": " \t "}}`,
+		`{"statusLine": {"type": "command", "command": "# only a comment"}}`,
+		`{"statusLine": {"type": "command", "command": "\n  # one\r\n\n\t# two\n"}}`,
 		`{"statusLine": {"type": "command", "command": 7}}`,
 		`{"statusLine": "status.sh"}`,
 	} {
 		t.Run(settings, func(t *testing.T) {
-			out, changes, warnings := plan(t, []byte(settings), options(install.ShellBash))
+			for _, shell := range shells {
+				out, changes, warnings := plan(t, []byte(settings), options(shell))
 
-			before := gjson.Get(settings, "statusLine").Raw
-			if got := gjson.GetBytes(out, "statusLine").Raw; got != before {
-				t.Errorf("statusLine = %s, want it left as %s", got, before)
-			}
-			if !hasChange(changes, "statusLine", install.ActionSkip) {
-				t.Errorf("changes %+v lack a skip for statusLine", changes)
-			}
-			if len(warnings) != 1 || !strings.Contains(warnings[0], "statusLine") {
-				t.Errorf("warnings = %q, want one about the status line", warnings)
+				before := gjson.Get(settings, "statusLine").Raw
+				if got := gjson.GetBytes(out, "statusLine").Raw; got != before {
+					t.Errorf("shell %d: statusLine = %s, want it left as %s", shell, got, before)
+				}
+				if !hasChange(changes, "statusLine", install.ActionSkip) {
+					t.Errorf("shell %d: changes %+v lack a skip for statusLine", shell, changes)
+				}
+				if len(warnings) != 1 || !strings.Contains(warnings[0], "statusLine") {
+					t.Errorf("shell %d: warnings = %q, want one about the status line", shell, warnings)
+				}
 			}
 		})
+	}
+}
+
+func TestPlan_SkipsAHereDocumentAGroupWouldBreak(t *testing.T) {
+	for _, original := range []string{
+		"cat <<EOF\nan unterminated here-document",
+		"cat <<'EOF'\nterminated\nEOF",
+		"cat <<-EOF\n\tindented\n\tEOF",
+		"cat<<X\nx\nX",
+	} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
+
+		out, changes, warnings := plan(t, settings, options(install.ShellBash))
+
+		if got := statusCommand(t, out); got != original {
+			t.Errorf("status line = %q, want %q left alone", got, original)
+		}
+		if !hasChange(changes, "statusLine.command", install.ActionSkip) ||
+			len(warnings) != 1 || !strings.Contains(warnings[0], "here-document") {
+			t.Errorf("%q: changes %+v and warnings %q, want a skip with a warning about the here-document", original, changes, warnings)
+		}
+	}
+
+	// A here-string is a single word, and PowerShell has no here-documents.
+	for original, shell := range map[string]install.Shell{
+		`cat <<< "a here-string"`: install.ShellBash,
+		"cat <<EOF\nx\nEOF":       install.ShellPowerShell,
+	} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
+
+		out, _, warnings := plan(t, settings, options(shell))
+
+		if statusCommand(t, out) == original || len(warnings) != 0 {
+			t.Errorf("shell %d: %q left alone with warnings %q, want it tapped", shell, original, warnings)
+		}
 	}
 }
 
@@ -519,6 +558,8 @@ func TestPlan_AnEmptyCommandBehindTheTapPrefixPrints(t *testing.T) {
 		"\"D:/old/loadline.exe\" tap | { \t \n}",
 		`& "D:/old/loadline.exe" tap --run-b64 ''`,
 		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("  \n ") + `'`,
+		"\"D:/old/loadline.exe\" tap | { # nothing\n}",
+		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("# nothing\n") + `'`,
 	} {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
 		for _, shell := range shells {
