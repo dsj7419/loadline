@@ -81,19 +81,77 @@ func TestVerify_ChecksTheFoldersThatReallyHoldTheDataDirectory(t *testing.T) {
 
 	err := datadir.Secure(home, top)
 
-	want := home + " is really " + filepath.Join(target, "loadline") + ", and " + holder + " lets " + fspermtest.AuthenticatedUsers(t)
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Fatalf("Secure = %v; want it refused, starting %q", err, want)
+	if err == nil {
+		t.Fatalf("Secure(%s) succeeded, want it refused: %s lets others empty it", home, holder)
 	}
+	want := heldRefusal{
+		configured: home,
+		really:     filepath.Join(finalPath(t, target), "loadline"),
+		folder:     finalPath(t, holder),
+	}
+	assertHeldRefusal(t, "Secure", err.Error(), want)
 	if _, statErr := os.Stat(home); statErr == nil {
 		t.Errorf("Secure created %s although it refused it", home)
 	}
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got, checkErr := datadir.Check(home, top); checkErr != nil || !strings.HasPrefix(got, want) {
-		t.Errorf("Check = %q, %v; want doctor to report the same", got, checkErr)
+	got, err := datadir.Check(home, top)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
 	}
+	assertHeldRefusal(t, "Check", got, want)
+}
+
+// heldRefusal is a refusal of a data directory over one of the folders that
+// really hold it, taken apart: the data directory as configured, the path
+// the system resolves it to, and the folder above that which others can
+// empty.
+type heldRefusal struct {
+	configured, really, folder string
+}
+
+// assertHeldRefusal takes msg, which step reported, apart, and checks each
+// part against want, and that it names every signed-in user as able to
+// delete or rename the folders in want.folder.
+func assertHeldRefusal(t *testing.T, step, msg string, want heldRefusal) {
+	t.Helper()
+	configured, rest, isReally := strings.Cut(msg, " is really ")
+	really, rest, isAnd := strings.Cut(rest, ", and ")
+	folder, grant, isLets := strings.Cut(rest, " lets ")
+	if !isReally || !isAnd || !isLets {
+		t.Fatalf("%s = %q; want \"<data directory> is really <path>, and <folder> lets …\"", step, msg)
+	}
+	if got := (heldRefusal{configured, really, folder}); got != want {
+		t.Errorf("%s = %q,\ntaken apart: %+v;\nwant %+v", step, msg, got, want)
+	}
+	if right := fspermtest.AuthenticatedUsers(t) + " delete or rename the folders in it"; !strings.HasPrefix(grant, right) {
+		t.Errorf("%s says %s lets %q; want %q", step, folder, grant, right)
+	}
+}
+
+// finalPath returns the path the system opens for path, as the checks of
+// the folders above a data directory resolve it: every link and subst drive
+// followed and every name in its long form, on its drive letter.
+func finalPath(t *testing.T, path string) string {
+	t.Helper()
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	var buf [windows.MAX_LONG_PATH]uint16
+	// FILE_NAME_NORMALIZED and VOLUME_NAME_DOS, both zero, as the checks ask.
+	n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], windows.MAX_LONG_PATH, 0)
+	if err != nil || n >= windows.MAX_LONG_PATH {
+		t.Fatalf("resolve %s: %d, %v", path, n, err)
+	}
+	return strings.TrimPrefix(windows.UTF16ToString(buf[:n]), `\\?\`)
 }
 
 // A \\?\ path names the same folders as the plain one, and is judged the

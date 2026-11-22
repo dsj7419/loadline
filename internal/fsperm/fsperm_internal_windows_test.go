@@ -32,12 +32,19 @@ func TestFileRights_CountsGenericRightsAsWhatTheyStandFor(t *testing.T) {
 }
 
 // ownedBySID makes path, for the rest of the test, read as owned by sid: an
-// account that is not elevated cannot give a folder another owner.
+// account that is not elevated cannot give a folder another owner. The walk
+// asks for a folder's owner by the names it was given, and again as the
+// system resolves them, which spells a short 8.3 name in full; both name
+// path.
 func ownedBySID(t *testing.T, path string, sid *windows.SID) {
 	t.Helper()
+	owned, err := resolved(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	previous := ownerOf
 	ownerOf = func(p string) (*windows.SID, error) {
-		if samePath(p, path) {
+		if asked, err := resolved(p); err == nil && samePath(asked, owned) {
 			return sid, nil
 		}
 		return previous(p)
