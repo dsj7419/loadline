@@ -5,14 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
 )
 
-// maxResetsAt is the last Unix second, 9999-12-31 23:59:59 UTC, that a
-// time.Time can hold and still marshal to JSON.
-const maxResetsAt = 253402300799
+const (
+	// maxResetsAt is the last Unix second, 9999-12-31 23:59:59 UTC, that a
+	// time.Time can hold and still marshal to JSON.
+	maxResetsAt = 253402300799
+	// maxPercentage bounds a reported percentage. A reading can run a little
+	// past 100, so the bound only keeps an absurd one out of the view and the
+	// alert messages.
+	maxPercentage = 1000
+)
 
 // StatusInput mirrors the documented status-line fields Loadline uses. Every
 // field is optional, and JSON null reads as absent. Optional objects are
@@ -162,6 +169,8 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 	rateLimits := orZero(in.RateLimits)
 	model, effort, cost := orZero(in.Model), orZero(in.Effort), orZero(in.Cost)
 	contextWindow, promptCache := orZero(in.ContextWindow), orZero(in.PromptCache)
+	// An unknown context fill reads as 0%, as Claude Code's null does.
+	contextPct, _ := percentage(contextWindow.UsedPercentage)
 	return domain.Status{
 		At:         env.At,
 		Dir:        domain.ConfigDir(env.ConfigDir),
@@ -172,7 +181,7 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 			Model:         model.DisplayName,
 			ModelID:       model.ID,
 			Effort:        effort.Level,
-			ContextPct:    contextWindow.UsedPercentage,
+			ContextPct:    contextPct,
 			ContextSize:   contextWindow.ContextWindowSize,
 			ContextUsed:   contextWindow.TotalInputTokens,
 			CostUSD:       cost.TotalCostUSD,
@@ -192,13 +201,27 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 }
 
 // window maps a reported window. One that is absent, or whose usage is
-// unknown, is nil: unknown usage must not pass for 0%. A window without a
+// unknown or impossible, is nil: unknown usage must not pass for 0%. A window without a
 // usable reset time keeps its usage and has a zero ResetsAt.
 func window(w *StatusWindow) *domain.Window {
 	if w == nil || w.UsedPercentage == nil {
 		return nil
 	}
-	return &domain.Window{UsedPct: *w.UsedPercentage, ResetsAt: unixSeconds(w.ResetsAt)}
+	used, ok := percentage(*w.UsedPercentage)
+	if !ok {
+		return nil
+	}
+	return &domain.Window{UsedPct: used, ResetsAt: unixSeconds(w.ResetsAt)}
+}
+
+// percentage returns a reported percentage held to at most maxPercentage, or
+// false for one that is negative or not a finite number, which is no reading
+// at all.
+func percentage(p float64) (float64, bool) {
+	if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 {
+		return 0, false
+	}
+	return min(p, maxPercentage), true
 }
 
 // unixSeconds converts a resets_at value. Zero, a negative number and a number

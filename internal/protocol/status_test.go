@@ -530,3 +530,74 @@ func FuzzDecodeStatus(f *testing.F) {
 		}
 	})
 }
+
+// A percentage reaches the view and the alert messages as it was reported,
+// so an absurd one is bounded on the way in. A reading can run a little past
+// 100%, so only what no reading could be is held back.
+func TestStatusEvent_BoundsPercentages(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pct     float64
+		want    float64
+		unknown bool
+	}{
+		{name: "an ordinary reading", pct: 42.5, want: 42.5},
+		{name: "a reading a little past 100", pct: 103, want: 103},
+		{name: "the bound", pct: 1000, want: 1000},
+		{name: "past the bound", pct: 1e308, want: 1000},
+		{name: "negative", pct: -5, unknown: true},
+		{name: "infinite", pct: math.Inf(1), unknown: true},
+		{name: "negative infinity", pct: math.Inf(-1), unknown: true},
+		{name: "not a number", pct: math.NaN(), unknown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// JSON holds no infinity or NaN, so the input is built rather than
+			// decoded.
+			pct := tc.pct
+			in := protocol.StatusInput{
+				SessionID:     "s",
+				ContextWindow: &protocol.StatusContextWindow{UsedPercentage: pct},
+				RateLimits: &protocol.StatusRateLimits{
+					FiveHour: &protocol.StatusWindow{UsedPercentage: &pct, ResetsAt: fixtureResetsAt},
+					SevenDay: &protocol.StatusWindow{UsedPercentage: &pct, ResetsAt: fixtureResetsAt},
+				},
+			}
+
+			event, err := protocol.StatusEvent(validEnvelope(t), in)
+			if err != nil {
+				t.Fatalf("StatusEvent: %v", err)
+			}
+
+			wantContext := tc.want
+			if tc.unknown {
+				wantContext = 0
+			}
+			if event.Metrics.ContextPct != wantContext {
+				t.Errorf("ContextPct = %v, want %v", event.Metrics.ContextPct, wantContext)
+			}
+			for name, w := range map[string]*domain.Window{"FiveHour": event.Limits.FiveHour, "SevenDay": event.Limits.SevenDay} {
+				switch {
+				case tc.unknown && w != nil:
+					t.Errorf("%s = %+v, want no window: the usage is unknown", name, w)
+				case !tc.unknown && (w == nil || w.UsedPct != tc.want):
+					t.Errorf("%s = %+v, want %v%%", name, w, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestStatusEvent_BoundsPercentagesFromTheWire(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","context_window":{"used_percentage":1e308},`+
+		`"rate_limits":{"five_hour":{"used_percentage":-1,"resets_at":1800000000},"seven_day":{"used_percentage":1e308,"resets_at":1800000000}}}`)
+
+	if event.Metrics.ContextPct != 1000 {
+		t.Errorf("ContextPct = %v, want 1000", event.Metrics.ContextPct)
+	}
+	if event.Limits.FiveHour != nil {
+		t.Errorf("FiveHour = %+v, want no window for a negative usage", event.Limits.FiveHour)
+	}
+	if seven := event.Limits.SevenDay; seven == nil || seven.UsedPct != 1000 {
+		t.Errorf("SevenDay = %+v, want 1000%%", seven)
+	}
+}
