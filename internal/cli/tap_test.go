@@ -47,6 +47,7 @@ func (f *fixture) tap(input string, mode cli.TapMode) (code int, stdout string) 
 }
 
 func TestRunTap_EchoesAndForwardsTheAllowlist(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	input := statusInput(t)
@@ -82,11 +83,14 @@ func TestRunTap_EchoesAndForwardsTheAllowlist(t *testing.T) {
 	}
 }
 
-// The status line shows the echo, so it must not wait for the server: the
-// output is complete, and closed, long before a hung server's answer.
-func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
+// tapAgainstAHungServer runs the tap against a server that takes its post
+// and does not answer for hold, with its output a pipe that is read as it
+// is written. It returns how long after the start the echo was complete,
+// that is the tap had closed its output, and the tap had returned.
+func tapAgainstAHungServer(t *testing.T, hold time.Duration) (srv *ingestServer, echoAt, total time.Duration) {
+	t.Helper()
 	f := newFixture(t)
-	srv := f.serve(func(s *ingestServer) { s.hold = 2 * time.Second })
+	srv = f.serve(func(s *ingestServer) { s.hold = hold })
 	input := statusInput(t)
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -103,8 +107,8 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	total := time.Since(start)
-	echoAt := <-echoed
+	total = time.Since(start)
+	echoAt = <-echoed
 	t.Logf("echo complete after %v, tap returned after %v", echoAt, total)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -112,14 +116,39 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 	if got.String() != input {
 		t.Errorf("echoed %q, want the input", got.String())
 	}
-	if echoAt > 20*time.Millisecond {
-		t.Errorf("echo complete after %v, want within 20 ms", echoAt)
+	return srv, echoAt, total
+}
+
+// The status line shows the echo, so it must not wait for the server: the
+// output is complete, and closed, while the post still waits for a server
+// that is slow to answer.
+func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
+	const hold = 500 * time.Millisecond
+
+	srv, echoAt, total := tapAgainstAHungServer(t, hold)
+
+	if bound := hotPathBound(20 * time.Millisecond); echoAt > bound {
+		t.Errorf("echo complete after %v, want within %v", echoAt, bound)
 	}
-	if total > 150*time.Millisecond {
-		t.Errorf("tap took %v against a hung server, want at most 150 ms", total)
+	if total < hold {
+		t.Errorf("tap returned after %v, before the server answered at %v; want it to wait for its post", total, hold)
 	}
 	if posts := srv.received(); len(posts) != 1 {
 		t.Errorf("server received %d posts, want 1", len(posts))
+	}
+}
+
+// The status line process does not linger on a server that does not answer:
+// the tap echoes at once and gives up on its post at its 100 ms bound.
+func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
+	_, echoAt, total := tapAgainstAHungServer(t, 2*time.Second)
+
+	if bound := hotPathBound(20 * time.Millisecond); echoAt > bound {
+		t.Errorf("echo complete after %v, want within %v", echoAt, bound)
+	}
+	if bound := hotPathBound(150 * time.Millisecond); total > bound {
+		t.Errorf("tap took %v against a hung server, want at most %v", total, bound)
 	}
 }
 
@@ -228,6 +257,7 @@ type brokenWriter struct{}
 func (brokenWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
 
 func TestRunTap_BrokenStdoutStillForwards(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 
@@ -242,6 +272,7 @@ func TestRunTap_BrokenStdoutStillForwards(t *testing.T) {
 }
 
 func TestRunTap_ClosedStdoutPipe(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	reader, writer, err := os.Pipe()
@@ -271,6 +302,7 @@ func TestRunTap_ClosedStdoutPipe(t *testing.T) {
 }
 
 func TestRunTap_PrintMode(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
 	tests := []struct {
 		name, input, want string
 	}{
@@ -323,11 +355,6 @@ func runCommand(stderr string, code int) string {
 	}
 	return `printf '%s' "say \"hi\" it's "; cat; printf '%s' '` + stderr + `' >&2; exit ` + strconv.Itoa(code)
 }
-
-// postWindow replaces the tap's 100 ms bound on its post in tests that count
-// posts but are not about that bound: a command such as PowerShell starting
-// on a loaded machine must not make the post miss its window.
-const postWindow = 30 * time.Second
 
 func TestRunTap_RunPipesStdinThroughTheCommand(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)

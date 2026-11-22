@@ -27,6 +27,21 @@ var (
 	configDir = filepath.Join(os.TempDir(), "loadline-forward-test", ".claude")
 )
 
+// raceSlowdown is how much longer the race detector may make the hot path
+// take.
+const raceSlowdown = 5
+
+// hotPathBound is d, a wall-clock bound on the hot path, as strict as the
+// plan sets it without the race detector and raceSlowdown times longer with
+// it, so that a race-enabled run checks the bound without failing on the
+// detector's cost.
+func hotPathBound(d time.Duration) time.Duration {
+	if raceEnabled {
+		return raceSlowdown * d
+	}
+	return d
+}
+
 // envelopeAt returns a valid hook envelope for session s<i>, stamped at.
 func envelopeAt(i int, at time.Time) protocol.Envelope {
 	return protocol.Envelope{

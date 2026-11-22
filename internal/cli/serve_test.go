@@ -275,11 +275,16 @@ func (f *serveFixture) start(edit ...func(*cli.ServeOptions)) *running {
 	case code := <-r.done:
 		r.done <- code
 		f.t.Fatalf("Serve returned %d before it listened; stderr %q", code, r.stderr.String())
-	case <-time.After(5 * time.Second):
-		f.t.Fatal("Serve did not listen within five seconds")
+	case <-time.After(serveStartPatience):
+		f.t.Fatalf("Serve did not listen within %v", serveStartPatience)
 	}
 	return r
 }
+
+// serveStartPatience is how long start waits for Serve to listen. How soon
+// the server starts is no test's concern, and a loaded machine with the
+// race detector on can take seconds to open the history and restore it.
+const serveStartPatience = 30 * time.Second
 
 // stop ends the server's context and returns its exit code.
 func (r *running) stop(t *testing.T) int {

@@ -75,6 +75,7 @@ func assertHookAllowlisted(t *testing.T, env protocol.Envelope, event string) {
 }
 
 func TestRunHook_ForwardsTheAllowlistedFields(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 
@@ -107,6 +108,7 @@ func TestRunHook_ForwardsTheAllowlistedFields(t *testing.T) {
 }
 
 func TestRunHook_LargePayloadForwardsAllowlistOnly(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	input := hookInput(t, "PostToolUse", 5<<20)
@@ -132,6 +134,7 @@ func TestRunHook_LargePayloadForwardsAllowlistOnly(t *testing.T) {
 // Fifty megabytes on stdin is far beyond any real payload. The hook must
 // still get through it, in memory that does not grow with the input.
 func TestRunHook_FiftyMegabytesOfStdinStayWithinBoundedMemory(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	input := []byte(hookInput(t, "PostToolUse", 50<<20))
@@ -181,8 +184,8 @@ func TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart(t *testing.T) {
 	f.assertEnvelope(t, spooled[0], protocol.KindHook)
 	assertHookAllowlisted(t, spooled[0], "SessionStart")
 	// 150 ms to find the server gone, then 300 ms for the send.
-	if elapsed > 600*time.Millisecond {
-		t.Errorf("hook took %v with the server down, want its 150 ms probe and 300 ms send at most", elapsed)
+	if bound := hotPathBound(600 * time.Millisecond); elapsed > bound {
+		t.Errorf("hook took %v with the server down, want its 150 ms probe and 300 ms send at most, within %v", elapsed, bound)
 	}
 }
 
@@ -204,6 +207,7 @@ func TestRunHook_OtherEventsDoNotStartTheServer(t *testing.T) {
 }
 
 func TestRunHook_SessionStartLeavesARunningServerAlone(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 
@@ -223,11 +227,16 @@ func TestRunHook_RefusedEventIsSpooledUnderItsID(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		opt  func(*ingestServer)
+		// window bounds the hook's post: past the time a loaded machine
+		// takes to deliver it, and short of the hold of a server that does
+		// not answer, which the hook must give up on.
+		window time.Duration
 	}{
-		{name: "an error answer", opt: func(s *ingestServer) { s.answer = http.StatusServiceUnavailable }},
-		{name: "no answer", opt: func(s *ingestServer) { s.hold = 2 * time.Second }},
+		{name: "an error answer", opt: func(s *ingestServer) { s.answer = http.StatusServiceUnavailable }, window: postWindow},
+		{name: "no answer", opt: func(s *ingestServer) { s.hold = 2 * time.Second }, window: time.Second},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			cli.SetHookSendTimeout(t, tt.window)
 			f := newFixture(t)
 			srv := f.serve(tt.opt)
 
@@ -279,6 +288,7 @@ func TestRunHook_InvalidJSONExitsZero(t *testing.T) {
 // event still goes, and never makes an envelope the server, or a spool,
 // would refuse.
 func TestRunHook_DropsFieldsTooLargeToForward(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	for name, tt := range map[string]struct {
 		input   string
 		dropped []string
@@ -323,6 +333,7 @@ func TestRunHook_DropsFieldsTooLargeToForward(t *testing.T) {
 }
 
 func TestRunHook_KeepsAFieldOf4KiB(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	cwd := strings.Repeat("d", 4<<10)
@@ -372,6 +383,7 @@ func TestRunHook_UnwritableSpoolStillExitsZero(t *testing.T) {
 }
 
 func TestRunHook_PIDOnlyWhenCLAUDE_PIDIsAPositiveNumber(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	for value, want := range map[string]int{"4242": 4242, "": 0, "0": 0, "-7": 0, "12ab": 0, "99999999999999999999": 0} {
 		t.Run("CLAUDE_PID="+value, func(t *testing.T) {
 			f := newFixture(t)
@@ -389,6 +401,7 @@ func TestRunHook_PIDOnlyWhenCLAUDE_PIDIsAPositiveNumber(t *testing.T) {
 }
 
 func TestRunHook_DefaultConfigDirIsUnderHome(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	delete(f.vars, "CLAUDE_CONFIG_DIR")
@@ -408,6 +421,7 @@ func TestRunHook_DefaultConfigDirIsUnderHome(t *testing.T) {
 // Every invocation through the command line writes nothing at all, on every
 // path: Claude Code reads a hook's output.
 func TestRunHook_NeverWritesStdout(t *testing.T) {
+	cli.SetHookSendTimeout(t, postWindow)
 	inputs := map[string]string{
 		"an event":     hookInput(t, "PostToolUse", 1<<20),
 		"invalid JSON": `{"session_id":`,

@@ -161,8 +161,8 @@ func TestClient_SendStopsAtTheDeadline(t *testing.T) {
 
 	err := client.Send(ctx, forward.HookPath, envelopeAt(1, t0))
 
-	if elapsed := time.Since(start); err == nil || elapsed > 200*time.Millisecond {
-		t.Errorf("Send = %v after %v against a hung server, want an error by the 100 ms deadline", err, elapsed)
+	if elapsed, bound := time.Since(start), hotPathBound(200*time.Millisecond); err == nil || elapsed > bound {
+		t.Errorf("Send = %v after %v against a hung server, want an error by the 100 ms deadline, within %v", err, elapsed, bound)
 	}
 }
 
@@ -276,8 +276,8 @@ func TestClient_HealthyGivesUpOnAHungServer(t *testing.T) {
 
 	healthy := client.Healthy(context.Background())
 
-	if elapsed := time.Since(start); healthy || elapsed > 250*time.Millisecond {
-		t.Errorf("Healthy() = %v after %v against a hung server, want false within its 150 ms", healthy, elapsed)
+	if elapsed, bound := time.Since(start), hotPathBound(250*time.Millisecond); healthy || elapsed > bound {
+		t.Errorf("Healthy() = %v after %v against a hung server, want false by its 150 ms, within %v", healthy, elapsed, bound)
 	}
 }
 

@@ -44,6 +44,27 @@ const canary = "CANARY-c0ffee"
 
 var t0 = time.Date(2026, time.November, 21, 18, 0, 0, 0, time.UTC)
 
+// raceSlowdown is how much longer the race detector may make the hot path
+// take.
+const raceSlowdown = 5
+
+// hotPathBound is d, a wall-clock bound on the hot path, as strict as the
+// plan sets it without the race detector and raceSlowdown times longer with
+// it, so that a race-enabled run checks the bound without failing on the
+// detector's cost.
+func hotPathBound(d time.Duration) time.Duration {
+	if raceEnabled {
+		return raceSlowdown * d
+	}
+	return d
+}
+
+// postWindow replaces the tap's 100 ms and the hook's 300 ms bound on their
+// post in tests that count what reaches the server but are not about that
+// bound: a loaded machine, or a command such as PowerShell starting, must
+// not make the post miss its window.
+const postWindow = 30 * time.Second
+
 type fakeClock struct {
 	mu  sync.Mutex
 	now time.Time

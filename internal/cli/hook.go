@@ -13,7 +13,9 @@ import (
 
 // hookSendTimeout bounds the hook's post to the server. Hooks run
 // asynchronously, so this bounds only how long the hook process lives.
-const hookSendTimeout = 300 * time.Millisecond
+// Tests that count posts without being about this bound lengthen it, so
+// that a loaded machine cannot make them miss one.
+var hookSendTimeout = 300 * time.Millisecond
 
 // sessionStart is the hook event that starts the server when none runs.
 const sessionStart = "SessionStart"
