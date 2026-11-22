@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"slices"
+	"sort"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
@@ -25,9 +26,9 @@ type creditCall struct {
 // accountCredits is what an account's credit estimate reads beyond its
 // samples.
 type accountCredits struct {
-	// calls are the account's model calls: every recent one, since a status
-	// line that arrives late can still show it was made at a limit, and
-	// older ones only while a span on credits holds them.
+	// calls are the account's model calls, in time order: every recent one,
+	// since a status line that arrives late can still show it was made at a
+	// limit, and older ones only while a span on credits holds them.
 	calls []creditCall
 	// reported is the spend limit of the newest status line that reported
 	// one, at reportedAt.
@@ -35,8 +36,11 @@ type accountCredits struct {
 	reportedAt time.Time
 }
 
+// recordCall adds a call in its place in time order. Calls come in nearly in
+// order, so the place is almost always the end.
 func (c *accountCredits) recordCall(at time.Time, costUSD float64) {
-	c.calls = append(c.calls, creditCall{at: at, costUSD: costUSD})
+	i := sort.Search(len(c.calls), func(i int) bool { return c.calls[i].at.After(at) })
+	c.calls = slices.Insert(c.calls, i, creditCall{at: at, costUSD: costUSD})
 }
 
 // observe takes the spend limit a status line at at reported. A line that
@@ -60,12 +64,17 @@ func (c *accountCredits) reportedAsOf(now time.Time) (domain.SpendLimit, bool) {
 // prune forgets the calls made before oldest, and those made before horizon
 // that no span holds.
 func (c *accountCredits) prune(spans []domain.OnCreditsSpan, horizon, oldest time.Time) {
-	c.calls = slices.DeleteFunc(c.calls, func(call creditCall) bool {
-		if call.at.Before(oldest) {
-			return true
+	holding := domain.NewSpanCursor(spans)
+	kept := c.calls[:0]
+	for _, call := range c.calls {
+		_, held := holding.Find(call.at)
+		if call.at.Before(oldest) || (call.at.Before(horizon) && !held) {
+			continue
 		}
-		return call.at.Before(horizon) && !inSpan(spans, call.at)
-	})
+		kept = append(kept, call)
+	}
+	clear(c.calls[len(kept):])
+	c.calls = kept
 }
 
 // shift moves the times of the calls and the report by d.
@@ -92,19 +101,16 @@ func (a *accountEntry) creditEstimate(grants []domain.CreditGrant, now time.Time
 }
 
 // callsIn returns the calls that spans hold, which are all a credit estimate
-// counts, as the requests it reads.
+// counts, as the requests it reads, in time order.
 func (c *accountCredits) callsIn(spans []domain.OnCreditsSpan) []domain.APIRequest {
+	holding := domain.NewSpanCursor(spans)
 	var requests []domain.APIRequest
 	for _, call := range c.calls {
-		if inSpan(spans, call.at) {
+		if _, held := holding.Find(call.at); held {
 			requests = append(requests, domain.APIRequest{At: call.at, CostUSD: call.costUSD})
 		}
 	}
 	return requests
-}
-
-func inSpan(spans []domain.OnCreditsSpan, at time.Time) bool {
-	return slices.ContainsFunc(spans, func(s domain.OnCreditsSpan) bool { return s.Holds(at) })
 }
 
 // cloneGrants copies the grants, so the tracker never shares a slice its

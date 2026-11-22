@@ -554,6 +554,36 @@ func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
 	}
 }
 
+// A month of stretches on credits half a minute long, one every minute, each
+// with a call in it: a view walks the calls and the spans together, where
+// looking through the spans for each call would take seconds under the lock.
+func TestTracker_AViewTakesOnePassOverTheSpansAndCalls(t *testing.T) {
+	const day = 86400
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 1e9, AddedAt: at(-40 * day)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+	var samples []domain.Sample
+	var usage []tracker.UsageRow
+	for sec := -30*day + 60; sec < 0; sec += 60 {
+		samples = append(samples,
+			domain.Sample{At: at(sec), UsedPct: 100, ResetsAt: weekResets},
+			domain.Sample{At: at(sec + 30), UsedPct: 0, ResetsAt: weekResets})
+		usage = append(usage, tracker.UsageRow{Minute: at(sec), Dir: dirA, Session: s1, Model: "Opus 5.5", CostUSD: 1, Requests: 1})
+	}
+	h.tr.Restore(tracker.Restored{Samples: map[domain.ConfigDir]domain.WindowSamples{dirA: {SevenDay: samples}}, Usage: usage})
+	h.tr.Snapshot()
+
+	start := time.Now()
+	h.tr.Snapshot()
+	elapsed := time.Since(start)
+
+	if got := h.account(dirA).Credits; got == nil || got.SpentUSD != float64(len(usage)) || got.Active {
+		t.Errorf("credits %+v, want $%d spent, one for each stretch on credits, none open", got, len(usage))
+	}
+	if elapsed > time.Second {
+		t.Errorf("a view over %d spans and calls took %v, want well under a second", len(usage), elapsed)
+	}
+}
+
 func TestTracker_ADroppedWindowClosesASpanWithNoKnownReset(t *testing.T) {
 	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(withWindows(statusLine(0, s1), window(100, time.Time{}), window(40, weekResets)))

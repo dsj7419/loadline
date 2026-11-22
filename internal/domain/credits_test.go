@@ -445,3 +445,106 @@ func TestEstimateCredits_ReportedOverridesEstimate(t *testing.T) {
 		t.Errorf("remaining %v past the limit, want 0", over.RemainingUSD)
 	}
 }
+
+// A month of short stretches on credits, a call every 5 s through it: the
+// estimate walks the calls and the spans together, where looking through the
+// spans for each call would take minutes.
+func TestEstimateCredits_OnePassOverManySpansAndCalls(t *testing.T) {
+	const spanCount = 50_000
+	spans := make([]domain.OnCreditsSpan, spanCount)
+	for i := range spans {
+		spans[i] = span(20*i, 20*i+10)
+	}
+	last := 20 * (spanCount - 1)
+	spans[spanCount-1] = span(last, -1)
+	var requests []domain.APIRequest
+	for sec := 0; sec <= last+15; sec += 5 {
+		requests = append(requests, callAt(sec, 1))
+	}
+
+	start := time.Now()
+	got := domain.EstimateCredits([]domain.CreditGrant{grant(1e9, -1)}, spans, requests, at(last+20))
+	elapsed := time.Since(start)
+
+	// Each closed span holds the calls at its start and 5 s in; the open one
+	// holds the four from its start on.
+	if want := float64(2*(spanCount-1) + 4); got.SpentUSD != want || !got.Active || !got.OnCreditsSince.Equal(at(last)) {
+		t.Errorf("EstimateCredits() = %+v, want $%v spent, on credits since %v", got, want, at(last))
+	}
+	if elapsed > time.Second {
+		t.Errorf("estimating %d calls over %d spans took %v, want well under a second", len(requests), spanCount, elapsed)
+	}
+}
+
+// quadraticEstimate is EstimateCredits worked out the simple way, looking
+// through every span for each request, in the order given.
+func quadraticEstimate(grants []domain.CreditGrant, spans []domain.OnCreditsSpan, requests []domain.APIRequest, now time.Time) domain.CreditEstimate {
+	spendable := func(usd float64) bool { return usd > 0 && !math.IsInf(usd, 1) }
+	add := func(a, b float64) float64 {
+		if sum := a + b; !math.IsInf(sum, 1) {
+			return sum
+		}
+		return math.MaxFloat64
+	}
+	estimate := domain.CreditEstimate{Source: domain.CreditSourceEstimate}
+	var earliest time.Time
+	granted := false
+	for _, g := range grants {
+		if !spendable(g.USD) {
+			continue
+		}
+		estimate.BalanceUSD = add(estimate.BalanceUSD, g.USD)
+		if !granted || g.AddedAt.Before(earliest) {
+			earliest, granted = g.AddedAt, true
+		}
+	}
+	current := slices.IndexFunc(spans, func(s domain.OnCreditsSpan) bool { return s.To.IsZero() || s.To.After(now) })
+	for _, r := range requests {
+		inside := slices.IndexFunc(spans, func(s domain.OnCreditsSpan) bool { return s.Holds(r.At) })
+		if inside < 0 {
+			continue
+		}
+		if inside == current {
+			estimate.Active, estimate.OnCreditsSince = true, spans[current].From
+		}
+		if granted && !r.At.Before(earliest) && spendable(r.CostUSD) {
+			estimate.SpentUSD = add(estimate.SpentUSD, r.CostUSD)
+		}
+	}
+	estimate.RemainingUSD = max(0, estimate.BalanceUSD-estimate.SpentUSD)
+	return estimate
+}
+
+// The one-pass estimate agrees with the simple one, whatever the spans, the
+// grants and the calls, in time order or not. The costs add up exactly in any
+// order, so the sums agree to the last bit.
+func TestEstimateCredits_AgreesWithLookingThroughEverySpan(t *testing.T) {
+	rng := seeded(241)
+	costs := []float64{0, 0.25, 1.5, 3.75, -1, math.NaN(), math.Inf(1), math.MaxFloat64}
+	for range 5000 {
+		fiveHour, fiveHourLast := randomSamples(rng, []int{0, 3_000, 6_000})
+		sevenDay, sevenDayLast := randomSamples(rng, []int{0, 5_000, 12_000})
+		end := max(fiveHourLast, sevenDayLast) + 2_000
+		now := at(rng.IntN(end))
+		spans := domain.OnCreditsSpans(domain.WindowSamples{FiveHour: fiveHour, SevenDay: sevenDay}, now)
+		var grants []domain.CreditGrant
+		for range rng.IntN(3) {
+			grants = append(grants, grant(costs[rng.IntN(len(costs))], rng.IntN(end)))
+		}
+		requests := make([]domain.APIRequest, rng.IntN(40))
+		for i := range requests {
+			requests[i] = callAt(rng.IntN(end), costs[rng.IntN(len(costs))])
+		}
+		if rng.IntN(2) == 0 {
+			slices.SortStableFunc(requests, func(a, b domain.APIRequest) int { return a.At.Compare(b.At) })
+		}
+
+		got := domain.EstimateCredits(grants, spans, requests, now)
+
+		want := quadraticEstimate(grants, spans, requests, now)
+		if got.BalanceUSD != want.BalanceUSD || got.SpentUSD != want.SpentUSD || got.RemainingUSD != want.RemainingUSD ||
+			got.Active != want.Active || !got.OnCreditsSince.Equal(want.OnCreditsSince) || got.Source != want.Source {
+			t.Fatalf("spans %v\ngrants %v\nrequests %v\nnow %v\nEstimateCredits() = %+v, want %+v", spans, grants, requests, now, got, want)
+		}
+	}
+}

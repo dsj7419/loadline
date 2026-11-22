@@ -31,6 +31,37 @@ func (s OnCreditsSpan) Holds(at time.Time) bool {
 	return !at.Before(s.From) && (s.To.IsZero() || at.Before(s.To))
 }
 
+// SpanCursor finds the span that holds each of a run of times, in spans as
+// OnCreditsSpans returns them: in time order, no two overlapping. Asked about
+// times in time order, it walks the spans once however many it is asked
+// about, so a month of spans and calls is read in one pass.
+type SpanCursor struct {
+	spans []OnCreditsSpan
+	next  int
+}
+
+// NewSpanCursor returns a cursor at the start of spans.
+func NewSpanCursor(spans []OnCreditsSpan) SpanCursor {
+	return SpanCursor{spans: spans}
+}
+
+// Find returns the index of the span that holds at, and whether one does. at
+// must be no earlier than the time the cursor was last asked about.
+func (c *SpanCursor) Find(at time.Time) (int, bool) {
+	for c.next < len(c.spans) && endsBy(c.spans[c.next], at) {
+		c.next++
+	}
+	if c.next < len(c.spans) && c.spans[c.next].Holds(at) {
+		return c.next, true
+	}
+	return -1, false
+}
+
+// endsBy reports whether the span has ended by at.
+func endsBy(s OnCreditsSpan, at time.Time) bool {
+	return !s.To.IsZero() && !at.Before(s.To)
+}
+
 // WindowSamples holds an account's usage samples for each rate-limit window.
 type WindowSamples struct {
 	FiveHour, SevenDay []Sample
@@ -224,6 +255,10 @@ func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
 // finite count for nothing, and sums stop at the largest finite amount, as
 // Shares' do. The account is Active while a span holds at now and a call,
 // whatever it cost, was made inside it.
+//
+// The spans are as OnCreditsSpans returns them. The requests may come in any
+// order; in time order, as the tracker keeps them, they and the spans are
+// read together in one pass.
 func EstimateCredits(grants []CreditGrant, spans []OnCreditsSpan, requests []APIRequest, now time.Time) CreditEstimate {
 	estimate := CreditEstimate{Source: CreditSourceEstimate}
 	var earliest time.Time
@@ -239,9 +274,10 @@ func EstimateCredits(grants []CreditGrant, spans []OnCreditsSpan, requests []API
 	}
 
 	current := slices.IndexFunc(spans, func(s OnCreditsSpan) bool { return s.To.IsZero() || s.To.After(now) })
-	for _, r := range requests {
-		inside := slices.IndexFunc(spans, func(s OnCreditsSpan) bool { return s.Holds(r.At) })
-		if inside < 0 {
+	holding := NewSpanCursor(spans)
+	for _, r := range inTimeOrderOfRequests(requests) {
+		inside, held := holding.Find(r.At)
+		if !held {
 			continue
 		}
 		if inside == current {
@@ -253,6 +289,18 @@ func EstimateCredits(grants []CreditGrant, spans []OnCreditsSpan, requests []API
 	}
 	estimate.RemainingUSD = max(0, estimate.BalanceUSD-estimate.SpentUSD)
 	return estimate
+}
+
+// inTimeOrderOfRequests returns requests in time order: themselves when they
+// are, and a sorted copy otherwise.
+func inTimeOrderOfRequests(requests []APIRequest) []APIRequest {
+	byTime := func(a, b APIRequest) int { return a.At.Compare(b.At) }
+	if slices.IsSortedFunc(requests, byTime) {
+		return requests
+	}
+	sorted := slices.Clone(requests)
+	slices.SortStableFunc(sorted, byTime)
+	return sorted
 }
 
 // WithReported returns e with its figures replaced by those of a spend limit
