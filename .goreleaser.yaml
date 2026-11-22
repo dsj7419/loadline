@@ -35,11 +35,15 @@ archives:
         formats:
           - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Each file is archived with the same owner, mode and time wherever and
+    # whenever it was checked out, so the same commit always builds the same
+    # archives, and checksums.txt with them.
     files:
-      - LICENSE
-      - README.md
-      - CHANGELOG.md
-      - THIRD_PARTY_NOTICES.md
+      - src: LICENSE
+        info: &docinfo { owner: root, group: root, mode: 0644, mtime: "{{ .CommitDate }}" }
+      - { src: README.md, info: *docinfo }
+      - { src: CHANGELOG.md, info: *docinfo }
+      - { src: THIRD_PARTY_NOTICES.md, info: *docinfo }
 
 checksum:
   name_template: checksums.txt
