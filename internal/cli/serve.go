@@ -146,7 +146,7 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	}
 	defer func() { _ = logs.Close() }()
 
-	s := newInstance(o, cfg, port, token, slog.New(slog.NewTextHandler(logs, nil)))
+	s := newInstance(ctx, o, cfg, port, token, slog.New(slog.NewTextHandler(logs, nil)))
 	return s.run(ctx, listener)
 }
 
@@ -195,9 +195,11 @@ type instance struct {
 	dirs   *existingDirs
 	poller *poll.Poller
 	prober *accounts.Prober
+	// history is nil in demo mode, and when its database cannot be opened.
+	history *history
 }
 
-func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log *slog.Logger) *instance {
+func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port int, token []byte, log *slog.Logger) *instance {
 	clock := o.Clock
 	if clock == nil {
 		clock = time.Now
@@ -241,7 +243,8 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 	startDirs, labels, budgets := accountSettings(cfg.Accounts, o.Home)
 	startDirs = append(startDirs, defaultDir)
 	trackerCfg.Labels, trackerCfg.Budgets = labels, budgets
-	s.tracker = tracker.New(clock, trackerCfg, tracker.NopRecorder{})
+	s.history = s.openHistory(ctx, cfg.RetentionDays)
+	s.tracker = tracker.New(clock, trackerCfg, s.history.recorder())
 
 	runner := o.Runner
 	if runner == nil {
@@ -371,6 +374,10 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	httpServer.RegisterOnShutdown(endRequests)
 	served := make(chan error, 1)
 	go func() { served <- httpServer.Serve(listener) }()
+	// Restart recovery begins with what the history kept. It waits until
+	// the server is serving, so that a loadline that lost the race for the
+	// port finds this one healthy.
+	s.history.restore(ctx, s.tracker)
 	if s.opts.Ready != nil {
 		s.opts.Ready(listener.Addr().String())
 	}
@@ -387,6 +394,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 		workers.Go(func() { s.poller.Run(work) })
 		workers.Go(func() { s.prober.Run(work) })
 		workers.Go(func() { s.drainEvery(work) })
+		workers.Go(func() { s.history.pruneEvery(work) })
 	}
 	workers.Go(func() { s.openDashboard(work) })
 	if s.idleAfter > 0 {
@@ -423,6 +431,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	}
 	workers.Wait()
 	s.tracker.Close()
+	s.history.close(shutdown)
 	s.log.Info("loadline stopped")
 	return code
 }

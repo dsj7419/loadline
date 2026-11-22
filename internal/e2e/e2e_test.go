@@ -119,9 +119,11 @@ type machine struct {
 	token  []byte
 	http   *http.Client
 	client forward.Client
+	// stop shuts the server down and waits for it.
+	stop func()
 }
 
-// serve runs the server in-process until the test ends.
+// serve runs the server in-process until it is stopped or the test ends.
 func serve(t *testing.T, o cli.ServeOptions) *machine {
 	t.Helper()
 	ready := make(chan struct{})
@@ -130,17 +132,21 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 	done := make(chan int, 1)
 	var stderr bytes.Buffer
 	go func() { done <- cli.Serve(ctx, o, cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: &stderr}) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case code := <-done:
-			if code != 0 {
-				t.Errorf("Serve = %d, want 0", code)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("Serve = %d, want 0", code)
+				}
+			case <-time.After(10 * time.Second):
+				t.Error("Serve did not stop")
 			}
-		case <-time.After(10 * time.Second):
-			t.Error("Serve did not stop")
-		}
-	})
+		})
+	}
+	t.Cleanup(stop)
 	select {
 	case <-ready:
 	case code := <-done:
@@ -158,6 +164,7 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 	return &machine{
 		t: t, port: o.Port, token: token, http: httpClient,
 		client: forward.Client{BaseURL: forward.LoopbackURL(o.Port), Token: token, HTTP: httpClient},
+		stop:   stop,
 	}
 }
 

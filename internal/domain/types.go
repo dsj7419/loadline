@@ -192,9 +192,8 @@ type Session struct {
 	// Subagents is the number of subagents running.
 	Subagents int
 	// running and stopped are the IDs of the subagents counted as running,
-	// and of those whose stop came before their start. Like prev they are
-	// not persisted, so no stop by ID lowers the count a restored session
-	// came back with.
+	// and of those whose stop came before their start. SubagentIDs and
+	// WithSubagentIDs carry them to and from a store.
 	running, stopped agentIDs
 	Metrics          Metrics
 }

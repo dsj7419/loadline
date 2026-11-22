@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/domain"
@@ -140,5 +141,52 @@ func TestApply_AStopWithoutAnIDLeavesTheOnesWithIDs(t *testing.T) {
 	s = domain.Apply(s, subagentHook(20, "SubagentStop", "agent-1"))
 	if s.Subagents != 0 {
 		t.Errorf("Subagents = %d after agent-1 stopped, want 0", s.Subagents)
+	}
+}
+
+// A store keeps a session's subagent IDs with it, so that a session restored
+// after a restart still tells its subagents apart.
+func TestSubagentIDs_SurviveARestore(t *testing.T) {
+	before := applyAll(working(),
+		subagentHook(10, "SubagentStart", "agent-1"),
+		subagentHook(11, "SubagentStart", "agent-2"),
+		subagentHook(12, "SubagentStop", "agent-3"),
+	)
+	kept := before.SubagentIDs()
+	if want := (domain.SubagentIDs{Running: []string{"agent-1", "agent-2"}, Stopped: []string{"agent-3"}}); !reflect.DeepEqual(kept, want) {
+		t.Fatalf("SubagentIDs() = %+v, want %+v", kept, want)
+	}
+
+	restored := domain.Session{ID: before.ID, Dir: before.Dir, State: before.State, StateAt: before.StateAt, Subagents: before.Subagents}
+	restored = restored.WithSubagentIDs(kept)
+	restored = applyAll(restored,
+		subagentHook(20, "SubagentStop", "agent-1"),
+		subagentHook(21, "SubagentStart", "agent-2"),
+		subagentHook(22, "SubagentStart", "agent-3"),
+	)
+	if restored.Subagents != 1 {
+		t.Errorf("Subagents = %d, want 1: agent-1 stopped, agent-2 already counts and agent-3 stopped first", restored.Subagents)
+	}
+}
+
+func TestSubagentIDs_RestoreKeepsTheSetsSound(t *testing.T) {
+	var many []string
+	for i := range 40 {
+		many = append(many, fmt.Sprintf("agent-%d", i))
+	}
+	s := domain.Session{Subagents: 1}.WithSubagentIDs(domain.SubagentIDs{
+		Running: []string{"agent-a", "", "agent-a", "agent-b"},
+		Stopped: many,
+	})
+
+	got := s.SubagentIDs()
+	if want := []string{"agent-a", "agent-b"}; !reflect.DeepEqual(got.Running, want) {
+		t.Errorf("running %q, want %q: empty and repeated IDs are left out", got.Running, want)
+	}
+	if want := many[8:]; !reflect.DeepEqual(got.Stopped, want) {
+		t.Errorf("stopped %q, want the newest 32 %q", got.Stopped, want)
+	}
+	if s.Subagents != 2 {
+		t.Errorf("Subagents = %d, want 2: every running ID counts", s.Subagents)
 	}
 }

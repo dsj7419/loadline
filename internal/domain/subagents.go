@@ -1,8 +1,33 @@
 package domain
 
+import "slices"
+
 // maxTrackedSubagents is how many subagent IDs a session holds of each kind:
 // those running, and those stopped before their start was seen.
 const maxTrackedSubagents = 32
+
+// SubagentIDs are the agent IDs a session tells its subagents apart by,
+// oldest first: those it counts as running, and those whose stop came
+// before their start.
+type SubagentIDs struct {
+	Running, Stopped []string
+}
+
+// SubagentIDs returns the IDs the session tells its subagents apart by, for
+// a store to keep with it.
+func (s Session) SubagentIDs() SubagentIDs {
+	return SubagentIDs{Running: s.running.list(), Stopped: s.stopped.list()}
+}
+
+// WithSubagentIDs returns s holding ids, as a store restores them. Empty and
+// repeated IDs are left out, and of more than 32 of a kind the newest are
+// kept. Subagents rises to count every running ID, since the count includes
+// them.
+func (s Session) WithSubagentIDs(ids SubagentIDs) Session {
+	s.running, s.stopped = agentIDsOf(ids.Running), agentIDsOf(ids.Stopped)
+	s.Subagents = max(s.Subagents, s.running.n)
+	return s
+}
 
 // agentIDs is a bounded set of subagent IDs, oldest first. It is an array
 // rather than a slice, so that a copy of a Session shares nothing with the
@@ -11,6 +36,18 @@ type agentIDs struct {
 	ids [maxTrackedSubagents]string
 	n   int
 }
+
+func agentIDsOf(ids []string) agentIDs {
+	var a agentIDs
+	for _, id := range ids {
+		if id != "" && !a.has(id) {
+			a = a.with(id)
+		}
+	}
+	return a
+}
+
+func (a agentIDs) list() []string { return slices.Clone(a.ids[:a.n]) }
 
 func (a agentIDs) has(id string) bool {
 	for _, held := range a.ids[:a.n] {
