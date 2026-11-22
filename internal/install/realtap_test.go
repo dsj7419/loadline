@@ -46,6 +46,10 @@ func TestBashForm_RealTapBeforeOriginalsThatNeverRead(t *testing.T) {
 	loadlineHome := t.TempDir()
 	env := append(standInHome(t, shells), helperEnv+"=loadline", "LOADLINE_HOME="+loadlineHome)
 	input := largeStatusInput(t)
+	pipefail := make(map[string]bool, len(shells))
+	for _, shell := range shells {
+		pipefail[shell] = hasPipefail(t, shell, env)
+	}
 
 	for _, original := range nonReaders {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
@@ -55,7 +59,7 @@ func TestBashForm_RealTapBeforeOriginalsThatNeverRead(t *testing.T) {
 		for _, shell := range shells {
 			want := runInShell(t, env, openFile(t, input), shell, "-c", original)
 			runs := map[string][]string{"": {"-c", wrapped}}
-			if hasPipefail(t, shell, env) {
+			if pipefail[shell] {
 				runs[" under pipefail"] = []string{"-o", "pipefail", "-c", wrapped}
 			}
 
