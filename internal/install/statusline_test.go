@@ -136,6 +136,7 @@ func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 	}
 	o := options(install.ShellBash)
 	o.Exe = filepath.ToSlash(tapStandIn)
+	env := standInHome(t, shellPaths)
 
 	for _, tc := range bashFormCases {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, tc.original) + `}}`)
@@ -143,8 +144,8 @@ func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 		wrapped := statusCommand(t, out)
 
 		for _, shell := range shellPaths {
-			want, wantCode := runShell(t, shell, tc.original)
-			got, gotCode := runShell(t, shell, wrapped)
+			want, wantCode := runShell(t, shell, env, tc.original)
+			got, gotCode := runShell(t, shell, env, wrapped)
 
 			if got != want || gotCode != wantCode {
 				t.Errorf("%s: %q printed %q (exit %d) behind tap, %q (exit %d) on its own",
@@ -179,14 +180,43 @@ func availableShells() []string {
 	return found
 }
 
-// runShell runs command with shell -c, feeding it a status-line payload, and
-// returns what it printed and its exit code.
-func runShell(t *testing.T, shell, command string) (string, int) {
+// standInHome returns the environment for the shells under test, with HOME
+// in a temporary directory. A command such as bash ~/.claude/statusline.sh
+// then runs a stand-in that copies its input, never the user's own status
+// line. It stops the test before anything runs unless every shell sees that
+// home.
+func standInHome(t *testing.T, shells []string) []string {
+	t.Helper()
+
+	home := t.TempDir()
+	claude := filepath.Join(home, ".claude")
+	if err := os.Mkdir(claude, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"statusline.sh": "cat\n", "stand-in": ""} {
+		if err := os.WriteFile(filepath.Join(claude, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// exec keeps the last of duplicate variables, so this HOME wins.
+	env := append(os.Environ(), "HOME="+home)
+	for _, shell := range shells {
+		if _, code := runShell(t, shell, env, "test -e ~/.claude/stand-in"); code != 0 {
+			t.Fatalf("%s does not take HOME from the environment, so it would run the real ~/.claude", shell)
+		}
+	}
+	return env
+}
+
+// runShell runs command with shell -c in env, feeding it a status-line
+// payload, and returns what it printed and its exit code.
+func runShell(t *testing.T, shell string, env []string, command string) (string, int) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // G204: runs the shell under test on a command the test built
+	cmd.Env = env
 	cmd.Stdin = strings.NewReader("{\"model\":\"opus\"}\n")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
