@@ -63,6 +63,11 @@ func MovableAncestor(dir, top string) (string, error) {
 	if err != nil || found == "" {
 		return "", err
 	}
+	// dir stays as the user gave it, so that they know it, as does any
+	// folder above it found by dir's own names. held, and the folder found
+	// among those that really hold dir, are as the system resolved them,
+	// which is the truth on disk: every link followed and, on Windows, each
+	// name in its long form, whatever short 8.3 name dir gave.
 	return dir + " is really " + held + ", and " + found, nil
 }
 
