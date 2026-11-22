@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dsj7419/loadline/internal/fsperm"
+	"github.com/dsj7419/loadline/internal/datadir"
 )
 
 // tokenBytes is the amount of randomness in an ingest token.
@@ -36,15 +36,11 @@ func EnsureToken(path string) ([]byte, error) {
 		return nil, err
 	}
 
-	dir := filepath.Dir(path)
-	if err := fsperm.MkdirAll(dir); err != nil {
-		return nil, fmt.Errorf("create token directory: %w", err)
-	}
 	// Whoever reads the token can feed the dashboard and read it. Made
 	// private before the token is written, the directory passes nothing
 	// wider down to it, whatever folder LOADLINE_HOME puts it in.
-	if err := fsperm.Private(dir); err != nil {
-		return nil, fmt.Errorf("protect the token: %w", err)
+	if err := datadir.Make(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("prepare the token's directory: %w", err)
 	}
 	return createToken(path)
 }

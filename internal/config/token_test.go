@@ -59,8 +59,10 @@ func TestEnsureToken_StableAcrossCalls(t *testing.T) {
 func TestEnsureToken_DifferentFilesGetDifferentTokens(t *testing.T) {
 	dir := t.TempDir()
 
-	a := ensureToken(t, filepath.Join(dir, "a"))
-	b := ensureToken(t, filepath.Join(dir, "b"))
+	// Each in a data directory of its own, which holds nothing but
+	// Loadline's.
+	a := ensureToken(t, filepath.Join(dir, "a", "token"))
+	b := ensureToken(t, filepath.Join(dir, "b", "token"))
 
 	if bytes.Equal(a, b) {
 		t.Errorf("two new token files got the same token %q", a)

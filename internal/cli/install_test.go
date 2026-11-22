@@ -601,3 +601,26 @@ func TestRun_HelpListsInstallAndUninstall(t *testing.T) {
 		}
 	}
 }
+
+// LOADLINE_HOME is the data directory itself, which install makes private
+// with all it holds, so it must be a folder of Loadline's own.
+func TestInstall_RefusesALoadlineHomeThatHoldsOtherThings(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	notes := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(notes, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, "notes.txt, which is not Loadline's") ||
+		!strings.Contains(got.stderr, "LOADLINE_HOME must be a folder of Loadline's own") {
+		t.Errorf("install = %d, stderr %q; want 1 and the folder refused", got.code, got.stderr)
+	}
+	if settings := readSettings(t, dir); settings != ownerSettings {
+		t.Errorf("install changed the settings although it refused:\n%s", settings)
+	}
+	if names := entries(t, home); !slices.Equal(names, []string{"notes.txt"}) {
+		t.Errorf("LOADLINE_HOME holds %q after the refusal, want only notes.txt", names)
+	}
+}

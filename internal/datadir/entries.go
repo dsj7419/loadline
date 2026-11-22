@@ -46,6 +46,37 @@ func Owns(name string) bool {
 	return err == nil
 }
 
+// systemNames are what Windows Explorer and the macOS Finder leave in a
+// folder its user has looked at, which does not make it anyone else's.
+var systemNames = []string{".DS_Store", "desktop.ini", "Thumbs.db"}
+
+// foreignEntry returns the name of the first entry of dir that is neither
+// Loadline's nor the system's, or "" when there is none or dir does not
+// exist.
+func foreignEntry(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the data directory: %w", err)
+	}
+	for _, entry := range entries {
+		if name := entry.Name(); !Owns(name) && !slices.Contains(systemNames, name) {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// foreignProblem reports dir, which holds name, as one Loadline must not
+// take: making it private would take other users' access to everything in
+// it away.
+func foreignProblem(dir, name string) string {
+	return dir + " holds " + name + ", which is not Loadline's: LOADLINE_HOME must be a folder of Loadline's own, " +
+		"since Loadline makes it, and all it holds, private; set LOADLINE_HOME to a new folder"
+}
+
 // CheckLink returns the error install and the server refuse path with when
 // it is a link, or nil when it is not or does not exist. Writing through a
 // link among Loadline's own files would put them, the binary every hook runs

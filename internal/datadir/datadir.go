@@ -19,17 +19,35 @@ import (
 const movableAdvice = ", and with it replace the binary every hook runs; " +
 	"set LOADLINE_HOME to a folder in your user profile, or take that right away"
 
-// Secure prepares dir to hold Loadline's files. It refuses what Verify
-// refuses. It then creates dir, and each missing folder above it, private to
-// the user, or makes the existing dir private and takes off Loadline's own
-// files what access they were given explicitly, which making the folder
-// private leaves.
+// Secure prepares dir to hold Loadline's files, as install and the server
+// do each time they run. It refuses what Verify refuses, and then does what
+// Make does.
 //
 // The check of the folders above dir goes up to the volume root, or when top
 // is set, stops below top, which it trusts with every folder above it.
 func Secure(dir, top string) error {
 	if err := Verify(dir, top); err != nil {
 		return err
+	}
+	return Make(dir)
+}
+
+// Make prepares dir as Secure does, but without judging the folders above
+// it, as the creation of the token does on a hook's path: there, a folder
+// others could move aside still keeps the token from them. It refuses a dir
+// that holds anything that is not Loadline's, which making the dir private
+// would take other users' access to, and a link among Loadline's own files.
+// It then creates dir, and each missing folder above it, private to the
+// user, or makes the existing dir private and takes off Loadline's own files
+// what access they were given explicitly, which making the folder private
+// leaves.
+func Make(dir string) error {
+	problem, err := contentProblem(dir)
+	if err != nil {
+		return err
+	}
+	if problem != "" {
+		return errors.New(problem)
 	}
 	if err := fsperm.MkdirAll(dir); err != nil {
 		return fmt.Errorf("create the data directory: %w", err)
@@ -56,8 +74,8 @@ func Secure(dir, top string) error {
 // do, or nil when Secure would go ahead. It refuses a dir that another user
 // could move aside, by deleting or renaming one of the folders above it that
 // already exist, and then put a folder of their own, and a binary of their
-// own, at the path the hooks run. It refuses a link among Loadline's own
-// files in dir, which writing to would follow. It changes nothing.
+// own, at the path the hooks run. It refuses what Make refuses. It changes
+// nothing.
 func Verify(dir, top string) error {
 	problem, err := refusal(dir, top)
 	if err != nil {
@@ -103,6 +121,18 @@ func Check(dir, top string) (string, error) {
 func refusal(dir, top string) (string, error) {
 	if problem, err := movable(dir, top); err != nil || problem != "" {
 		return problem, err
+	}
+	return contentProblem(dir)
+}
+
+// contentProblem reports what Make refuses dir for, or "" when nothing.
+func contentProblem(dir string) (string, error) {
+	foreign, err := foreignEntry(dir)
+	if err != nil {
+		return "", err
+	}
+	if foreign != "" {
+		return foreignProblem(dir, foreign), nil
 	}
 	_, link, err := ownPaths(dir)
 	if err != nil || link == "" {

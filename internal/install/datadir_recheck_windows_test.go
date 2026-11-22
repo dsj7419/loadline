@@ -200,3 +200,32 @@ func TestSelfInstall_RefusesABinJunction(t *testing.T) {
 		t.Errorf("SelfInstall wrote %d entries into %s, where the bin junction points", len(entries), theirs)
 	}
 }
+
+// LOADLINE_HOME is the data directory itself, so pointing it at a folder
+// that holds other things, such as D:\tools, would have Loadline rewrite the
+// access of everything under it, and take other users' access to files
+// that are not Loadline's away. Creating the token there refuses instead,
+// and leaves the folder as it is.
+func TestEnsureToken_LeavesAFolderThatIsNotLoadlinesAlone(t *testing.T) {
+	home := filepath.Join(permissiveParent(t), "tools")
+	shared := filepath.Join(home, "shared", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, []byte("for everyone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := fspermtest.Others(t, shared, fspermtest.Read)
+
+	_, err := config.EnsureToken(filepath.Join(home, "token"))
+
+	if err == nil || !strings.Contains(err.Error(), "shared, which is not Loadline's") || !strings.Contains(err.Error(), "LOADLINE_HOME") {
+		t.Errorf("EnsureToken = %v, want it refused: %s holds shared, which is not Loadline's", err, home)
+	}
+	if after := fspermtest.Others(t, shared, fspermtest.Read); strings.Join(after, ", ") != strings.Join(before, ", ") {
+		t.Errorf("EnsureToken changed who can read %s, a file that is not Loadline's, from %v to %v", shared, before, after)
+	}
+	if _, err := os.Stat(filepath.Join(home, "token")); !os.IsNotExist(err) {
+		t.Errorf("EnsureToken created the token in %s although it refused", home)
+	}
+}

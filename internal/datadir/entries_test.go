@@ -1,6 +1,9 @@
 package datadir_test
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/datadir"
@@ -23,5 +26,45 @@ func TestOwns_KnowsLoadlinesEntriesOnly(t *testing.T) {
 		if datadir.Owns(name) {
 			t.Errorf("Owns(%q) = true, want false", name)
 		}
+	}
+}
+
+func TestSecure_RefusesAFolderThatHoldsOtherThings(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tools")
+	notes := filepath.Join(home, "shared", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(notes), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notes, []byte("for everyone"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(home, filepath.Dir(home))
+
+	want := home + " holds shared, which is not Loadline's"
+	if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), "LOADLINE_HOME must be a folder of Loadline's own") {
+		t.Fatalf("Secure = %v, want it refused, starting %q", err, want)
+	}
+	if got, checkErr := datadir.Check(home, filepath.Dir(home)); checkErr != nil || got != err.Error() {
+		t.Errorf("Check = %q, %v; want what Secure refused with: %q", got, checkErr, err.Error())
+	}
+}
+
+// What the system leaves in a folder its user has looked at does not make
+// the folder anyone else's.
+func TestSecure_TakesAFolderWithTheSystemsOwnFiles(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	for _, name := range []string{"token", ".DS_Store", "desktop.ini", "Thumbs.db"} {
+		path := filepath.Join(home, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := datadir.Secure(home, filepath.Dir(home)); err != nil {
+		t.Errorf("Secure = %v, want it to take the folder", err)
 	}
 }

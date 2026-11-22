@@ -250,6 +250,8 @@ log (`loadline.log`, rotated at 5 MB) and the spool:
 | Linux | `$XDG_STATE_HOME/loadline` (default `~/.local/state/loadline`) |
 
 Setting `LOADLINE_HOME` to an absolute path moves the data directory and the config file there.
+It must be a folder of Loadline's own, new or holding only what Loadline put there: Loadline makes
+it, and all it holds, private, so install and the server refuse a folder that holds anything else.
 Wherever it is, Loadline keeps the data directory private: on Windows it gives the directory an
 access list of its own that admits only you, SYSTEM and Administrators, and on macOS and Linux mode
 0700. It refuses one below a folder that other users can delete or rename, which would let them put
