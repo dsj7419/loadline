@@ -124,9 +124,9 @@ func linkProblem(path string) string {
 }
 
 // ownPaths returns what Loadline keeps in dir: each entry it owns, and
-// everything below the folders among them, except the files that are still
-// being written (Temporary). It follows no link: it stops at the first and
-// returns it. A dir that does not exist holds nothing, and an entry that
+// everything below the folders among them, except the regular files that
+// are still being written (Temporary). It follows no link: it stops at the
+// first and returns it. A dir that does not exist holds nothing, and an entry that
 // goes while it looks, as a spooled event does once drained, is left out.
 func ownPaths(dir string) (paths []string, link string, err error) {
 	entries, err := os.ReadDir(dir)
@@ -140,7 +140,7 @@ func ownPaths(dir string) (paths []string, link string, err error) {
 		if !Owns(entry.Name()) {
 			continue
 		}
-		found, link, err := walk(filepath.Join(dir, entry.Name()))
+		found, link, err := walk(filepath.Join(dir, entry.Name()), entry.Type())
 		paths = append(paths, found...)
 		if err != nil || link != "" {
 			return paths, link, err
@@ -149,14 +149,15 @@ func ownPaths(dir string) (paths []string, link string, err error) {
 	return paths, "", nil
 }
 
-// walk returns path and, when it is a folder, everything below it, stopping
-// at the first link and passing over the files that are still being
-// written.
-func walk(path string) (paths []string, link string, err error) {
-	if Temporary(filepath.Base(path)) {
+// walk returns path, whose type its folder's listing gave as typ, and when
+// it is a folder, everything below it, stopping at the first link and
+// passing over the regular files that are still being written.
+func walk(path string, typ fs.FileMode) (paths []string, link string, err error) {
+	if Temporary(filepath.Base(path)) && typ.IsRegular() {
 		// Not even looked at: it is its writer's, and on Windows, looking
 		// at one a moment after its writer deleted it fails while the
-		// deletion is pending.
+		// deletion is pending. The listing, which opens nothing, tells a
+		// file from a link, which no writer makes and which is refused.
 		return nil, "", nil
 	}
 	var isLink bool
@@ -190,7 +191,7 @@ func walk(path string) (paths []string, link string, err error) {
 		return paths, "", fmt.Errorf("read %s: %w", path, err)
 	}
 	for _, entry := range entries {
-		found, link, err := walk(filepath.Join(path, entry.Name()))
+		found, link, err := walk(filepath.Join(path, entry.Name()), entry.Type())
 		paths = append(paths, found...)
 		if err != nil || link != "" {
 			return paths, link, err

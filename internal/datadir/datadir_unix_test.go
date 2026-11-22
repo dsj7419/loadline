@@ -60,3 +60,22 @@ func TestSecure_RefusesASymlinkAmongLoadlinesFiles(t *testing.T) {
 		t.Errorf("Secure = %v, want it refused, naming %s as a link", err, token)
 	}
 }
+
+// A symlink named like a file Loadline writes before it puts it in place is
+// no such file, and is refused like any link among Loadline's paths.
+func TestSecure_RefusesASymlinkNamedLikeAFileBeingWritten(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".token-1234")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(home, filepath.Dir(home))
+
+	if err == nil || !strings.Contains(err.Error(), link+" is a link") {
+		t.Errorf("Secure = %v, want it refused, naming %s as a link", err, link)
+	}
+}

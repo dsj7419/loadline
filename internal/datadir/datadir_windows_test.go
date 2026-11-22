@@ -25,11 +25,20 @@ import (
 // signed-in user modify what is created below it.
 func driveRoot(t *testing.T) string {
 	t.Helper()
+	top := privateTop(t)
+	fspermtest.Permissive(t, top)
+	return top
+}
+
+// privateTop returns a temporary folder made private, which the tests take,
+// with every folder above it, for one nobody else can move aside, so that
+// only what they build below it is judged.
+func privateTop(t *testing.T) string {
+	t.Helper()
 	top := t.TempDir()
 	if err := fsperm.Private(top); err != nil {
 		t.Fatal(err)
 	}
-	fspermtest.Permissive(t, top)
 	return top
 }
 
