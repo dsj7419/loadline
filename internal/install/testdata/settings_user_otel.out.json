@@ -1,0 +1,199 @@
+{
+    "model": "sonnet",
+    "env": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector.example:4318"
+    },
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "StopFailure": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PermissionRequest": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "SubagentStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "SubagentStop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PostCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "Notification": [
+            {
+                "matcher": "permission_prompt|elicitation_dialog|agent_needs_input|idle_prompt",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "AskUserQuestion",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+                        "args": [
+                            "hook"
+                        ],
+                        "async": true
+                    }
+                ]
+            }
+        ]
+    },
+    "statusLine": {
+        "type": "command",
+        "command": "\"C:/Users/example/AppData/Local/loadline/bin/loadline.exe\" tap --print",
+        "refreshInterval": 10
+    }
+}

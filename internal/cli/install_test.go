@@ -1,0 +1,497 @@
+package cli_test
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/tidwall/gjson"
+
+	"github.com/dsj7419/loadline/internal/cli"
+)
+
+const (
+	restartNotice = "Claude Code sessions that are already running will show up fully after you restart them."
+
+	ownerSettings = `{
+  "model": "opus",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/Users/example/.claude/hooks/format.js"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline.sh",
+    "refreshInterval": 5
+  },
+  "env": {
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"
+  }
+}
+`
+	knownToken = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123"
+)
+
+func runWithInput(t *testing.T, stdin string, args ...string) result {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(context.Background(), args, cli.IO{
+		In:  strings.NewReader(stdin),
+		Out: &stdout,
+		Err: &stderr,
+	})
+	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// sandbox points Loadline's own files at a temporary directory and returns
+// it, with a Claude Code config dir holding settings ("" for none).
+func sandbox(t *testing.T, settings string) (home, configDir string) {
+	t.Helper()
+
+	home = t.TempDir()
+	t.Setenv("LOADLINE_HOME", home)
+	configDir = t.TempDir()
+	if settings != "" {
+		writeSettings(t, configDir, settings)
+	}
+	return home, configDir
+}
+
+func writeSettings(t *testing.T, dir, settings string) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readSettings(t *testing.T, dir string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func entries(t *testing.T, dir string) []string {
+	t.Helper()
+
+	list, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(list))
+	for _, e := range list {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func installedExe(home string) string {
+	name := "loadline"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.ToSlash(filepath.Join(home, "bin", name))
+}
+
+func TestInstall_DryRunWritesNothing(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	path := filepath.Join(dir, "settings.json")
+
+	got := run(t, "install", "--config-dir", dir, "--dry-run")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	for _, want := range []string{
+		"--- " + path + "\n",
+		"+++ " + path + " (loadline)\n",
+		"hooks.SessionStart",
+		"statusLine.command",
+		`x-loadline-token=****`,
+		installedExe(home),
+	} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, got.stdout)
+		}
+	}
+	if strings.Contains(got.stdout, "<created-on-install>") {
+		t.Errorf("stdout shows the token placeholder unmasked:\n%s", got.stdout)
+	}
+	if strings.Contains(got.stdout, "Apply these changes?") {
+		t.Errorf("a dry run asked to apply:\n%s", got.stdout)
+	}
+	if readSettings(t, dir) != ownerSettings {
+		t.Error("a dry run changed settings.json")
+	}
+	if names := entries(t, dir); !slices.Equal(names, []string{"settings.json"}) {
+		t.Errorf("config dir holds %q after a dry run, want only settings.json", names)
+	}
+	if names := entries(t, home); len(names) != 0 {
+		t.Errorf("a dry run wrote %q to the Loadline home, want nothing (no binary, no token)", names)
+	}
+}
+
+func TestInstall_DryRunMasksTheExistingToken(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	if err := os.WriteFile(filepath.Join(home, "token"), []byte(knownToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := run(t, "install", "--config-dir", dir, "--dry-run")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	if strings.Contains(got.stdout+got.stderr, knownToken) {
+		t.Errorf("the output reveals the token:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "x-loadline-token=****") {
+		t.Errorf("stdout lacks the masked token:\n%s", got.stdout)
+	}
+}
+
+func TestInstall_YesInstallsAndUninstallRestores(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+
+	installed := run(t, "install", "--config-dir", dir, "--yes")
+
+	if installed.code != 0 {
+		t.Fatalf("install exit code = %d, want 0; stderr: %s", installed.code, installed.stderr)
+	}
+	if !strings.Contains(installed.stdout, restartNotice) {
+		t.Errorf("stdout lacks the restart notice:\n%s", installed.stdout)
+	}
+	settings := []byte(readSettings(t, dir))
+	exe := installedExe(home)
+	if got := gjson.GetBytes(settings, "hooks.Stop.0.hooks.0.command").Str; got != exe {
+		t.Errorf("Stop hook runs %q, want the installed binary %q", got, exe)
+	}
+	if _, err := os.Stat(filepath.FromSlash(exe)); err != nil {
+		t.Errorf("the binary was not installed: %v", err)
+	}
+	token, err := os.ReadFile(filepath.Join(home, "token"))
+	if err != nil {
+		t.Fatalf("the token was not created: %v", err)
+	}
+	if got := gjson.GetBytes(settings, "env.OTEL_EXPORTER_OTLP_LOGS_HEADERS").Str; got != "x-loadline-token="+string(token) {
+		t.Errorf("headers = %q, want the created token", got)
+	}
+	if strings.Contains(installed.stdout+installed.stderr, string(token)) {
+		t.Errorf("the output reveals the token:\n%s", installed.stdout)
+	}
+	if names := entries(t, dir); len(names) != 2 {
+		t.Errorf("config dir holds %q, want settings.json and one backup", names)
+	}
+
+	again := run(t, "install", "--config-dir", dir, "--yes")
+
+	if again.code != 0 || !strings.Contains(again.stdout, "Already installed.") {
+		t.Errorf("second install: code %d, stdout:\n%s", again.code, again.stdout)
+	}
+	if names := entries(t, dir); len(names) != 2 {
+		t.Errorf("config dir holds %q after a no-op install, want no new backup", names)
+	}
+
+	removed := run(t, "uninstall", "--config-dir", dir, "--yes")
+
+	if removed.code != 0 {
+		t.Fatalf("uninstall exit code = %d, want 0; stderr: %s", removed.code, removed.stderr)
+	}
+	if got := readSettings(t, dir); got != ownerSettings {
+		t.Errorf("uninstall did not restore the original settings:\n%s", got)
+	}
+
+	nothing := run(t, "uninstall", "--config-dir", dir, "--yes")
+
+	if nothing.code != 0 || !strings.Contains(nothing.stdout, "Nothing to remove.") {
+		t.Errorf("second uninstall: code %d, stdout:\n%s", nothing.code, nothing.stdout)
+	}
+}
+
+func TestInstall_AsksBeforeWriting(t *testing.T) {
+	for _, answer := range []string{"n\n", "no\n", "\n", "", "maybe\n"} {
+		t.Run(answer, func(t *testing.T) {
+			home, dir := sandbox(t, ownerSettings)
+
+			got := runWithInput(t, answer, "install", "--config-dir", dir)
+
+			if got.code != 1 {
+				t.Errorf("exit code = %d, want 1 when the answer is not yes", got.code)
+			}
+			if !strings.Contains(got.stdout, "Apply these changes? [y/N] ") {
+				t.Errorf("stdout lacks the prompt:\n%s", got.stdout)
+			}
+			if readSettings(t, dir) != ownerSettings {
+				t.Error("settings changed without a yes")
+			}
+			if names := entries(t, home); len(names) != 0 {
+				t.Errorf("Loadline home holds %q without a yes, want nothing", names)
+			}
+		})
+	}
+}
+
+func TestInstall_AppliesOnYes(t *testing.T) {
+	for _, answer := range []string{"y\n", "Y\n", "yes\n", "YES", " yes \r\n"} {
+		t.Run(answer, func(t *testing.T) {
+			_, dir := sandbox(t, ownerSettings)
+
+			got := runWithInput(t, answer, "install", "--config-dir", dir)
+
+			if got.code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+			}
+			if !gjson.Get(readSettings(t, dir), "hooks.Stop").Exists() {
+				t.Error("the answer did not apply the changes")
+			}
+		})
+	}
+}
+
+// editingAnswer answers yes to the prompt, but only after someone else has
+// rewritten the settings file, as an editor might while the prompt waits.
+type editingAnswer struct {
+	path, settings string
+	answered       bool
+}
+
+func (a *editingAnswer) Read(p []byte) (int, error) {
+	if a.answered {
+		return 0, io.EOF
+	}
+	a.answered = true
+	if err := os.WriteFile(a.path, []byte(a.settings), 0o600); err != nil {
+		return 0, err
+	}
+	return copy(p, "y\n"), nil
+}
+
+func TestInstall_RefusesWhenSettingsChangeDuringThePrompt(t *testing.T) {
+	_, dir := sandbox(t, ownerSettings)
+	const edited = `{"model": "sonnet"}`
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(context.Background(), []string{"install", "--config-dir", dir}, cli.IO{
+		In:  &editingAnswer{path: filepath.Join(dir, "settings.json"), settings: edited},
+		Out: &stdout,
+		Err: &stderr,
+	})
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "changed after it was read") || !strings.Contains(stderr.String(), "run the command again") {
+		t.Errorf("stderr = %q, want it to explain the refusal", stderr.String())
+	}
+	if got := readSettings(t, dir); got != edited {
+		t.Errorf("settings = %s, want the other edit kept", got)
+	}
+	if names := entries(t, dir); !slices.Equal(names, []string{"settings.json"}) {
+		t.Errorf("config dir holds %q, want no backup from a refused write", names)
+	}
+}
+
+func TestInstall_RefusesInvalidJSON(t *testing.T) {
+	home, dir := sandbox(t, `{"model": `)
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 1 {
+		t.Errorf("exit code = %d, want 1", got.code)
+	}
+	if !strings.Contains(got.stderr, "not valid JSON") || !strings.Contains(got.stderr, filepath.Join(dir, "settings.json")) {
+		t.Errorf("stderr = %q, want it to name the file and the problem", got.stderr)
+	}
+	if readSettings(t, dir) != `{"model": ` {
+		t.Error("an invalid settings file was rewritten")
+	}
+	if names := entries(t, home); len(names) != 0 {
+		t.Errorf("Loadline home holds %q after a refusal, want nothing", names)
+	}
+}
+
+func TestInstall_CreatesMissingSettings(t *testing.T) {
+	_, dir := sandbox(t, "")
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	settings := readSettings(t, dir)
+	if !gjson.Valid(settings) || !gjson.Get(settings, "hooks.SessionStart").Exists() {
+		t.Errorf("created settings lack the hooks:\n%s", settings)
+	}
+	if names := entries(t, dir); !slices.Equal(names, []string{"settings.json"}) {
+		t.Errorf("config dir holds %q, want only the new settings.json", names)
+	}
+}
+
+func TestInstall_RefusesMissingConfigDir(t *testing.T) {
+	home, dir := sandbox(t, "")
+	missing := filepath.Join(dir, "typo")
+
+	got := run(t, "install", "--config-dir", missing, "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, missing) {
+		t.Errorf("code %d, stderr %q, want a failure naming %s", got.code, got.stderr, missing)
+	}
+	if names := entries(t, home); len(names) != 0 {
+		t.Errorf("Loadline home holds %q after a refusal, want nothing", names)
+	}
+}
+
+func TestInstall_WarnsAboutTheUsersOwnTelemetry(t *testing.T) {
+	_, dir := sandbox(t, `{"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"}}`)
+
+	got := run(t, "install", "--config-dir", dir, "--dry-run")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "OTEL_EXPORTER_OTLP_ENDPOINT") || !strings.Contains(got.stderr, "per-model view will be unavailable") {
+		t.Errorf("stderr = %q, want a warning about the user's telemetry", got.stderr)
+	}
+}
+
+func TestInstall_EditsEveryConfigDir(t *testing.T) {
+	_, first := sandbox(t, ownerSettings)
+	second := t.TempDir()
+	writeSettings(t, second, `{}`)
+
+	got := run(t, "install", "--config-dir", first, "--config-dir", second, "--yes")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	for _, dir := range []string{first, second} {
+		if !gjson.Get(readSettings(t, dir), "hooks.Stop").Exists() {
+			t.Errorf("%s was not installed", dir)
+		}
+	}
+}
+
+func TestInstall_DefaultsToTheClaudeDirInHome(t *testing.T) {
+	sandbox(t, "")
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	claudeDir := filepath.Join(userHome, ".claude")
+	if err := os.Mkdir(claudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, claudeDir, `{}`)
+
+	got := run(t, "install", "--dry-run")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	// Windows ignores case in paths, and the default dir is normalized to
+	// lower case there.
+	if want := "--- " + filepath.Join(claudeDir, "settings.json"); !strings.Contains(strings.ToLower(got.stdout), strings.ToLower(want)) {
+		t.Errorf("stdout does not diff %s:\n%s", want, got.stdout)
+	}
+}
+
+func TestInstall_PortFlag(t *testing.T) {
+	_, dir := sandbox(t, `{}`)
+
+	got := run(t, "install", "--config-dir", dir, "--dry-run", "--port", "9123")
+
+	if got.code != 0 || !strings.Contains(got.stdout, "http://127.0.0.1:9123/v1/logs") {
+		t.Errorf("code %d, stdout:\n%s\nwant the endpoint on port 9123", got.code, got.stdout)
+	}
+
+	for _, port := range []string{"80", "70000", "-1"} {
+		if bad := run(t, "install", "--config-dir", dir, "--dry-run", "--port", port); bad.code != 2 {
+			t.Errorf("--port %s: exit code = %d, want 2", port, bad.code)
+		}
+	}
+}
+
+func TestInstall_RejectsUnknownFlagsAndArguments(t *testing.T) {
+	_, dir := sandbox(t, `{}`)
+
+	for _, args := range [][]string{
+		{"install", "--config-dir", dir, "--frobnicate"},
+		{"install", "--config-dir", dir, "extra"},
+		{"uninstall", "--config-dir", dir, "--port", "9123"},
+	} {
+		if got := run(t, args...); got.code != 2 {
+			t.Errorf("%q: exit code = %d, want 2", args, got.code)
+		}
+	}
+}
+
+func TestUninstall_DryRunWritesNothing(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+		t.Fatalf("install: %s", got.stderr)
+	}
+	installed := readSettings(t, dir)
+	token, err := os.ReadFile(filepath.Join(home, "token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := run(t, "uninstall", "--config-dir", dir, "--dry-run")
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", got.code, got.stderr)
+	}
+	for _, want := range []string{"remove", "hooks.Stop", `-    "OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-loadline-token=****"`} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, got.stdout)
+		}
+	}
+	if strings.Contains(got.stdout, string(token)) {
+		t.Errorf("the output reveals the token:\n%s", got.stdout)
+	}
+	if readSettings(t, dir) != installed {
+		t.Error("a dry run changed settings.json")
+	}
+}
+
+func TestUninstall_MissingSettingsHasNothingToRemove(t *testing.T) {
+	_, dir := sandbox(t, "")
+
+	got := run(t, "uninstall", "--config-dir", dir, "--yes")
+
+	if got.code != 0 || !strings.Contains(got.stdout, "Nothing to remove.") {
+		t.Errorf("code %d, stdout:\n%s", got.code, got.stdout)
+	}
+	if names := entries(t, dir); len(names) != 0 {
+		t.Errorf("uninstall created %q", names)
+	}
+}
+
+func TestRun_HelpListsInstallAndUninstall(t *testing.T) {
+	got := run(t, "help")
+
+	for _, command := range []string{"install", "uninstall"} {
+		if !strings.Contains(got.stdout, command) {
+			t.Errorf("usage lacks %s:\n%s", command, got.stdout)
+		}
+	}
+}

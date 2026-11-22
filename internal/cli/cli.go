@@ -27,6 +27,8 @@ const (
 const usage = `Usage: loadline <command>
 
 Commands:
+  install    Wire Loadline into Claude Code's settings
+  uninstall  Remove Loadline from Claude Code's settings
   version    Print the version
   help       Show this help
 `
@@ -40,6 +42,10 @@ func Run(_ context.Context, args []string, stdio IO) int {
 	}
 
 	switch args[0] {
+	case "install":
+		return runInstall(args[1:], stdio)
+	case "uninstall":
+		return runUninstall(args[1:], stdio)
 	case "version":
 		return printStdout(stdio, "loadline "+Version+"\n")
 	case "help", "-h", "--help":

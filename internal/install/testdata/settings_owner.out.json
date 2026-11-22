@@ -1,0 +1,219 @@
+{
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(git status)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/Users/example/.claude/hooks/format.js"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|agent_needs_input|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/example/AppData/Local/loadline/bin/loadline.exe",
+            "args": [
+              "hook"
+            ],
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "\"C:/Users/example/AppData/Local/loadline/bin/loadline.exe\" tap | bash ~/.claude/statusline.sh",
+    "refreshInterval": 5
+  },
+  "env": {
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:8289/v1/logs",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-loadline-token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "OTEL_LOGS_EXPORT_INTERVAL": "5000",
+    "OTEL_METRICS_EXPORTER": "none"
+  }
+}

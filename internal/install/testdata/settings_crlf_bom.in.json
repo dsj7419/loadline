@@ -1,0 +1,11 @@
+﻿{
+	"theme": "dark",
+	"statusLine": {
+		"type": "command",
+		"command": "~/bin/status.sh --color",
+		"padding": 0
+	},
+	"env": {
+		"EDITOR": "code"
+	}
+}

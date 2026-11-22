@@ -4,5 +4,9 @@
 # The embedded UI bundle is generated: keep it out of diffs and language stats.
 internal/web/dist/** -diff linguist-generated
 
+# Install fixtures that pin CRLF line endings and a byte-order mark must reach
+# the tests byte for byte.
+internal/install/testdata/settings_crlf_bom.* -text
+
 *.woff2 binary
 *.png binary
