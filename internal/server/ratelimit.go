@@ -17,7 +17,7 @@ const (
 // shared allowance.
 func (s *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.limiter.take(s.clock()) {
+		if !s.limiter.take() {
 			w.Header().Set("Retry-After", "1")
 			s.reject(w, r, http.StatusTooManyRequests, "rate limited")
 			return
@@ -28,8 +28,12 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 
 // tokenBucket holds up to ingestBurst tokens and earns one every ingestEvery.
 // It counts whole tokens and whole intervals, so no rounding lets a request
-// through early.
+// through early. It reads the clock under its lock: requests racing for the
+// lock then see the time in the order they are served, and none of them looks
+// like the clock stepping back.
 type tokenBucket struct {
+	clock func() time.Time
+
 	mu     sync.Mutex
 	tokens int64
 	// earnedAt is when the bucket last earned its tokens. Time short of a
@@ -37,14 +41,15 @@ type tokenBucket struct {
 	earnedAt time.Time
 }
 
-func newTokenBucket(now time.Time) *tokenBucket {
-	return &tokenBucket{tokens: ingestBurst, earnedAt: now}
+func newTokenBucket(clock func() time.Time) *tokenBucket {
+	return &tokenBucket{clock: clock, tokens: ingestBurst, earnedAt: clock()}
 }
 
-// take spends a token at now, reporting false when there is none.
-func (b *tokenBucket) take(now time.Time) bool {
+// take spends a token, reporting false when there is none.
+func (b *tokenBucket) take() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock()
 	switch elapsed := now.Sub(b.earnedAt); {
 	case elapsed < 0:
 		// The clock stepped back. Count from now instead of waiting for it

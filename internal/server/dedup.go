@@ -14,8 +14,10 @@ const (
 )
 
 // recentIDs remembers the IDs of the events applied lately, oldest first, in
-// a ring.
+// a ring. Each ID it knows is held by exactly one entry of the ring.
 type recentIDs struct {
+	clock func() time.Time
+
 	mu    sync.Mutex
 	ring  []seenID
 	start int // index of the oldest entry
@@ -23,24 +25,28 @@ type recentIDs struct {
 	known map[string]struct{}
 }
 
+// seenID is an entry of the ring. A forgotten entry keeps its place, and
+// its time, with an empty id.
 type seenID struct {
 	id string
 	at time.Time
 }
 
-func newRecentIDs() *recentIDs {
+func newRecentIDs(clock func() time.Time) *recentIDs {
 	return &recentIDs{
+		clock: clock,
 		ring:  make([]seenID, recentIDLimit),
 		known: make(map[string]struct{}, recentIDLimit),
 	}
 }
 
-// add remembers id as applied at now, reporting false when it was applied
+// add remembers id as applied now, reporting false when it was applied
 // recently and must not be applied again. A repeat leaves the first
 // sighting's time as it was.
-func (r *recentIDs) add(id string, now time.Time) bool {
+func (r *recentIDs) add(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.clock()
 	for r.size > 0 && now.Sub(r.ring[r.start].at) >= recentIDAge {
 		r.dropOldest()
 	}
@@ -56,8 +62,27 @@ func (r *recentIDs) add(id string, now time.Time) bool {
 	return true
 }
 
+// forget undoes add for an event that was not applied after all, so that
+// the event is applied when it comes again. Its entry is blanked rather than
+// removed, so that the entry leaving the ring later does not take a newer
+// entry's ID with it.
+func (r *recentIDs) forget(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.known, id)
+	for i := r.size - 1; i >= 0; i-- {
+		entry := &r.ring[(r.start+i)%len(r.ring)]
+		if entry.id == id {
+			entry.id = ""
+			return
+		}
+	}
+}
+
 func (r *recentIDs) dropOldest() {
-	delete(r.known, r.ring[r.start].id)
+	if id := r.ring[r.start].id; id != "" {
+		delete(r.known, id)
+	}
 	r.ring[r.start] = seenID{}
 	r.start = (r.start + 1) % len(r.ring)
 	r.size--

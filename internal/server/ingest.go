@@ -71,12 +71,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // had already taken sends it again, and applying it twice would count its
 // subagent twice.
 func (s *Server) accept(w http.ResponseWriter, r *http.Request, f feed, id string, apply func()) {
-	now := s.clock()
-	s.feeds.note(f, now)
-	if s.recent.add(id, now) {
-		apply()
+	s.feeds.note(f, s.clock())
+	if s.recent.add(id) {
+		applyOnce(s.recent, id, apply)
 	}
 	s.writeJSON(w, r, http.StatusOK, struct{}{})
+}
+
+// applyOnce runs apply for the event id names. Should apply panic, the event
+// was not applied, so its ID is forgotten and a retry is applied.
+func applyOnce(recent *recentIDs, id string, apply func()) {
+	applied := false
+	defer func() {
+		if !applied {
+			recent.forget(id)
+		}
+	}()
+	apply()
+	applied = true
 }
 
 // readEnvelope reads the request body as one envelope of kind. When the body

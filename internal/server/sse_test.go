@@ -301,14 +301,24 @@ func TestSSE_SkipsAnUnencodableView(t *testing.T) {
 }
 
 // brokenStream is a response writer whose writes fail once writesLeft are
-// spent, as on a connection the client dropped.
+// spent, as on a connection the client dropped. It records the write
+// deadlines set on it, and counts the writes no fresh deadline covered.
 type brokenStream struct {
 	*httptest.ResponseRecorder
 	writesLeft  int
 	deadlineErr error
+	flushErr    error
+
+	deadlines []time.Time
+	armed     bool
+	unguarded int
 }
 
 func (b *brokenStream) Write(p []byte) (int, error) {
+	if !b.armed {
+		b.unguarded++
+	}
+	b.armed = false
 	if b.writesLeft == 0 {
 		return 0, errors.New("broken pipe")
 	}
@@ -319,7 +329,20 @@ func (b *brokenStream) Write(p []byte) (int, error) {
 // WriteString hides the recorder's own, which io.WriteString would call.
 func (b *brokenStream) WriteString(s string) (int, error) { return b.Write([]byte(s)) }
 
-func (b *brokenStream) SetWriteDeadline(time.Time) error { return b.deadlineErr }
+// FlushError is what http.ResponseController calls in preference to Flush.
+func (b *brokenStream) FlushError() error {
+	if b.flushErr != nil {
+		return b.flushErr
+	}
+	b.Flush()
+	return nil
+}
+
+func (b *brokenStream) SetWriteDeadline(deadline time.Time) error {
+	b.deadlines = append(b.deadlines, deadline)
+	b.armed = true
+	return b.deadlineErr
+}
 
 // serveBrokenStream serves an event stream into w, runs during once the
 // stream has subscribed, and waits for the handler to return.
@@ -347,18 +370,20 @@ func TestSSE_EndsWhenAWriteFails(t *testing.T) {
 	tests := []struct {
 		name       string
 		writesLeft int
+		flushErr   error
 		ping       time.Duration
 		publish    bool
 	}{
 		{name: "the snapshot", writesLeft: 0, ping: time.Hour},
 		{name: "an update", writesLeft: 1, ping: time.Hour, publish: true},
 		{name: "a heartbeat", writesLeft: 1, ping: time.Millisecond},
+		{name: "a flush", writesLeft: 10, flushErr: errors.New("write timeout"), ping: time.Hour},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			server.SetPingInterval(h.srv, tt.ping)
-			w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: tt.writesLeft}
+			w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: tt.writesLeft, flushErr: tt.flushErr}
 
 			serveBrokenStream(t, h, w, func() {
 				if tt.publish {
@@ -369,17 +394,94 @@ func TestSSE_EndsWhenAWriteFails(t *testing.T) {
 	}
 }
 
-func TestSSE_StreamsWhenTheWriteDeadlineCannotBeCleared(t *testing.T) {
+func TestSSE_SetsAWriteDeadlineBeforeEachWrite(t *testing.T) {
+	h := newHarness(t)
+	server.SetPingInterval(h.srv, time.Millisecond)
+	w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: 3}
+	before := time.Now()
+
+	serveBrokenStream(t, h, w, func() { h.sink.publish(testView(t0)) })
+
+	after := time.Now()
+	if w.unguarded != 0 {
+		t.Errorf("%d writes had no fresh write deadline, want none", w.unguarded)
+	}
+	if len(w.deadlines) != 4 {
+		t.Errorf("set %d write deadlines, want one for each of the 4 writes", len(w.deadlines))
+	}
+	for _, deadline := range w.deadlines {
+		if deadline.Before(before.Add(30*time.Second)) || deadline.After(after.Add(30*time.Second)) {
+			t.Errorf("write deadline %v is not 30 s after the write, which happened in [%v, %v]", deadline, before, after)
+		}
+	}
+}
+
+func TestSSE_EndsWhenAWriteDeadlineCannotBeSet(t *testing.T) {
 	h := newHarness(t)
 	server.SetPingInterval(h.srv, time.Hour)
-	h.sink.setView(testView(t0))
-	w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: 1, deadlineErr: errors.New("no deadlines here")}
+	w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: 10, deadlineErr: errors.New("connection closed")}
 
-	serveBrokenStream(t, h, w, func() { h.sink.publish(testView(t0.Add(time.Second))) })
+	serveBrokenStream(t, h, w, func() {})
 
-	if want := "event: view\ndata: " + marshalView(t, testView(t0)) + "\n\n"; w.Body.String() != want {
-		t.Errorf("stream = %q, want the snapshot %q", w.Body.String(), want)
+	if w.Body.Len() != 0 {
+		t.Errorf("streamed %q without a write deadline, want nothing", w.Body.String())
 	}
+}
+
+func TestSSE_StreamsToAWriterWithoutDeadlines(t *testing.T) {
+	h := newHarness(t)
+	h.sink.setView(testView(t0))
+	rec := httptest.NewRecorder()
+	ctx, cancel := context.WithCancel(t.Context())
+	r := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/events", nil)
+	r.Host = testHost
+	addCookie(r, uiCookie, uiCookieValue(testToken))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.handler.ServeHTTP(rec, r)
+	}()
+	eventually(t, "the stream to subscribe", func() bool { return len(h.sink.callOrder()) > 0 })
+
+	cancel()
+	<-done
+
+	if want := "event: view\ndata: " + marshalView(t, testView(t0)) + "\n\n"; rec.Body.String() != want {
+		t.Errorf("stream = %q, want the snapshot %q", rec.Body.String(), want)
+	}
+}
+
+func TestSSE_EndsWhenTheClientStopsReading(t *testing.T) {
+	h, ts := newStreamServer(t, func(srv *server.Server, _ *http.Server) {
+		server.SetStreamWriteTimeout(srv, 200*time.Millisecond)
+	})
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	// The client reads no further. Views far larger than the socket buffers
+	// fill them, and then a write blocks.
+	big := testView(t0)
+	big.Sessions = []tracker.SessionView{{ID: "s1", Name: strings.Repeat("x", 1<<20)}}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+				h.sink.publishLatest(big)
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-stopped
+	}()
+
+	eventually(t, "the stalled stream to end", func() bool {
+		return h.srv.Clients() == 0 && h.sink.unsubscribes() == 1
+	})
 }
 
 func TestSSE_StreamsTheTrackersViews(t *testing.T) {

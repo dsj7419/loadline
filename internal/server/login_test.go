@@ -53,6 +53,38 @@ func TestLogin_CodeSingleUseAndExpires(t *testing.T) {
 	assertRefused(t, login(h, beforeItsTime))
 }
 
+func TestLogin_HeadIsRefusedAndSpendsNoCode(t *testing.T) {
+	h := newHarness(t)
+	code := h.srv.MintLoginCode()
+
+	rec := h.do(request(http.MethodHead, "/login?code="+code, nil))
+
+	assertStatus(t, rec, http.StatusMethodNotAllowed)
+	if got := rec.Header().Get("Allow"); got != "GET" {
+		t.Errorf("Allow = %q, want GET", got)
+	}
+	if got := rec.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Errorf("Set-Cookie = %q, want none", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	assertLoggedIn(t, login(h, code))
+}
+
+func TestLogin_SimultaneousRedemptionsSucceedOnce(t *testing.T) {
+	h := newHarness(t)
+	code := h.srv.MintLoginCode()
+
+	codes := h.concurrently(32, func(int) *http.Request {
+		return request(http.MethodGet, "/login?code="+code, nil)
+	})
+
+	if got := countCodes(codes); got[http.StatusSeeOther] != 1 || got[http.StatusForbidden] != 31 {
+		t.Errorf("statuses = %v, want one 303 and 31 403s", got)
+	}
+}
+
 func TestLogin_SetsStrictHttpOnlyCookie(t *testing.T) {
 	h := newHarness(t)
 

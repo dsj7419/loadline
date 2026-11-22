@@ -382,6 +382,76 @@ func TestIngest_DuplicateIDsAreBoundedTo4096(t *testing.T) {
 	}
 }
 
+func TestIngest_EventWhoseApplyPanicsIsAppliedOnRetry(t *testing.T) {
+	h := newHarness(t)
+	body := hookEnvelope(t, eventID(1))
+	h.sink.panicOnNextApply()
+
+	if !h.doPanicking(hookRequest(body)) {
+		t.Fatal("applying the event did not panic")
+	}
+	assertStatus(t, h.do(hookRequest(body)), http.StatusOK)
+	assertStatus(t, h.do(hookRequest(body)), http.StatusOK)
+
+	events, _ := h.sink.recorded()
+	kicks, _ := h.observed()
+	if len(events) != 1 || kicks != 1 {
+		t.Errorf("applied %d events and kicked %d times, want the retry applied once", len(events), kicks)
+	}
+}
+
+func TestIngest_RetryAfterAPanicStaysDeduplicated(t *testing.T) {
+	h := newHarness(t)
+	post := func(i int) {
+		t.Helper()
+		h.clock.Advance(refill)
+		assertStatus(t, h.do(statusRequest(statusEnvelope(t, eventID(i)))), http.StatusOK)
+	}
+	h.sink.panicOnNextApply()
+	if !h.doPanicking(statusRequest(statusEnvelope(t, eventID(0)))) {
+		t.Fatal("applying the event did not panic")
+	}
+	post(0)
+
+	// Push the failed attempt, but not the retry, out of the last 4096.
+	for i := 1; i < 4096; i++ {
+		post(i)
+	}
+	post(0)
+
+	if events, _ := h.sink.recorded(); len(events) != 4096 {
+		t.Errorf("applied %d events, want 4096: the retry is still among the last 4096", len(events))
+	}
+}
+
+func TestIngest_SameIDPostedConcurrentlyIsAppliedOnce(t *testing.T) {
+	h := newHarness(t)
+	body := hookEnvelope(t, eventID(1))
+
+	codes := h.concurrently(64, func(int) *http.Request { return hookRequest(body) })
+
+	if got := countCodes(codes); got[http.StatusOK] != 64 {
+		t.Errorf("statuses = %v, want 64 200s", got)
+	}
+	events, _ := h.sink.recorded()
+	kicks, _ := h.observed()
+	if len(events) != 1 || kicks != 1 {
+		t.Errorf("applied %d events and kicked %d times, want 1 each", len(events), kicks)
+	}
+}
+
+func TestIngest_ParallelIngestAdmitsNoMoreThanTheBurst(t *testing.T) {
+	h := newHarness(t)
+
+	codes := h.concurrently(1500, func(i int) *http.Request {
+		return statusRequest(statusEnvelope(t, eventID(i)))
+	})
+
+	if got := countCodes(codes); got[http.StatusOK] != 1000 || got[http.StatusTooManyRequests] != 500 {
+		t.Errorf("statuses = %v, want 1000 200s and 500 429s in one instant", got)
+	}
+}
+
 func TestIngest_RateLimited(t *testing.T) {
 	h := newHarness(t)
 	for i := range 1000 {

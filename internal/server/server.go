@@ -23,9 +23,15 @@ import (
 	"github.com/dsj7419/loadline/internal/tracker"
 )
 
-// defaultPingInterval spaces the comments that keep an idle event stream
-// open.
-const defaultPingInterval = 15 * time.Second
+const (
+	// defaultPingInterval spaces the comments that keep an idle event stream
+	// open.
+	defaultPingInterval = 15 * time.Second
+	// defaultStreamWriteTimeout bounds each write to an event stream, so a
+	// client that stops reading cannot hold the stream, or a graceful
+	// shutdown, for longer.
+	defaultStreamWriteTimeout = 30 * time.Second
+)
 
 // StateSink is the live state the server feeds and serves. *tracker.Tracker
 // is one.
@@ -77,9 +83,10 @@ type Server struct {
 
 	// hosts are the Host headers any request may carry, and origins the
 	// Origin headers a state-changing request may carry.
-	hosts, origins []string
-	uiCookie       []byte
-	pingEvery      time.Duration
+	hosts, origins     []string
+	uiCookie           []byte
+	pingEvery          time.Duration
+	streamWriteTimeout time.Duration
 
 	limiter *tokenBucket
 	recent  *recentIDs
@@ -108,8 +115,8 @@ func New(d Deps) *Server {
 			fmt.Sprintf("http://127.0.0.1:%d", d.Port),
 			fmt.Sprintf("http://localhost:%d", d.Port),
 		},
-		pingEvery: defaultPingInterval,
-		recent:    newRecentIDs(),
+		pingEvery:          defaultPingInterval,
+		streamWriteTimeout: defaultStreamWriteTimeout,
 	}
 	// Anyone can compute the cookie of an empty token, so there is none.
 	if len(d.Token) > 0 {
@@ -127,7 +134,8 @@ func New(d Deps) *Server {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
-	s.limiter = newTokenBucket(s.clock())
+	s.limiter = newTokenBucket(s.clock)
+	s.recent = newRecentIDs(s.clock)
 	s.handler = s.routes(s.staticHandler(d.Static))
 	return s
 }
@@ -135,7 +143,9 @@ func New(d Deps) *Server {
 // Handler returns the server's HTTP handler. An event stream it serves ends
 // when the request's context does, so a server shutting down should cancel
 // the base context of its requests (http.Server.BaseContext together with
-// RegisterOnShutdown) rather than wait for the stream to go idle.
+// RegisterOnShutdown) rather than wait for the stream to go idle. Each write
+// to a stream sets its own deadline, which overrides any write timeout the
+// http.Server keeps.
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // Clients returns the number of event streams currently open.
@@ -153,8 +163,34 @@ func (s *Server) routes(static http.Handler) http.Handler {
 	mux.Handle("POST /api/login-code", s.requireToken(http.HandlerFunc(s.handleLoginCode)))
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.Handle("GET /", static)
-	return secureHeaders(s.checkHost(s.checkOrigin(mux)))
+	return secureHeaders(s.checkHost(s.checkOrigin(s.refuseUnroutedMethods(mux))))
 }
+
+// refuseUnroutedMethods answers a request that no route takes with the same
+// short JSON error as every other refusal; the mux would answer in plain
+// text. Since GET / takes every path, such a request always has the wrong
+// method. The methods to list in Allow come from the handler the mux reserves
+// for that case, run against a writer that keeps only headers.
+func (s *Server) refuseUnroutedMethods(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, pattern := mux.Handler(r)
+		if pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		probe := headerOnly{header: make(http.Header)}
+		h.ServeHTTP(probe, r)
+		w.Header().Set("Allow", probe.header.Get("Allow"))
+		s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
+	})
+}
+
+// headerOnly is a response writer that keeps the headers and drops the rest.
+type headerOnly struct{ header http.Header }
+
+func (h headerOnly) Header() http.Header         { return h.header }
+func (h headerOnly) Write(b []byte) (int, error) { return len(b), nil }
+func (h headerOnly) WriteHeader(int)             {}
 
 // ingest guards an ingest route: the token first, so that requests without
 // it cannot spend the rate limit that hooks rely on.

@@ -95,12 +95,24 @@ type fakeSink struct {
 	calls        []string
 	subscribers  []chan tracker.View
 	unsubscribed int
+	// panicsLeft is how many of the next Apply calls panic instead.
+	panicsLeft int
 }
 
 func (f *fakeSink) Apply(e domain.Event) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.panicsLeft > 0 {
+		f.panicsLeft--
+		panic("the state failed to apply an event")
+	}
 	f.events = append(f.events, e)
+}
+
+func (f *fakeSink) panicOnNextApply() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.panicsLeft = 1
 }
 
 func (f *fakeSink) RecordAPI(r domain.APIRequest) {
@@ -143,6 +155,20 @@ func (f *fakeSink) publish(v tracker.View) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, ch := range f.subscribers {
+		ch <- v
+	}
+}
+
+// publishLatest hands v to every subscriber the way the tracker does: it
+// replaces a view the subscriber has not taken yet, and never blocks.
+func (f *fakeSink) publishLatest(v tracker.View) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ch := range f.subscribers {
+		select {
+		case <-ch:
+		default:
+		}
 		ch <- v
 	}
 }
@@ -231,6 +257,41 @@ func (h *harness) do(r *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, r)
 	return rec
+}
+
+// doPanicking serves r and reports whether the handler panicked.
+func (h *harness) doPanicking(r *http.Request) (panicked bool) {
+	defer func() { panicked = recover() != nil }()
+	h.do(r)
+	return false
+}
+
+// concurrently runs request n times at once and returns the status codes.
+func (h *harness) concurrently(n int, request func(i int) *http.Request) []int {
+	requests := make([]*http.Request, n)
+	for i := range requests {
+		requests[i] = request(i)
+	}
+	codes := make([]int, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, r := range requests {
+		wg.Go(func() {
+			<-start
+			codes[i] = h.do(r).Code
+		})
+	}
+	close(start)
+	wg.Wait()
+	return codes
+}
+
+func countCodes(codes []int) map[int]int {
+	counts := make(map[int]int)
+	for _, code := range codes {
+		counts[code]++
+	}
+	return counts
 }
 
 // assertNothingApplied fails when the sink or the callbacks saw anything.
@@ -652,6 +713,43 @@ func TestSecurityHeaders_APIResponsesAreNotStored(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 			t.Errorf("%s %s (%d): Cache-Control = %q, want no-store", r.Method, r.URL, rec.Code, got)
 		}
+	}
+}
+
+func TestMethods_UnknownMethodIsAJSON405(t *testing.T) {
+	tests := []struct {
+		method, target, allow string
+		uncacheable           bool
+	}{
+		{method: http.MethodPut, target: "/api/snapshot", allow: "GET, HEAD", uncacheable: true},
+		{method: http.MethodOptions, target: "/api/events", allow: "GET, HEAD", uncacheable: true},
+		{method: http.MethodDelete, target: "/ingest/hook", allow: "GET, HEAD, POST", uncacheable: true},
+		{method: http.MethodPatch, target: "/v1/logs", allow: "GET, HEAD, POST", uncacheable: true},
+		{method: http.MethodPost, target: "/login", allow: "GET, HEAD", uncacheable: true},
+		{method: http.MethodPost, target: "/", allow: "GET, HEAD"},
+		{method: http.MethodDelete, target: "/app.js", allow: "GET, HEAD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
+			h := newHarness(t)
+
+			rec := h.do(tokenRequest(tt.method, tt.target, nil))
+
+			assertJSONError(t, rec, http.StatusMethodNotAllowed)
+			if got := rec.Header().Get("Allow"); got != tt.allow {
+				t.Errorf("Allow = %q, want %q", got, tt.allow)
+			}
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+			if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+				t.Errorf("Content-Security-Policy = %q, want the policy", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); tt.uncacheable && got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			h.assertNothingApplied(t)
+		})
 	}
 }
 

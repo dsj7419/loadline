@@ -88,6 +88,13 @@ func (s *Server) handleLoginCode(w http.ResponseWriter, r *http.Request) {
 // URL the browser opens, so it lives for a minute and works once; the cookie
 // it buys never appears in a URL or in history.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// The route for GET also takes HEAD, which no browser sends to follow a
+	// link, but a link checker or a preview might; it must not spend a code.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet)
+		s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if !s.codes.redeem(r.URL.Query().Get("code"), s.clock()) {
 		s.log.Debug("login refused")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
