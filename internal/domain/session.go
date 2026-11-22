@@ -86,7 +86,7 @@ func applyHook(s Session, h Hook) Session {
 	if s.State == StateEnded {
 		return reopenOnStart(s, h)
 	}
-	s.Subagents = countSubagents(s.Subagents, h.Name)
+	s = countSubagents(s, h)
 	if s.staleAt(h.At) {
 		return s
 	}
@@ -125,20 +125,6 @@ func noteHook(s Session, h Hook) Session {
 	}
 	s.Dir = h.Dir
 	return s
-}
-
-// countSubagents applies a subagent start or stop to the running count. It
-// runs even for a stale hook: each hook is a delta, and dropping one would
-// leave the count wrong for good.
-func countSubagents(n int, hook string) int {
-	switch hook {
-	case "SubagentStart":
-		return n + 1
-	case "SubagentStop":
-		return max(n-1, 0)
-	default:
-		return n
-	}
 }
 
 func enter(state State, reason string) hookRule {
@@ -373,7 +359,7 @@ func moveTo(s Session, state State, reason string, at time.Time) Session {
 		s.EndedAt, s.EndReason, s.Lost = time.Time{}, "", false
 	}
 	if state == StateEnded {
-		s.EndedAt, s.Subagents = at, 0
+		s.EndedAt, s.Subagents, s.running, s.stopped = at, 0, agentIDs{}, agentIDs{}
 	}
 	s.prev, s.State, s.StateAt = s.State, state, at
 	return s

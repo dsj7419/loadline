@@ -1019,8 +1019,9 @@ func TestTracker_SubscribeCoalescesAndNeverBlocks(t *testing.T) {
 	h := newUnclosedHarness(t, tracker.Config{})
 	views, cancel := h.tr.Subscribe()
 
+	// A subagent start without an agent ID adds one to the count each time,
+	// which makes every Apply a change.
 	addSubagent := hook(0, s1, "SubagentStart")
-	addSubagent.AgentID = "agent-1"
 	h.tr.Apply(hook(0, s1, "SessionStart"))
 	for range 999 {
 		h.tr.Apply(addSubagent)

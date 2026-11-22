@@ -191,7 +191,12 @@ type Session struct {
 	Lost bool
 	// Subagents is the number of subagents running.
 	Subagents int
-	Metrics   Metrics
+	// running and stopped are the IDs of the subagents counted as running,
+	// and of those whose stop came before their start. Like prev they are
+	// not persisted, so no stop by ID lowers the count a restored session
+	// came back with.
+	running, stopped agentIDs
+	Metrics          Metrics
 }
 
 // Previous returns the state the session was in before its current one.

@@ -457,10 +457,10 @@ func TestApply(t *testing.T) {
 			want:   outcome{State: domain.StateWorking, StateAt: at(10), Dir: dirA, Subagents: 2},
 		},
 		{
-			name:  "SubagentStop counts down, floored at zero",
+			name:  "SubagentStop without an agent ID counts down, floored at zero",
 			start: sessionIn(domain.StateWorking, 10),
 			events: []domain.Event{
-				hook(20, "SubagentStart"), inSubagent(hook(21, "SubagentStop")), hook(22, "SubagentStop"),
+				hook(20, "SubagentStart"), hook(21, "SubagentStop"), hook(22, "SubagentStop"),
 			},
 			want: wantIn(domain.StateWorking, 10),
 		},
@@ -468,7 +468,7 @@ func TestApply(t *testing.T) {
 			name:  "SubagentStop older than the state still counts",
 			start: sessionIn(domain.StateWorking, 10),
 			events: []domain.Event{
-				hook(20, "SubagentStart"), waiting(30, "permission prompt"), inSubagent(hook(25, "SubagentStop")),
+				inSubagent(hook(20, "SubagentStart")), waiting(30, "permission prompt"), inSubagent(hook(25, "SubagentStop")),
 			},
 			want: wantNeedsYou(30, "permission prompt"),
 		},
@@ -1118,9 +1118,10 @@ func TestApply_HookFillsPID(t *testing.T) {
 
 // Fuzzing decodes the input into a sequence of small events, fuzzEventSize
 // bytes each: event type, time in seconds after t0, two selectors, flags and
-// a process start time. Times go up to 255 s and arrive in any order, so the
-// sequences cover stale, duplicate and out-of-order delivery as well as both
-// sides of the heartbeat grace.
+// a process start time, which picks a subagent hook's agent ID instead. Times
+// go up to 255 s and arrive in any order, so the sequences cover stale,
+// duplicate and out-of-order delivery as well as both sides of the heartbeat
+// grace.
 const fuzzEventSize = 6
 
 const (
@@ -1146,6 +1147,7 @@ var (
 	fuzzBgStates   = []string{"working", "blocked", "done", "failed", "stopped", "queued", ""}
 	fuzzWaitingFor = []string{"permission prompt", "input needed", ""}
 	fuzzReasons    = []string{"clear", "resume", "logout", "prompt_input_exit", "other", ""}
+	fuzzAgents     = []string{"agent-7", "agent-8", "agent-9"}
 )
 
 type timedEvent struct {
@@ -1187,7 +1189,7 @@ func fuzzEvents(data []byte) []timedEvent {
 				ToolName:         pick(fuzzTools, second>>4),
 			}
 			if flags&fuzzSubagent != 0 {
-				h.AgentID = "agent-7"
+				h.AgentID = pick(fuzzAgents, started)
 			}
 			e = h
 		case 1:
@@ -1266,8 +1268,8 @@ func checkInvariants(t *testing.T, before domain.Session, te timedEvent, after d
 	if after.WaitReason != "" && after.State != domain.StateNeedsYou {
 		t.Fatalf("%#v left state %v with wait reason %q", te.event, after.State, after.WaitReason)
 	}
-	if after.Subagents < 0 {
-		t.Fatalf("%#v left %d subagents", te.event, after.Subagents)
+	if after.Subagents < 0 || (after.State == domain.StateEnded && after.Subagents != 0) {
+		t.Fatalf("%#v left %d subagents in state %v", te.event, after.Subagents, after.State)
 	}
 }
 
