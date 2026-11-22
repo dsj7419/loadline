@@ -129,21 +129,29 @@ func TestOpen_RefusesAnUnknownBrowser(t *testing.T) {
 }
 
 // A browser may run on for a while after it has said it is exiting, as a
-// race-enabled binary on a loaded machine does. A test that waited only for
-// it to say so would end while Open's reaper still waits for it, and goleak
-// would find the reaper once the package's tests are done. This browser
-// lingers past goleak's retries, so the check fails unless reaped is closed
-// only once the reaper has waited for it.
+// race-enabled binary on a loaded machine does, so a test's end waits on
+// reaped rather than on the browser saying so. That holds only if reaped is
+// closed once the reaper has waited for the browser, and never before.
 func TestOpenBrowser_ClosesReapedOnlyOnceTheBrowserHasExited(t *testing.T) {
 	// Registered first, so that it runs last, once the child's own cleanup
-	// has waited for it.
+	// has waited on reaped. This browser lingers past goleak's retries, so a
+	// reaper still waiting for it is found.
 	t.Cleanup(func() { goleak.VerifyNone(t) })
 	c := expectChild(t, false)
 	t.Setenv(lingerEnv, "1")
 
-	if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t)}); err != nil {
-		t.Fatalf("Open: %v", err)
+	if err := c.openBrowser(dashboardURL, launch.Browser{Pref: testBinary(t)}); err != nil {
+		t.Fatalf("OpenBrowser: %v", err)
 	}
 
 	c.read(t)
+	c.waitExit(t)
+	// The browser runs on for lingerAfterExit once it has said it is
+	// exiting, so nothing can have reaped it yet: a reaped already closed
+	// was closed without waiting for it.
+	select {
+	case <-c.reaped:
+		t.Fatalf("reaped was closed while %s still runs", c.process())
+	default:
+	}
 }

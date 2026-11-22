@@ -158,9 +158,12 @@ func runSpawner() int {
 // child is a reporter a test is about to start.
 type child struct {
 	report, hold string
-	// reaped, once the test has opened the child as its browser, is closed
-	// when Open's reaper has waited for the child to exit.
+	// reaped, once the test has opened the child as its browser through
+	// OpenBrowser, is closed when the reaper has waited for the child.
 	reaped <-chan struct{}
+	// opened is set once the test has opened the child as its browser
+	// through Open, which says nothing of its reaper.
+	opened bool
 	// pid is the child's process ID, once the test has read its report.
 	pid int
 }
@@ -168,7 +171,7 @@ type child struct {
 // expectChild arranges for the next copy of the test binary to report on
 // itself, and, when hold is set, to wait until the test releases it. The
 // test's end releases it, waits for it to exit and, if it was opened as a
-// browser, for Open's reaper to have waited for it.
+// browser, for the reaper to have waited for it.
 func expectChild(t *testing.T, hold bool) *child {
 	t.Helper()
 	dir := t.TempDir()
@@ -187,9 +190,17 @@ func expectChild(t *testing.T, hold bool) *child {
 	return c
 }
 
-// open opens url in b, which starts the child, as Open does, and keeps
-// what the test's end needs to wait for the child to be reaped.
+// open opens url in b, which starts the child, with Open, and has the
+// test's end wait for the child to be reaped.
 func (c *child) open(url string, b launch.Browser) error {
+	err := launch.Open(url, b)
+	c.opened = err == nil
+	return err
+}
+
+// openBrowser opens url in b, which starts the child, with OpenBrowser, and
+// keeps what says when the child has been reaped.
+func (c *child) openBrowser(url string, b launch.Browser) error {
 	reaped, err := launch.OpenBrowser(url, b)
 	c.reaped = reaped
 	return err
@@ -233,21 +244,34 @@ func (c *child) waitExit(t *testing.T) {
 	waitForFile(t, c.report+".exit", "the started program to exit")
 }
 
-// waitReaped waits until Open's reaper has waited for the child, which can
-// run on for a while after it has written that it is exiting. A test that
-// ended first would leave the reaper behind, for goleak to find once the
+// waitReaped waits until the reaper of a child opened as a browser has
+// waited for it, and reports whether it has. The child can run on for a
+// while after it has written that it is exiting, and a test that ended
+// first would leave the reaper behind, for goleak to find once the
 // package's tests are done.
-func (c *child) waitReaped(t *testing.T) {
+func (c *child) waitReaped(t *testing.T) bool {
 	t.Helper()
-	if c.reaped == nil {
-		return
-	}
 	limit := reapLimit()
-	select {
-	case <-c.reaped:
-	case <-time.After(limit):
-		t.Errorf("%s had not exited %v after the test ended, so Open's reaper still waits for it", c.process(), limit)
+	switch {
+	case c.reaped != nil:
+		select {
+		case <-c.reaped:
+		case <-time.After(limit):
+			t.Errorf("%s still ran %v after it said it was exiting, so its reaper still waits for it", c.process(), limit)
+			return false
+		}
+	case c.opened:
+		// Open gives no word of its reaper, so the wait is for goleak to find
+		// no goroutine left, which Find retries for a while on each call.
+		deadline := time.Now().Add(limit)
+		for err := goleak.Find(); err != nil; err = goleak.Find() {
+			if time.Now().After(deadline) {
+				t.Errorf("%s still ran %v after it said it was exiting, so Open's reaper still waits for it: %v", c.process(), limit, err)
+				return false
+			}
+		}
 	}
+	return true
 }
 
 // process names the child's process, by its ID once its report has given
