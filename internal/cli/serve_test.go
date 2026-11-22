@@ -816,6 +816,29 @@ func TestServe_PollsAndProbesEveryKnownDir(t *testing.T) {
 	})
 }
 
+// The server a hook starts keeps none of that session's Claude variables,
+// so the accounts it knows come from its config and the home directory
+// alone: the same whichever session started it, and the same as a server
+// that kept them.
+func TestServe_KnowsTheSameAccountsWhicheverSessionStartedIt(t *testing.T) {
+	f := newServeFixture(t)
+	f.mkdirs(f.dir(".claude-b"))
+	t.Setenv("CLAUDE_CONFIG_DIR", string(f.dir(".claude-b")))
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-canary")
+	f.start()
+
+	want := []domain.ConfigDir{f.defaultDir()}
+	waitFor(t, "the default dir polled and probed", func() bool {
+		return slices.Equal(f.claude.dirsCalled(agentsCommand), want) && slices.Equal(f.claude.dirsCalled(authCommand), want)
+	})
+	// The next round is armed once the first has polled every dir it knows.
+	f.waitArmed(30 * time.Second)
+	if got := f.claude.callsFor(f.dir(".claude-b"), agentsCommand) + f.claude.callsFor(f.dir(".claude-b"), authCommand); got != 0 {
+		t.Errorf("claude ran %d times for the inherited CLAUDE_CONFIG_DIR, want none until an event names it", got)
+	}
+}
+
 func TestServe_LabelsAndBudgetsComeFromTheConfig(t *testing.T) {
 	f := newServeFixture(t)
 	f.mkdirs(f.dir(".claude-b"))

@@ -8,10 +8,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// caseInsensitiveEnv is whether environment variable names differ only by case
-// on this platform.
-const caseInsensitiveEnv = true
-
 // createNoWindow is the CREATE_NO_WINDOW process creation flag.
 const createNoWindow = 0x08000000
 

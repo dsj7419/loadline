@@ -7,14 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/dsj7419/loadline/internal/sessionenv"
 )
 
 // SpawnDetached starts exe with args and leaves it running on its own: the
 // server it starts outlives the hook or tap that starts it, keeps none of
 // that process's standard streams, which Claude Code reads to their end,
 // and never shows a console window. It runs in the user's home directory,
-// so that it holds no project directory open. SpawnDetached returns once the
-// program has started, without waiting for it.
+// so that it holds no project directory open, and with none of the Claude
+// variables of the session whose hook started it. SpawnDetached returns once
+// the program has started, without waiting for it.
 func SpawnDetached(exe string, args ...string) error {
 	cmd, err := serverCommand(exe, args...)
 	if err != nil {
@@ -37,7 +40,9 @@ func serverCommand(exe string, args ...string) (*exec.Cmd, error) {
 // homeCommand returns the command that runs name with args in the user's
 // home directory, started as attr says. Its standard streams are left nil,
 // which gives the program the null device and passes on none of the
-// caller's, and its environment is the caller's.
+// caller's. Its environment is the caller's without the variables of the
+// Claude Code session whose hook may have started the caller, which carry
+// that session's credentials.
 func homeCommand(attr *syscall.SysProcAttr, name string, args ...string) (*exec.Cmd, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -47,6 +52,7 @@ func homeCommand(attr *syscall.SysProcAttr, name string, args ...string) (*exec.
 	// names. No context is given, since ending it would end the program too.
 	cmd := exec.Command(name, args...) //nolint:gosec,noctx // G204: see above
 	cmd.Dir = home
+	cmd.Env = sessionenv.Strip(os.Environ())
 	cmd.SysProcAttr = attr
 	return cmd, nil
 }

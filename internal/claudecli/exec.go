@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/sessionenv"
 )
 
 const (
@@ -52,7 +53,7 @@ type Exec struct {
 
 // Run runs claude with args for the account in dir and returns what it wrote
 // to stdout. The child's stdin is empty, and its stderr is quoted, cut short,
-// in the error.
+// in the error. Its environment is Loadline's own, as ExecEnv narrows it.
 //
 // When Run gives up on the child, because of the timeout, a canceled context
 // or too much output, it stops the child's descendants as well: an npm-installed
@@ -139,26 +140,15 @@ func describe(args []string) string {
 	return strings.Join(append([]string{binaryName}, args...), " ")
 }
 
-// ExecEnv returns base with the account's configuration directory applied: it
-// drops every CLAUDE_CONFIG_DIR entry, then sets CLAUDE_CONFIG_DIR to dir
-// unless dir is defaultDir, where claude looks without being told. It does not
-// modify base.
-//
-// Windows treats variable names as case-insensitive, so there Claude_Config_Dir
-// is dropped too; elsewhere it is another variable and stays.
+// ExecEnv returns base with the account's configuration directory applied. It
+// drops the variables of the Claude Code session whose hook may have started
+// Loadline, as sessionenv.Strip does, CLAUDE_CONFIG_DIR among them: that
+// session's API key or token would sign claude in as its account, whichever
+// account claude runs for. It then sets CLAUDE_CONFIG_DIR to dir unless dir
+// is defaultDir, where claude looks without being told. It does not modify
+// base.
 func ExecEnv(base []string, dir, defaultDir domain.ConfigDir) []string {
-	return execEnv(base, dir, defaultDir, caseInsensitiveEnv)
-}
-
-func execEnv(base []string, dir, defaultDir domain.ConfigDir, foldCase bool) []string {
-	env := make([]string, 0, len(base)+1)
-	for _, entry := range base {
-		name, _, _ := strings.Cut(entry, "=")
-		if name == configDirVar || (foldCase && strings.EqualFold(name, configDirVar)) {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := sessionenv.Strip(base)
 	if dir != defaultDir {
 		env = append(env, configDirVar+"="+string(dir))
 	}

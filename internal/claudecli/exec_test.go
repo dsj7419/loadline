@@ -63,42 +63,29 @@ func TestExecEnv_OtherDirAddsWhenNoneInherited(t *testing.T) {
 	}
 }
 
+// Every CLAUDE_ variable belongs to the session that started Loadline,
+// CLAUDE_CONFIG_DIRECTORY too; a name that only contains one is the user's.
 func TestExecEnv_LeavesBaseAndLookalikesAlone(t *testing.T) {
 	base := []string{
 		"CLAUDE_CONFIG_DIR=" + string(inherited),
-		"CLAUDE_CONFIG_DIRECTORY=keep",
+		"CLAUDE_CONFIG_DIRECTORY=the session's",
 		"MY_CLAUDE_CONFIG_DIR=keep",
 		"=C:=C:\\work",
 	}
 	snapshot := slices.Clone(base)
 
-	got := execEnv(base, account, defaultDir, false)
+	got := ExecEnv(base, account, defaultDir)
 
 	if !slices.Equal(base, snapshot) {
 		t.Errorf("base was modified: %q, want %q", base, snapshot)
 	}
 	want := []string{
-		"CLAUDE_CONFIG_DIRECTORY=keep",
 		"MY_CLAUDE_CONFIG_DIR=keep",
 		"=C:=C:\\work",
 		"CLAUDE_CONFIG_DIR=" + string(account),
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("env = %q, want %q", got, want)
-	}
-}
-
-func TestExecEnv_KeyCase(t *testing.T) {
-	base := []string{"Claude_Config_Dir=" + string(inherited), "PATH=/bin"}
-
-	folded := execEnv(base, defaultDir, defaultDir, true)
-	if want := []string{"PATH=/bin"}; !slices.Equal(folded, want) {
-		t.Errorf("case-insensitive env = %q, want %q", folded, want)
-	}
-
-	exact := execEnv(base, defaultDir, defaultDir, false)
-	if !slices.Equal(exact, base) {
-		t.Errorf("case-sensitive env = %q, want %q: a differently cased name is another variable", exact, base)
 	}
 }
 
@@ -150,6 +137,11 @@ func runHelper(mode string) int {
 	case "echo":
 		_, set := os.LookupEnv("CLAUDE_CONFIG_DIR")
 		echo := helperEcho{Args: os.Args[1:], ConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), ConfigDirSet: set}
+		for _, name := range probedVars {
+			if _, ok := os.LookupEnv(name); ok {
+				echo.Seen = append(echo.Seen, name)
+			}
+		}
 		if err := json.NewEncoder(os.Stdout).Encode(echo); err != nil {
 			return 2
 		}
@@ -225,7 +217,14 @@ type helperEcho struct {
 	Args         []string
 	ConfigDir    string
 	ConfigDirSet bool
+	// Seen lists the probedVars set in the helper's environment.
+	Seen []string
 }
+
+// probedVars are the variables the echo helper reports: a session's Claude
+// credentials, which a server its hook started inherits, and a cloud
+// provider's, which a Bedrock account's own probe may need.
+var probedVars = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "AWS_SECRET_ACCESS_KEY"}
 
 // writePIDFile records the process's ID at path. It writes a temporary file
 // and renames it, so a reader that sees path sees the whole ID.
@@ -325,6 +324,35 @@ func TestExec_RunPassesArgsAndEnvironment(t *testing.T) {
 
 	if def := run(defaultDir); def.ConfigDirSet {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q for the default dir, want it unset", def.ConfigDir)
+	}
+}
+
+// A server that a session's hook started holds that session's environment,
+// with whatever Claude credentials its settings file sets. claude, run for
+// any account, must not see them: they would sign it in as that session's
+// account.
+func TestExec_RunKeepsTheServersClaudeCredentialsFromClaude(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-canary")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-canary")
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-canary")
+	e := helperExec(t, "echo")
+
+	for _, dir := range []domain.ConfigDir{account, defaultDir} {
+		out, err := e.Run(context.Background(), dir, "auth", "status", "--json")
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		var echo helperEcho
+		if err := json.Unmarshal(out, &echo); err != nil {
+			t.Fatalf("decode %q: %v", out, err)
+		}
+		if want := []string{"AWS_SECRET_ACCESS_KEY"}; !slices.Equal(echo.Seen, want) {
+			t.Errorf("claude for %s sees %q, want only the cloud provider's %q", dir, echo.Seen, want)
+		}
+		if dir == account && echo.ConfigDir != string(account) {
+			t.Errorf("CLAUDE_CONFIG_DIR = %q, want %q", echo.ConfigDir, account)
+		}
 	}
 }
 
