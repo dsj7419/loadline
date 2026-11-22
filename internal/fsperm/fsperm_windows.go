@@ -108,6 +108,50 @@ func MkdirAll(dir string) error {
 	return nil
 }
 
+// ClearExplicit removes the access entries path was given explicitly, so
+// that only what the folder holding it passes down applies to it, and lets
+// that folder's list flow in again if path had a list of its own. In a
+// private folder that leaves path to the user, SYSTEM and Administrators.
+func ClearExplicit(path string) error {
+	// "D:" is an empty access list, not a missing one, which would let
+	// everyone in.
+	sd, err := windows.SecurityDescriptorFromString("D:")
+	if err != nil {
+		return fmt.Errorf("clear the access list of %s: %w", path, err)
+	}
+	empty, _, err := sd.DACL()
+	if err != nil || empty == nil {
+		return fmt.Errorf("clear the access list of %s: an empty list: %w", path, errors.Join(err, windows.ERROR_INVALID_ACL))
+	}
+	err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, empty, nil)
+	runtime.KeepAlive(sd)
+	if err != nil {
+		return fmt.Errorf("clear the access list of %s: %w", path, err)
+	}
+	return nil
+}
+
+// IsLink reports whether path itself is a symbolic link, a junction or any
+// other reparse point, which opening it would follow somewhere else.
+func IsLink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	if attrs, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+		return attrs.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
+	}
+	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0, nil
+}
+
+// EntryExposure is Exposure for a file or folder inside a private folder:
+// on Windows an entry can carry access of its own besides what the folder
+// passes down.
+func EntryExposure(path string) (string, error) {
+	return Exposure(path)
+}
+
 // Exposure says who, besides the current user, SYSTEM and Administrators,
 // the access list of path lets in, naming each trustee an allow entry grants
 // anything to, on path or on what it holds. It returns "" when the list

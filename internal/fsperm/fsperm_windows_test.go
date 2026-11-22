@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -313,3 +314,58 @@ func TestMovableAncestor_TheDefaultDataDirectoryPasses(t *testing.T) {
 // fileDeleteChild is FILE_DELETE_CHILD: the right to delete, and so to
 // rename, what a folder holds, whatever their own access lists say.
 const fileDeleteChild = 0x40
+
+func TestClearExplicit_LeavesOnlyWhatThePrivateFolderPassesDown(t *testing.T) {
+	dir := privateTop(t)
+	file := filepath.Join(dir, "token")
+	write(t, file)
+	fspermtest.Grant(t, file, fspermtest.Read, windows.NO_INHERITANCE)
+	sub := filepath.Join(dir, "bin")
+	if err := fsperm.MkdirAll(sub); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, sub, fspermtest.Write, windows.NO_INHERITANCE)
+
+	for _, path := range []string{file, sub} {
+		if err := fsperm.ClearExplicit(path); err != nil {
+			t.Fatalf("ClearExplicit(%s): %v", path, err)
+		}
+	}
+
+	for _, path := range []string{file, sub} {
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+			t.Errorf("%s admits %s, want only what its private folder passes down", path, strings.Join(others, ", "))
+		}
+		if fspermtest.Protected(t, path) {
+			t.Errorf("%s keeps an access list of its own, want it to take its folder's", path)
+		}
+	}
+	if data, err := os.ReadFile(file); err != nil || string(data) != "x" {
+		t.Errorf("read %s back = %q, %v; want the user to keep full access", file, data, err)
+	}
+}
+
+func TestIsLink_TellsAJunctionFromAFolder(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "bin")
+	//nolint:gosec // G204: the paths are the test's own temporary folders
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	file := filepath.Join(dir, "token")
+	write(t, file)
+
+	for path, want := range map[string]bool{link: true, target: false, file: false} {
+		got, err := fsperm.IsLink(path)
+		if err != nil || got != want {
+			t.Errorf("IsLink(%s) = %v, %v; want %v", path, got, err, want)
+		}
+	}
+	if _, err := fsperm.IsLink(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("IsLink of a missing path = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}

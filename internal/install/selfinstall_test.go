@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -175,5 +176,15 @@ func TestSelfInstall_MissingSourceFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "bin", binaryName())); err == nil {
 		t.Error("SelfInstall left a target behind")
+	}
+}
+
+// The binary's folder must be what the data directory's check takes for
+// Loadline's own.
+func TestInstalledPath_TheDataDirectoryOwnsItsFolder(t *testing.T) {
+	bin := filepath.Base(filepath.Dir(filepath.FromSlash(install.InstalledPath(t.TempDir()))))
+
+	if !datadir.Owns(bin) {
+		t.Errorf("datadir.Owns(%q) = false, want true", bin)
 	}
 }

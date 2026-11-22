@@ -317,9 +317,10 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
 
 - **config:** the config file can be read.
 - **claude:** `claude` runs and is 2.1.300 or later.
-- **data directory:** the data directory admits only you, and no folder above it can be deleted or
-  renamed by anyone else. `loadline install` fixes a data directory that lets others in; a folder
-  above it is yours to fix, or `LOADLINE_HOME` to move.
+- **data directory:** the data directory and Loadline's files in it admit only you, none of those
+  files is a link, and no folder above the directory can be deleted or renamed by anyone else.
+  `loadline install` fixes files that let others in; a link is yours to remove, and a folder above
+  the directory yours to fix, or `LOADLINE_HOME` to move.
 - **token:** the token file exists and holds a valid token.
 - **settings:** each settings file is wired as install would wire it, and if not, what install
   would change.

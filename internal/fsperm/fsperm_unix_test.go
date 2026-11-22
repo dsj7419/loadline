@@ -137,3 +137,22 @@ func TestMovableAncestor_NamesAFolderOthersCanWriteWithoutTheStickyBit(t *testin
 		}
 	}
 }
+
+func TestIsLink_TellsASymlinkFromAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "token")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "bin")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]bool{link: true, file: false, dir: false} {
+		got, err := fsperm.IsLink(path)
+		if err != nil || got != want {
+			t.Errorf("IsLink(%s) = %v, %v; want %v", path, got, err, want)
+		}
+	}
+}

@@ -176,3 +176,27 @@ func TestEnsureToken_NothingCanBePlantedBeforeTheDataDirectoryIsPrivate(t *testi
 			"(token taken over %d times)", openWhenPlanted, rounds, tokenTaken)
 	}
 }
+
+// A bin that is a junction, as one left in a data directory that was open
+// before: SelfInstall must not write the binary every hook runs through it,
+// into a folder outside the data directory with an access list of its own.
+func TestSelfInstall_RefusesABinJunction(t *testing.T) {
+	home := filepath.Join(permissiveParent(t), "loadline")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(permissiveParent(t), "theirs")
+	if err := os.MkdirAll(theirs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	junction(t, filepath.Join(home, "bin"), theirs)
+
+	_, err := install.SelfInstall(testExe(t), home)
+
+	if err == nil || !strings.Contains(err.Error(), "is a link") {
+		t.Errorf("SelfInstall = %v, want it refused: bin is a link", err)
+	}
+	if entries, _ := os.ReadDir(theirs); len(entries) > 0 {
+		t.Errorf("SelfInstall wrote %d entries into %s, where the bin junction points", len(entries), theirs)
+	}
+}

@@ -33,7 +33,9 @@ What it defends against:
   Windows Loadline creates it, and each folder it creates on the way to it, with an access list of
   its own that admits only you, SYSTEM and Administrators and takes nothing from the folder above;
   on macOS and Linux with mode 0700. Install, the server and the creation of the token make an
-  existing data directory private the same way. Whoever can delete or rename a folder above the data
+  existing data directory private the same way, and install and the server take off Loadline's own
+  files in it any access they were given explicitly, and refuse a symbolic link or junction among
+  them, which writing through would follow elsewhere. Whoever can delete or rename a folder above the data
   directory can put a folder of their own, and a binary of their own, in its place, so install and
   the server refuse a data directory below a folder that anyone but you, SYSTEM and Administrators
   can delete or rename, and name that folder: on Windows, one that grants them DELETE, or whose

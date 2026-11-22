@@ -43,3 +43,20 @@ func TestSecure_CreatesTheDataDirectoryWithMode0700(t *testing.T) {
 		t.Errorf("mode = %#o, want 0700", got)
 	}
 }
+
+func TestSecure_RefusesASymlinkAmongLoadlinesFiles(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(home, "token")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "theirs"), token); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(home, filepath.Dir(home))
+
+	if err == nil || !strings.Contains(err.Error(), token+" is a link") {
+		t.Errorf("Secure = %v, want it refused, naming %s as a link", err, token)
+	}
+}

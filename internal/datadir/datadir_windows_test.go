@@ -4,9 +4,12 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/fsperm"
@@ -134,5 +137,102 @@ func TestCheck_AMissingDataDirectoryIsAnError(t *testing.T) {
 
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Check = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// junction makes link a directory junction to target, as any user may in a
+// folder they can create directories in.
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	//nolint:gosec // G204: the paths are the test's own temporary folders
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+}
+
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A data directory that was open before, or one whose files someone gave
+// access to: making the directory private keeps what a file was given
+// explicitly, so Secure takes it off Loadline's files.
+func TestSecure_RemovesExplicitEntriesFromLoadlinesFiles(t *testing.T) {
+	top := driveRoot(t)
+	home := filepath.Join(top, "loadline")
+	token, event := filepath.Join(home, "token"), filepath.Join(home, "spool", "event.json")
+	writeFile(t, token)
+	writeFile(t, event)
+	fspermtest.Grant(t, token, fspermtest.Read, windows.NO_INHERITANCE)
+	fspermtest.Grant(t, event, fspermtest.Read, windows.NO_INHERITANCE)
+
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	for _, path := range []string{token, event, filepath.Dir(event)} {
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+			t.Errorf("%s admits %s after Secure, want only the user, SYSTEM and Administrators", path, strings.Join(others, ", "))
+		}
+	}
+	if data, err := os.ReadFile(token); err != nil || len(data) != 64 {
+		t.Errorf("read the token back: %q, %v", data, err)
+	}
+}
+
+// Doctor reports a file of Loadline's that someone gave access to, which
+// making the directory private does not take away.
+func TestCheck_ReportsAFileOfLoadlinesOthersCanGetInto(t *testing.T) {
+	top := driveRoot(t)
+	home := filepath.Join(top, "loadline")
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(home, "token")
+	writeFile(t, token)
+	fspermtest.Grant(t, token, fspermtest.Read, windows.NO_INHERITANCE)
+
+	got, err := datadir.Check(home, top)
+
+	if err != nil || !strings.HasPrefix(got, token+" is not private: its access list also admits ") ||
+		!strings.HasSuffix(got, "; run loadline install") {
+		t.Errorf("Check = %q, %v; want it to say %s is not private and that install fixes it", got, err, token)
+	}
+}
+
+// A bin that is a junction to a folder outside, as one left in a data
+// directory that was open before: making it private would set the list on
+// the junction, and the binary every hook runs would go into the folder it
+// points to.
+func TestSecure_RefusesALinkAmongLoadlinesFiles(t *testing.T) {
+	top := driveRoot(t)
+	home := filepath.Join(top, "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(top, "theirs")
+	if err := os.Mkdir(theirs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home, "bin")
+	junction(t, bin, theirs)
+
+	err := datadir.Secure(home, top)
+
+	if err == nil || !strings.Contains(err.Error(), bin+" is a link") {
+		t.Fatalf("Secure = %v, want it refused, naming %s as a link", err, bin)
+	}
+	if fspermtest.Protected(t, theirs) {
+		t.Errorf("Secure changed the access list of %s, where the link points", theirs)
+	}
+	if got, checkErr := datadir.Check(home, top); checkErr != nil || got != err.Error() {
+		t.Errorf("Check = %q, %v; want what Secure refused with: %q", got, checkErr, err.Error())
 	}
 }

@@ -86,3 +86,20 @@ func emptiable(folder string) (string, error) {
 func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
+
+// ClearExplicit does nothing here: a file carries only its mode, and the
+// 0700 folder that holds it keeps everyone else out whatever that is.
+func ClearExplicit(string) error { return nil }
+
+// IsLink reports whether path itself is a symbolic link.
+func IsLink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	return info.Mode()&fs.ModeSymlink != 0, nil
+}
+
+// EntryExposure says nothing here of a file or folder inside a private
+// folder: the folder's mode 0700 keeps everyone else from reaching it.
+func EntryExposure(string) (string, error) { return "", nil }

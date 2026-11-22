@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
@@ -38,7 +39,8 @@ func installTarget(dataDir string) string {
 // InstalledPath(dataDir), which settings refer to, so hooks keep working
 // wherever the downloaded copy goes. It does nothing when the installed copy
 // is already identical, and returns InstalledPath(dataDir). Otherwise it
-// first makes the bin directory private to the user.
+// first makes the bin directory private to the user, and refuses one that
+// is a link, which the copy would follow.
 //
 // The copy is written to a temporary file and renamed over the target.
 // Windows will not replace an executable that is running, as the installed
@@ -57,6 +59,9 @@ func SelfInstall(src, dataDir string) (string, error) {
 	}
 
 	bin := filepath.Dir(target)
+	if err := datadir.CheckLink(bin); err != nil {
+		return "", err
+	}
 	if err := fsperm.MkdirAll(bin); err != nil {
 		return "", err
 	}

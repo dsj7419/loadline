@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/domain"
 )
 
@@ -175,4 +176,21 @@ func sameDir(got domain.ConfigDir, want string) bool {
 		return strings.EqualFold(string(got), want)
 	}
 	return string(got) == want
+}
+
+// What the layout puts in the data directory must be what the data
+// directory's check takes for Loadline's own.
+func TestDefaultPaths_TheDataDirectoryOwnsEveryFileTheLayoutPutsThere(t *testing.T) {
+	t.Setenv("LOADLINE_HOME", filepath.Join(t.TempDir(), "loadline-home"))
+
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		t.Fatalf("DefaultPaths: %v", err)
+	}
+
+	for _, path := range []string{paths.ConfigFile, paths.TokenFile, paths.SpoolDir, paths.DBFile} {
+		if !datadir.Owns(filepath.Base(path)) {
+			t.Errorf("datadir.Owns(%q) = false, want true", filepath.Base(path))
+		}
+	}
 }
