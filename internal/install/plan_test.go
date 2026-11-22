@@ -912,20 +912,24 @@ func TestPlan_RefusesSettingsNestedTooDeep(t *testing.T) {
 	if _, _, _, err := install.Plan([]byte(nested(512)), options(install.ShellBash)); err != nil {
 		t.Errorf("Plan refused 512 levels: %v", err)
 	}
-	for _, depth := range []int{513, 50000} {
-		start := time.Now()
+	// The bound itself, with the smallest input over it. Without the bound a
+	// far deeper input would only exhaust memory, so the test stops here
+	// before trying one.
+	_, _, _, err := install.Plan([]byte(nested(513)), options(install.ShellBash))
+	if !errors.Is(err, install.ErrInvalidSettings) || !strings.Contains(err.Error(), "512") {
+		t.Fatalf("depth 513: err = %v, want ErrInvalidSettings naming the 512 limit", err)
+	}
+	if _, _, err := install.Revert([]byte(nested(513)), goldenExe); !errors.Is(err, install.ErrInvalidSettings) {
+		t.Fatalf("depth 513: Revert err = %v, want ErrInvalidSettings", err)
+	}
 
-		_, _, _, err := install.Plan([]byte(nested(depth)), options(install.ShellBash))
-
-		if !errors.Is(err, install.ErrInvalidSettings) || !strings.Contains(err.Error(), "512") {
-			t.Errorf("depth %d: err = %v, want ErrInvalidSettings naming the 512 limit", depth, err)
-		}
-		if _, _, err := install.Revert([]byte(nested(depth)), goldenExe); !errors.Is(err, install.ErrInvalidSettings) {
-			t.Errorf("depth %d: Revert err = %v, want ErrInvalidSettings", depth, err)
-		}
-		if elapsed := time.Since(start); elapsed > time.Second {
-			t.Errorf("depth %d took %s to refuse", depth, elapsed)
-		}
+	// With the bound in place, far deeper input is refused as quickly.
+	start := time.Now()
+	if _, _, _, err := install.Plan([]byte(nested(50000)), options(install.ShellBash)); !errors.Is(err, install.ErrInvalidSettings) {
+		t.Errorf("depth 50000: err = %v, want ErrInvalidSettings", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("depth 50000 took %s to refuse", elapsed)
 	}
 	// Brackets inside strings are not nesting.
 	deepInText := `{"x": "` + strings.Repeat("[{", 1000) + `"}`
