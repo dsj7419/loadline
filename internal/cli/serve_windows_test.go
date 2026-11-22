@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,9 +21,19 @@ const soExclusiveAddrUse = ^windows.SO_REUSEADDR
 
 // listenExclusively holds every address of a free port the way a program
 // that binds exclusively does: a loopback bind of that port then fails with
-// WSAEACCES, as it does for a port in a range Windows has reserved.
+// WSAEACCES, as it does for a port in a range Windows has reserved. Only a
+// wildcard holder has that effect; an exclusive loopback holder gives
+// WSAEADDRINUSE instead.
+//
+// A wildcard listen by a newly built test binary makes Windows Defender
+// Firewall ask, interactively, whether to let it accept connections, and
+// leaves a rule behind for each answer. So it runs only in CI (which sets
+// CI=true); refuseToListen's own test covers the message everywhere.
 func listenExclusively(t *testing.T) int {
 	t.Helper()
+	if os.Getenv("CI") != "true" {
+		t.Skip("binds a wildcard address, which raises an interactive Windows Defender Firewall prompt on a developer machine; runs in CI")
+	}
 	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
 		var setErr error
 		if err := c.Control(func(fd uintptr) {
