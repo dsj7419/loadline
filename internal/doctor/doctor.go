@@ -59,7 +59,7 @@ type Check struct {
 }
 
 // Deps is the setup Run checks and the means to reach it. Shell,
-// ClaudeVersion and Exposure must be set.
+// ClaudeVersion and CheckDataDir must be set.
 type Deps struct {
 	// SettingsFiles are the Claude Code settings files Loadline should be
 	// wired into.
@@ -82,9 +82,11 @@ type Deps struct {
 	// DataDir holds the token, the installed binary, the spool and the
 	// history.
 	DataDir string
-	// Exposure says who besides the user can get into a directory, as
-	// fsperm.Exposure does, or "" when nobody can.
-	Exposure func(path string) (string, error)
+	// CheckDataDir reports, in a sentence that says what to do, what keeps
+	// the data directory from being the user's alone, as datadir.Check does,
+	// or "" when nothing does. A missing directory is an error that matches
+	// fs.ErrNotExist.
+	CheckDataDir func(dir string) (string, error)
 	// Now reads the time. Nil means time.Now.
 	Now func() time.Time
 }
@@ -137,7 +139,7 @@ func Run(ctx context.Context, d Deps) []Check {
 		now = time.Now
 	}
 	token, tokenCheck := checkToken(d.TokenFile)
-	checks := []Check{checkClaude(ctx, d.ClaudeVersion), checkDataDir(d.DataDir, d.Exposure), tokenCheck}
+	checks := []Check{checkClaude(ctx, d.ClaudeVersion), checkDataDir(d.DataDir, d.CheckDataDir), tokenCheck}
 
 	target := install.Options{Exe: d.Exe, Port: d.Port, Token: string(token)}
 	if len(token) == 0 {
@@ -225,19 +227,19 @@ func (v version) String() string {
 	return text
 }
 
-// checkDataDir fails unless the data directory admits only the user: anyone
-// else it lets in can read the token, and replace the binary every hook
-// runs.
-func checkDataDir(dir string, exposure func(string) (string, error)) Check {
+// checkDataDir fails unless the data directory is the user's alone: anyone
+// else who can get into it can read the token, and anyone who can move it
+// aside can replace the binary every hook runs.
+func checkDataDir(dir string, check func(string) (string, error)) Check {
 	const name = "data directory"
-	others, err := exposure(dir)
+	problem, err := check(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return Check{Name: name, Status: Fail, Detail: dir + " does not exist; " + installHint}
 	case err != nil:
 		return Check{Name: name, Status: Fail, Detail: err.Error()}
-	case others != "":
-		return Check{Name: name, Status: Fail, Detail: dir + " is not private: " + others + "; " + installHint}
+	case problem != "":
+		return Check{Name: name, Status: Fail, Detail: problem}
 	}
 	return Check{Name: name, Status: OK, Detail: dir}
 }

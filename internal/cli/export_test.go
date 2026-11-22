@@ -28,3 +28,14 @@ func SetHookSendTimeout(t *testing.T, timeout time.Duration) {
 	hookSendTimeout = timeout
 	t.Cleanup(func() { hookSendTimeout = previous })
 }
+
+// TrustFoldersFrom makes install, serve and doctor take dir, with every
+// folder above it, as folders only the user can move, and returns what
+// undoes it: the check that nobody else can move the data directory aside
+// then stops below dir. Tests work in temporary folders whose permissions
+// they do not choose.
+func TrustFoldersFrom(dir string) (restore func()) {
+	previous := trustFrom
+	trustFrom = dir
+	return func() { trustFrom = previous }
+}

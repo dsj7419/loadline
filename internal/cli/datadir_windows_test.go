@@ -1,24 +1,37 @@
 package cli_test
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
 
-// sharedHome points LOADLINE_HOME at a directory inside one that lets every
-// signed-in user modify what is below it, as the root of a second drive does,
+// driveRoot returns a folder that lets every signed-in user modify what is
+// below it, as the root of a second drive does, and that install, serve and
+// doctor trust, with every folder above it, as nobody else can move a drive
+// root.
+func driveRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	fspermtest.Permissive(t, root)
+	t.Cleanup(cli.TrustFoldersFrom(root))
+	return root
+}
+
+// sharedHome points LOADLINE_HOME at a directory directly in a driveRoot,
 // and returns it. The directory itself does not exist yet.
 func sharedHome(t *testing.T) string {
 	t.Helper()
-	parent := t.TempDir()
-	fspermtest.Permissive(t, parent)
-	home := filepath.Join(parent, "loadline")
+	home := filepath.Join(driveRoot(t), "loadline")
 	t.Setenv("LOADLINE_HOME", home)
 	return home
 }
@@ -114,9 +127,7 @@ func TestInstall_DryRunLeavesTheDataDirAlone(t *testing.T) {
 // the log and the history there.
 func TestServe_MakesTheDataDirPrivate(t *testing.T) {
 	f := newServeFixture(t)
-	parent := t.TempDir()
-	fspermtest.Permissive(t, parent)
-	data := filepath.Join(parent, "data")
+	data := filepath.Join(driveRoot(t), "data")
 	f.paths = config.Paths{
 		DataDir:    data,
 		ConfigFile: f.paths.ConfigFile,
@@ -151,5 +162,74 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 	if got.code != 1 || !strings.Contains(line, fspermtest.AuthenticatedUsers(t)) || !strings.HasSuffix(line, "; run loadline install\n") {
 		t.Errorf("doctor = %d, stdout:\n%s\nwant 1 and a line that starts %q, names %s and ends with the install hint",
 			got.code, got.stdout, prefix, fspermtest.AuthenticatedUsers(t))
+	}
+}
+
+// A folder between a drive root and LOADLINE_HOME, as D:\tools is above
+// D:\tools\loadline, inherits the root's "Authenticated Users: Modify",
+// which lets them move it aside and put a binary of their own at the path
+// every hook runs. Install refuses before it writes anything.
+func TestInstall_RefusesADataDirOthersCanMoveAside(t *testing.T) {
+	tools := filepath.Join(driveRoot(t), "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(tools, "loadline")
+	t.Setenv("LOADLINE_HOME", home)
+	dir := t.TempDir()
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, tools+" lets ") || !strings.Contains(got.stderr, "delete or rename it") ||
+		!strings.Contains(got.stderr, "set LOADLINE_HOME to a folder in your user profile") {
+		t.Errorf("install = %d, stderr %q; want 1 and %s named as a folder others can move aside", got.code, got.stderr, tools)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Errorf("install created %s although it refused it", home)
+	}
+	if names := entries(t, dir); len(names) != 0 {
+		t.Errorf("install wrote %q to the config dir although it refused", names)
+	}
+}
+
+func TestServe_RefusesADataDirOthersCanMoveAside(t *testing.T) {
+	f := newServeFixture(t)
+	tools := filepath.Join(driveRoot(t), "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(tools, "data")
+	f.paths = config.Paths{
+		DataDir:    data,
+		ConfigFile: f.paths.ConfigFile,
+		TokenFile:  filepath.Join(data, "token"),
+		SpoolDir:   filepath.Join(data, "spool"),
+		DBFile:     filepath.Join(data, "loadline.db"),
+	}
+	var stderr strings.Builder
+	// Bounded, so that a server that wrongly starts gives way to the check.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	code := cli.Serve(ctx, f.options(), cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: &stderr})
+
+	if code != 1 || !strings.Contains(stderr.String(), tools+" lets ") {
+		t.Errorf("Serve = %d, stderr %q; want 1 and %s named as a folder others can move aside", code, stderr.String(), tools)
+	}
+}
+
+func TestDoctor_ReportsADataDirOthersCanMoveAside(t *testing.T) {
+	tools := filepath.Join(driveRoot(t), "tools")
+	home := filepath.Join(tools, "loadline")
+	writeAll(t, map[string]string{
+		filepath.Join(home, "config.json"): fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude")),
+	})
+	t.Setenv("LOADLINE_HOME", home)
+
+	got := run(t, "doctor", "--config-dir", t.TempDir())
+
+	want := "✖ data directory: " + tools + " lets "
+	if got.code != 1 || !strings.Contains(got.stdout, want) || !strings.Contains(got.stdout, "replace the binary every hook runs") {
+		t.Errorf("doctor = %d, stdout:\n%s\nwant 1 and a line that starts %q", got.code, got.stdout, want)
 	}
 }

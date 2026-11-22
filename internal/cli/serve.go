@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/dsj7419/loadline/internal/accounts"
 	"github.com/dsj7419/loadline/internal/claudecli"
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/demo"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
@@ -79,6 +81,12 @@ type ServeOptions struct {
 	// BootTime returns when the machine started, which tells whether the
 	// dashboard was opened earlier this boot. Nil means launch.BootTime.
 	BootTime func() (time.Time, error)
+	// TrustFrom, when set, is a folder that the server takes, with every
+	// folder above it, as one nobody else can move: the check that no other
+	// user can move the data directory aside then stops below it. Tests set
+	// it to the temporary folder they work in, whose permissions they do not
+	// choose. Empty means the check goes up to the volume root.
+	TrustFrom string
 }
 
 // RunServe runs the server for this machine until ctx ends or no session
@@ -134,7 +142,7 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		return fail(stdio, err)
 	}
 	// Before the log and the history are written there.
-	if err := secureDataDir(o.Paths.DataDir); err != nil {
+	if err := datadir.Secure(o.Paths.DataDir, cmp.Or(o.TrustFrom, trustFrom)); err != nil {
 		return fail(stdio, err)
 	}
 

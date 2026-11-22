@@ -1,18 +1,17 @@
 package cli
 
 import (
-	"fmt"
-
-	"github.com/dsj7419/loadline/internal/fsperm"
+	"github.com/dsj7419/loadline/internal/datadir"
 )
 
-// secureDataDir creates the data directory if need be and makes it, with
-// everything in it, private to the user: it holds the ingest token, the
-// binary every hook runs, the spool and the history, and LOADLINE_HOME can
-// put it in a folder that lets other users in.
+// trustFrom is "" in Loadline itself, so that the check that nobody else can
+// move the data directory aside goes up to the volume root. Tests set it to
+// the temporary folder they work in.
+var trustFrom string
+
+// secureDataDir prepares the data directory as datadir.Secure does: it
+// holds the ingest token, the binary every hook runs, the spool and the
+// history, and LOADLINE_HOME can put it anywhere.
 func secureDataDir(dir string) error {
-	if err := fsperm.MkdirAll(dir); err != nil {
-		return fmt.Errorf("create the data directory: %w", err)
-	}
-	return fsperm.Private(dir)
+	return datadir.Secure(dir, trustFrom)
 }

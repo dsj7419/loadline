@@ -26,13 +26,38 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
 
+// The tests work below a private temporary folder of their own. The
+// system's may let other accounts in, as it does on some machines, and the
+// server refuses a data directory below such a folder.
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	root, err := os.MkdirTemp("", "loadline-e2e-")
+	if err == nil {
+		err = fsperm.Private(root)
+	}
+	for _, name := range []string{"TMP", "TEMP", "TMPDIR"} {
+		if err == nil {
+			err = os.Setenv(name, root)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	tempRoot = root
+	goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) {
+		_ = os.RemoveAll(root)
+		os.Exit(code)
+	}))
 }
+
+// tempRoot is the private temporary folder TestMain makes, which the
+// servers the tests run trust, with every folder above it.
+var tempRoot string
 
 const (
 	// s1 is the session of the model call in the OpenTelemetry fixture.
@@ -133,6 +158,7 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 	t.Helper()
 	ready := make(chan struct{})
 	o.Ready = func(string) { close(ready) }
+	o.TrustFrom = tempRoot
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	var stderr bytes.Buffer

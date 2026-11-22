@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/doctor"
 	"github.com/dsj7419/loadline/internal/forward"
-	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -51,8 +51,10 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 		},
 		TokenFile: paths.TokenFile,
 		DataDir:   paths.DataDir,
-		Exposure:  fsperm.Exposure,
-		Now:       time.Now,
+		CheckDataDir: func(dir string) (string, error) {
+			return datadir.Check(dir, trustFrom)
+		},
+		Now: time.Now,
 	})...)
 	return printChecks(stdio, checks)
 }

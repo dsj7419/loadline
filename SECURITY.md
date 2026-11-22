@@ -30,12 +30,19 @@ What it defends against:
   `Host`, which the server refuses.
 - **Other users on the same computer.** The token file is readable only by you. The data directory
   that holds it, with the binary every hook runs, the spool and the history, admits only you: on
-  Windows Loadline gives it an access list of its own that admits only you, SYSTEM and
-  Administrators, and stops it inheriting from the folder above, so this holds for a
-  `LOADLINE_HOME` outside your profile too, such as one on a second drive whose root lets every
-  user in; on macOS and Linux it has mode 0700. Install, the server and the creation of the token
-  each set it, and `loadline doctor` fails while it lets anyone else in. If it did before, they may
-  have read the token, so change it as described below. On macOS and Linux install also takes group
+  Windows Loadline creates it, and each folder it creates on the way to it, with an access list of
+  its own that admits only you, SYSTEM and Administrators and takes nothing from the folder above;
+  on macOS and Linux with mode 0700. Install, the server and the creation of the token make an
+  existing data directory private the same way. Whoever can delete or rename a folder above the data
+  directory can put a folder of their own, and a binary of their own, in its place, so install and
+  the server refuse a data directory below a folder that anyone but you, SYSTEM and Administrators
+  can delete or rename, and name that folder: on Windows, one that grants them DELETE, or whose
+  parent grants them FILE_DELETE_CHILD; on macOS and Linux, one whose parent group or others can
+  write to without the sticky bit. The default location passes, and so does a `LOADLINE_HOME`
+  directly in a drive root such as `D:\loadline`; one deeper in a folder every user can modify, such
+  as `D:\tools\loadline`, does not, so keep it in your user profile. `loadline doctor` reports the
+  same, and fails while the data directory lets anyone else in. If it let others in before, they
+  may have read the token, so change it as described below. On macOS and Linux install also takes group
   and other permissions off the settings files it edits, which hold the token too, and off their
   backups. On Windows those files rely on the permissions of the folder they are in, which in your
   profile by default admits only you, administrators and the system.

@@ -252,7 +252,9 @@ log (`loadline.log`, rotated at 5 MB) and the spool:
 Setting `LOADLINE_HOME` to an absolute path moves the data directory and the config file there.
 Wherever it is, Loadline keeps the data directory private: on Windows it gives the directory an
 access list of its own that admits only you, SYSTEM and Administrators, and on macOS and Linux mode
-0700.
+0700. It refuses one below a folder that other users can delete or rename, which would let them put
+a binary of their own where the hooks look: `D:\loadline` is fine, `D:\tools\loadline` on a drive
+every user can modify is not. Keep `LOADLINE_HOME` in your user profile.
 
 ## Multiple accounts
 
@@ -315,8 +317,9 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
 
 - **config:** the config file can be read.
 - **claude:** `claude` runs and is 2.1.300 or later.
-- **data directory:** the data directory admits only you. `loadline install` fixes one that lets
-  others in.
+- **data directory:** the data directory admits only you, and no folder above it can be deleted or
+  renamed by anyone else. `loadline install` fixes a data directory that lets others in; a folder
+  above it is yours to fix, or `LOADLINE_HOME` to move.
 - **token:** the token file exists and holds a valid token.
 - **settings:** each settings file is wired as install would wire it, and if not, what install
   would change.

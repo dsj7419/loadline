@@ -1,0 +1,45 @@
+//go:build !windows
+
+package datadir_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/dsj7419/loadline/internal/datadir"
+)
+
+func TestSecure_RefusesAFolderOthersCanWriteWithoutTheStickyBit(t *testing.T) {
+	top := t.TempDir()
+	shared := filepath.Join(top, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(filepath.Join(shared, "loadline"), top)
+
+	if err == nil || !strings.Contains(err.Error(), shared+" lets group and others rename the folders in it") {
+		t.Errorf("Secure = %v, want it refused, naming %s", err, shared)
+	}
+}
+
+func TestSecure_CreatesTheDataDirectoryWithMode0700(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+
+	if err := datadir.Secure(home, filepath.Dir(home)); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("mode = %#o, want 0700", got)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -42,6 +43,11 @@ func runInstall(args []string, stdio IO) int {
 
 	paths, err := config.DefaultPaths()
 	if err != nil {
+		return fail(stdio, err)
+	}
+	// Refused before anything is shown or asked, since nothing could be
+	// installed there.
+	if err := datadir.Verify(paths.DataDir, trustFrom); err != nil {
 		return fail(stdio, err)
 	}
 	src, err := os.Executable()

@@ -202,3 +202,114 @@ func TestMkdirAll_AFileInTheWayFails(t *testing.T) {
 		t.Error("MkdirAll of a file succeeded, want an error")
 	}
 }
+
+// The tests below take the temporary folder they build in, with every folder
+// above it, for a drive root. They make it private first, so that what the
+// machine's own temporary folder passes down, which may let other accounts
+// in, is no test's subject.
+func privateTop(t *testing.T) string {
+	t.Helper()
+	top := t.TempDir()
+	if err := fsperm.Private(top); err != nil {
+		t.Fatal(err)
+	}
+	return top
+}
+
+func TestMovableAncestor_NamesTheNearestFolderOthersCanDeleteOrRename(t *testing.T) {
+	top := privateTop(t)
+	fspermtest.Permissive(t, top)
+	tools := filepath.Join(top, "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
+
+	users := fspermtest.AuthenticatedUsers(t)
+	if err != nil || !strings.HasPrefix(got, tools+" lets ") || !strings.Contains(got, users) || !strings.HasSuffix(got, " delete or rename it") {
+		t.Errorf("MovableAncestor = %q, %v; want %s named, as one %s can delete or rename", got, err, tools, users)
+	}
+}
+
+func TestMovableAncestor_DeletingWhatAFolderHoldsCounts(t *testing.T) {
+	top := privateTop(t)
+	shared := filepath.Join(top, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, shared, windows.ACCESS_MASK(fileDeleteChild), windows.NO_INHERITANCE)
+
+	got, err := fsperm.MovableAncestor(filepath.Join(shared, "loadline"), top)
+
+	if err != nil || !strings.HasPrefix(got, shared+" lets ") || !strings.HasSuffix(got, " delete or rename the folders in it") {
+		t.Errorf("MovableAncestor = %q, %v; want %s named, as a folder whose entries others can delete or rename", got, err, shared)
+	}
+}
+
+func TestMovableAncestor_FullControlCounts(t *testing.T) {
+	top := privateTop(t)
+	tools := filepath.Join(top, "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, tools, windows.GENERIC_ALL, windows.NO_INHERITANCE)
+
+	got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
+
+	if err != nil || !strings.HasPrefix(got, tools+" lets ") {
+		t.Errorf("MovableAncestor = %q, %v; want %s named: GENERIC_ALL includes DELETE", got, err, tools)
+	}
+}
+
+// An entry that only children inherit, such as a drive root's for
+// Authenticated Users, grants nothing on the folder itself.
+func TestMovableAncestor_AnEntryForChildrenOnlyDoesNotCount(t *testing.T) {
+	top := privateTop(t)
+	root := filepath.Join(top, "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, root, windows.GENERIC_ALL, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT|windows.INHERIT_ONLY)
+
+	got, err := fsperm.MovableAncestor(filepath.Join(root, "loadline"), top)
+
+	if err != nil || got != "" {
+		t.Errorf("MovableAncestor = %q, %v; want \"\": the entry applies only below %s", got, err, root)
+	}
+}
+
+func TestMovableAncestor_FoldersLoadlineCreatesPass(t *testing.T) {
+	top := privateTop(t)
+	fspermtest.Permissive(t, top)
+	home := filepath.Join(top, "tools", "loadline")
+	if err := fsperm.MkdirAll(home); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fsperm.MovableAncestor(filepath.Join(home, "bin"), top)
+
+	if err != nil || got != "" {
+		t.Errorf("MovableAncestor = %q, %v; want \"\" for folders Loadline made private", got, err)
+	}
+}
+
+// The default data directory, %LOCALAPPDATA%\loadline, must pass: the
+// profile folders above it admit only the user, SYSTEM and Administrators,
+// and the system drive's root lets others only add folders.
+func TestMovableAncestor_TheDefaultDataDirectoryPasses(t *testing.T) {
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		t.Skip("%LOCALAPPDATA% is not set")
+	}
+
+	got, err := fsperm.MovableAncestor(filepath.Join(local, "loadline"), "")
+
+	if err != nil || got != "" {
+		t.Errorf("MovableAncestor of the default data directory = %q, %v; want \"\"", got, err)
+	}
+}
+
+// fileDeleteChild is FILE_DELETE_CHILD: the right to delete, and so to
+// rename, what a folder holds, whatever their own access lists say.
+const fileDeleteChild = 0x40

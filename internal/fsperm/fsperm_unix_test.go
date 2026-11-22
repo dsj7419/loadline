@@ -108,3 +108,32 @@ func TestMkdirAll_CreatesEachMissingFolderWithMode0700(t *testing.T) {
 		}
 	}
 }
+
+func TestMovableAncestor_NamesAFolderOthersCanWriteWithoutTheStickyBit(t *testing.T) {
+	top := t.TempDir()
+	shared := filepath.Join(top, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		mode fs.FileMode
+		want string
+	}{
+		{mode: 0o777, want: shared + " lets group and others rename the folders in it (mode 0777, without the sticky bit)"},
+		{mode: 0o770, want: shared + " lets group rename the folders in it (mode 0770, without the sticky bit)"},
+		{mode: 0o703, want: shared + " lets others rename the folders in it (mode 0703, without the sticky bit)"},
+		{mode: 0o777 | fs.ModeSticky, want: ""},
+		{mode: 0o755, want: ""},
+	}
+	for _, tt := range tests {
+		if err := os.Chmod(shared, tt.mode); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := fsperm.MovableAncestor(filepath.Join(shared, "loadline"), top)
+
+		if err != nil || got != tt.want {
+			t.Errorf("MovableAncestor under mode %v = %q, %v; want %q", tt.mode, got, err, tt.want)
+		}
+	}
+}

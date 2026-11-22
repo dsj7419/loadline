@@ -27,13 +27,22 @@ const (
 // below it, as the root of a second drive does by default.
 func Permissive(tb testing.TB, dir string) {
 	tb.Helper()
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	Grant(tb, dir, modify, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+}
+
+// Grant adds an entry to the access list of path, a file or directory the
+// test created, that gives every signed-in user mask, with inheritance as
+// EXPLICIT_ACCESS takes it: NO_INHERITANCE for path alone, or
+// SUB_CONTAINERS_AND_OBJECTS_INHERIT, alone or with INHERIT_ONLY.
+func Grant(tb testing.TB, path string, mask windows.ACCESS_MASK, inheritance uint32) {
+	tb.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		tb.Fatalf("read the access list of %s: %v", dir, err)
+		tb.Fatalf("read the access list of %s: %v", path, err)
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
-		tb.Fatalf("read the access list of %s: %v", dir, err)
+		tb.Fatalf("read the access list of %s: %v", path, err)
 	}
 	users, err := windows.CreateWellKnownSid(windows.WinAuthenticatedUserSid)
 	if err != nil {
@@ -43,9 +52,9 @@ func Permissive(tb testing.TB, dir string) {
 	defer pinner.Unpin()
 	pinner.Pin(users)
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
-		AccessPermissions: modify,
+		AccessPermissions: mask,
 		AccessMode:        windows.GRANT_ACCESS,
-		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+		Inheritance:       inheritance,
 		Trustee: windows.TRUSTEE{
 			TrusteeForm:  windows.TRUSTEE_IS_SID,
 			TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
@@ -53,11 +62,11 @@ func Permissive(tb testing.TB, dir string) {
 		},
 	}}, dacl)
 	if err != nil {
-		tb.Fatalf("build the access list of %s: %v", dir, err)
+		tb.Fatalf("build the access list of %s: %v", path, err)
 	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION,
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION,
 		nil, nil, acl, nil); err != nil {
-		tb.Fatalf("let every signed-in user modify %s: %v", dir, err)
+		tb.Fatalf("give every signed-in user %#x on %s: %v", mask, path, err)
 	}
 }
 

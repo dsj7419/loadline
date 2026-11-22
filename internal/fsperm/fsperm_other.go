@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // privateDirMode lets only the user list, enter and change a directory.
@@ -49,4 +50,39 @@ func Exposure(path string) (string, error) {
 		return "", nil
 	}
 	return fmt.Sprintf("its mode %#o also admits %s", mode, andList(who)), nil
+}
+
+// movable says nothing here: whether others may rename a folder depends on
+// the folder that holds it, which emptiable judges.
+func movable(string) (string, error) { return "", nil }
+
+// emptiable says who besides the user may rename the folders that folder
+// holds: group or others, when they may write to it and it lacks the sticky
+// bit, which would leave each folder to its owner. It returns "" when nobody
+// may.
+func emptiable(folder string) (string, error) {
+	info, err := os.Stat(folder)
+	if err != nil {
+		return "", fmt.Errorf("read the mode of %s: %w", folder, err)
+	}
+	mode := info.Mode()
+	if mode&fs.ModeSticky != 0 {
+		return "", nil
+	}
+	var who []string
+	if mode&0o020 != 0 {
+		who = append(who, "group")
+	}
+	if mode&0o002 != 0 {
+		who = append(who, "others")
+	}
+	if len(who) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%s lets %s rename the folders in it (mode %#o, without the sticky bit)", folder, andList(who), mode.Perm()), nil
+}
+
+// samePath reports whether a and b name the same folder.
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
 }

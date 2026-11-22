@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
 )
 
@@ -77,5 +78,23 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 	want := "✖ data directory: " + home + " is not private: its mode 0755 also admits group and others; run loadline install\n"
 	if got.code != 1 || !strings.Contains(got.stdout, want) {
 		t.Errorf("doctor = %d, stdout:\n%s\nwant 1 and %q", got.code, got.stdout, want)
+	}
+}
+
+func TestInstall_RefusesAFolderOthersCanWriteWithoutTheStickyBit(t *testing.T) {
+	top := t.TempDir()
+	t.Cleanup(cli.TrustFoldersFrom(top))
+	shared := filepath.Join(top, "shared")
+	openDir(t, shared)
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(shared, "loadline")
+	t.Setenv("LOADLINE_HOME", home)
+
+	got := run(t, "install", "--config-dir", t.TempDir(), "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, shared+" lets group and others rename the folders in it") {
+		t.Errorf("install = %d, stderr %q; want 1 and %s named", got.code, got.stderr, shared)
 	}
 }

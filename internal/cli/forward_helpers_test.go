@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/server"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -31,11 +33,44 @@ import (
 // the executable is the test binary, which must then exit at once instead
 // of running the tests again. Otherwise every server a test starts must be
 // gone, goroutines and all, by the end of the run.
+//
+// The tests work below a private temporary folder of their own. The
+// system's may let other accounts in, as it does on some machines, and
+// install, serve and doctor refuse a data directory below such a folder.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		os.Exit(0)
 	}
-	goleak.VerifyTestMain(m)
+	root, err := privateTempRoot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	restore := cli.TrustFoldersFrom(root)
+	goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) {
+		restore()
+		_ = os.RemoveAll(root)
+		os.Exit(code)
+	}))
+}
+
+// privateTempRoot creates a temporary folder that admits only the user,
+// SYSTEM and Administrators, and makes it the one every later temporary
+// folder of the run is created in.
+func privateTempRoot() (string, error) {
+	root, err := os.MkdirTemp("", "loadline-cli-")
+	if err != nil {
+		return "", err
+	}
+	if err := fsperm.Private(root); err != nil {
+		return "", err
+	}
+	for _, name := range []string{"TMP", "TEMP", "TMPDIR"} {
+		if err := os.Setenv(name, root); err != nil {
+			return "", err
+		}
+	}
+	return root, nil
 }
 
 // canary is planted in every content field of the test payloads. It must
