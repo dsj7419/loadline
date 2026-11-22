@@ -251,7 +251,8 @@ func TestRunTap_UnforwardableInputIsStillEchoed(t *testing.T) {
 	}
 }
 
-// brokenWriter is an output whose reader has gone.
+// brokenWriter is an output that fails for a reason other than its reader
+// having gone: it is closed.
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
@@ -271,6 +272,11 @@ func TestRunTap_BrokenStdoutStillForwards(t *testing.T) {
 	}
 }
 
+// A pipe whose reader has gone, as a status-line command that never reads
+// its input leaves it, is no failure of the tap's: it exits 0, so that under
+// pipefail the command's own exit code still counts, and it still forwards.
+// The 0 is the behaviour itself, not a looser check: the tap used to exit 1
+// here, and that 1 replaced the command's own exit code under pipefail.
 func TestRunTap_ClosedStdoutPipe(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
@@ -290,8 +296,8 @@ func TestRunTap_ClosedStdoutPipe(t *testing.T) {
 
 	select {
 	case code := <-done:
-		if code != 1 {
-			t.Errorf("exit code = %d, want 1", code)
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0 for an output whose reader has gone", code)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("tap hung on a closed stdout")

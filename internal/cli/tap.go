@@ -175,7 +175,9 @@ func decodeCommand(value string) string {
 // most once in 30 s across all taps.
 //
 // It returns the exit code of a Run command, and otherwise 0, or 1 when the
-// input could not be read or the output not written.
+// input could not be read or the output not written. An output whose reader
+// has gone is no failure: a status-line command need not read its input,
+// and under pipefail the tap's exit code would replace the command's own.
 func RunTap(ctx context.Context, in io.Reader, out io.Writer, env Env, paths config.Paths, cfg config.Config, mode TapMode) int {
 	head, readErr := io.ReadAll(io.LimitReader(in, maxStatusInput+1))
 	input := io.Reader(bytes.NewReader(head))
@@ -206,7 +208,8 @@ func RunTap(ctx context.Context, in io.Reader, out io.Writer, env Env, paths con
 	if file, ok := out.(*os.File); ok {
 		_ = file.Close()
 	}
-	if (readErr != nil || writeErr != nil) && code == exitOK {
+	failed := readErr != nil || (writeErr != nil && !isReaderGone(writeErr))
+	if failed && code == exitOK {
 		code = exitFailure
 	}
 
