@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -27,6 +28,27 @@ func TestStatusTable_PrintsNoControlCharacters(t *testing.T) {
 	}
 	if lines := strings.Count(got, "\n"); lines != 2 {
 		t.Errorf("table has %d lines, want the header and one row:\n%s", lines, got)
+	}
+}
+
+// A format character prints nothing but changes how the text around it
+// shows: U+202E turns the rest of the line around, so a name can pass for
+// another.
+func TestStatusTable_PrintsNoFormatCharacters(t *testing.T) {
+	view := tracker.View{
+		Accounts: []tracker.AccountView{{Dir: "/a", Label: "Ma\u200bin"}},
+		Sessions: []tracker.SessionView{{
+			Dir: "/a", ID: "s1", Name: "safe\u202egnp.exe\u2066x\ufeff", State: domain.StateIdle,
+		}},
+	}
+
+	got := statusTable(view, time.UTC)
+
+	if strings.ContainsFunc(got, func(r rune) bool { return unicode.Is(unicode.Cf, r) }) {
+		t.Errorf("table holds format characters: %q", got)
+	}
+	if !strings.Contains(got, "Main ") || !strings.Contains(got, "safegnp.exex ") {
+		t.Errorf("table:\n%s\nwant the names with their format characters taken out", got)
 	}
 }
 

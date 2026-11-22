@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/timer"
 )
 
 const (
@@ -46,9 +47,8 @@ type Poller struct {
 	Fast, Slow, Debounce time.Duration
 	// Clock reads the time. Nil means time.Now.
 	Clock func() time.Time
-	// AfterFunc schedules the next poll: it runs f once d has passed and
-	// returns a function that cancels it. Nil means wall-clock timers.
-	AfterFunc func(d time.Duration, f func()) (stop func() bool)
+	// AfterFunc schedules the next poll. Nil means wall-clock timers.
+	AfterFunc timer.AfterFunc
 	// OnPoll is called with the time of each poll of a dir that succeeded.
 	// Nil means nothing is called.
 	OnPoll func(at time.Time)
@@ -58,9 +58,10 @@ type Poller struct {
 }
 
 // Run polls every known dir at once, and again after each interval or Kick,
-// until ctx ends. The dirs of a round are polled side by side, so a slow
-// `claude` for one account holds up no other. A poll that fails is skipped:
-// it says nothing of which sessions are gone.
+// until ctx ends. The dirs of a round are polled side by side, so within a
+// round a slow `claude` for one account holds up no other; the next round
+// waits for the slowest. A poll that fails is skipped: it says nothing of
+// which sessions are gone.
 func (p *Poller) Run(ctx context.Context) {
 	// A kick's poll outlives the round it was asked for in: a poll on
 	// schedule just after a hook may still miss what the hook reported.
@@ -79,7 +80,7 @@ func (p *Poller) Run(ctx context.Context) {
 		// Each timer signals a channel of its own, so one that fires as it is
 		// stopped cannot start a later round early.
 		due := make(chan struct{}, 1)
-		stopDue := p.after(p.interval(), notify(due))
+		stopDue := p.AfterFunc.Start(p.interval(), timer.Notify(due))
 		ok := p.wait(ctx, due, &kick)
 		stopDue()
 		if !ok {
@@ -114,7 +115,7 @@ func (p *Poller) wait(ctx context.Context, due <-chan struct{}, kick *pendingKic
 		case <-p.kicked():
 			if kick.due == nil {
 				kick.due = make(chan struct{}, 1)
-				kick.stop = p.after(p.debounce(), notify(kick.due))
+				kick.stop = p.AfterFunc.Start(p.debounce(), timer.Notify(kick.due))
 			}
 		case <-kick.due:
 			kick.due, kick.stop = nil, nil
@@ -180,26 +181,9 @@ func (p *Poller) now() time.Time {
 	return p.Clock()
 }
 
-func (p *Poller) after(d time.Duration, f func()) (stop func() bool) {
-	if p.AfterFunc == nil {
-		return time.AfterFunc(d, f).Stop
-	}
-	return p.AfterFunc(d, f)
-}
-
 func orDefault(d, fallback time.Duration) time.Duration {
 	if d > 0 {
 		return d
 	}
 	return fallback
-}
-
-// notify returns a function that signals ch without blocking.
-func notify(ch chan struct{}) func() {
-	return func() {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
 }

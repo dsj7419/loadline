@@ -68,6 +68,11 @@ type Deps struct {
 	// Log receives the server's diagnostics, which never include tokens,
 	// cookies, login codes or request bodies. Nil discards them.
 	Log *slog.Logger
+	// Demo serves a made-up state that no event may change. The ingest
+	// routes refuse every event, token and all, with 503 "demo mode": a
+	// hook then keeps its event for the real server, as it does when none
+	// runs. The UI and its API work as ever.
+	Demo bool
 }
 
 // Server serves the ingest routes, the UI API and the UI. It is safe for
@@ -80,6 +85,7 @@ type Server struct {
 	version string
 	clock   func() time.Time
 	log     *slog.Logger
+	demo    bool
 
 	// hosts are the Host headers any request may carry, and origins the
 	// Origin headers a state-changing request may carry.
@@ -105,6 +111,7 @@ func New(d Deps) *Server {
 		onDir:   d.OnDir,
 		token:   d.Token,
 		version: d.Version,
+		demo:    d.Demo,
 		clock:   d.Clock,
 		log:     d.Log,
 		hosts: []string{
@@ -225,9 +232,20 @@ func (h headerOnly) Write(b []byte) (int, error) { return len(b), nil }
 func (h headerOnly) WriteHeader(int)             {}
 
 // ingest guards an ingest route: the token first, so that requests without
-// it cannot spend the rate limit that hooks rely on.
+// it cannot spend the rate limit that hooks rely on, and then demo mode,
+// which takes no event.
 func (s *Server) ingest(h http.HandlerFunc) http.Handler {
-	return s.requireToken(s.rateLimit(h))
+	return s.requireToken(s.refuseInDemo(s.rateLimit(h)))
+}
+
+// refuseInDemo answers every request with 503 in demo mode.
+func (s *Server) refuseInDemo(next http.Handler) http.Handler {
+	if !s.demo {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.reject(w, r, http.StatusServiceUnavailable, "demo mode")
+	})
 }
 
 // contentSecurityPolicy confines the UI to its own files: no inline script or

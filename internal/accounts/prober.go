@@ -3,21 +3,30 @@
 package accounts
 
 import (
+	"cmp"
 	"context"
 	"sync"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/claudecli"
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/timer"
 )
 
-// DefaultEvery is how often each account is probed again.
-const DefaultEvery = 6 * time.Hour
+const (
+	// DefaultEvery is how often each account is probed again.
+	DefaultEvery = 6 * time.Hour
+	// firstRetry is how soon a failed probe is tried again. A probe fails
+	// for a moment, as while claude is being updated, more often than for
+	// good.
+	firstRetry = 5 * time.Minute
+)
 
 // Prober asks who each observed account is: once when its config dir is
-// first observed, and again on a schedule. The exported fields are set
-// before Run is called and not changed after. Run and Observe are safe to
-// call concurrently.
+// first observed, and again on a schedule: Every after a probe that worked,
+// and sooner after one that failed. The exported fields are set before Run
+// is called and not changed after. Run and Observe are safe to call
+// concurrently.
 type Prober struct {
 	// Status asks claude who the account in dir is signed in as.
 	Status func(ctx context.Context, dir domain.ConfigDir) (claudecli.AuthStatus, error)
@@ -26,13 +35,13 @@ type Prober struct {
 	// Labels are the accounts' display names, keyed by normalized config
 	// dir.
 	Labels map[domain.ConfigDir]string
-	// Every spaces the probes of one dir. Zero means DefaultEvery.
+	// Every spaces the probes of one dir while they work, and bounds the
+	// wait after one that failed. Zero means DefaultEvery.
 	Every time.Duration
 	// Clock reads the time. Nil means time.Now.
 	Clock func() time.Time
-	// AfterFunc schedules the next probe: it runs f once d has passed and
-	// returns a function that cancels it. Nil means wall-clock timers.
-	AfterFunc func(d time.Duration, f func()) (stop func() bool)
+	// AfterFunc schedules the next probe. Nil means wall-clock timers.
+	AfterFunc timer.AfterFunc
 
 	mu   sync.Mutex
 	dirs map[domain.ConfigDir]*schedule
@@ -44,7 +53,10 @@ type Prober struct {
 // schedule is when one dir is next probed.
 type schedule struct {
 	// next is when the dir is due; the zero time means at once.
-	next    time.Time
+	next time.Time
+	// retry is how long to wait should the next probe fail; zero means
+	// firstRetry.
+	retry   time.Duration
 	probing bool
 }
 
@@ -69,8 +81,9 @@ func (p *Prober) Observe(dir domain.ConfigDir) {
 // Run probes each observed dir when it is due, until ctx ends, and returns
 // once every probe it started has returned. Dirs are probed side by side, so
 // a slow `claude` for one account holds up no other. A probe that fails sets
-// nothing, leaving the account as the last probe found it, and the dir is
-// probed again on schedule.
+// nothing, leaving the account as the last probe found it. It is tried again
+// after five minutes, then after twice as long each time it fails again, up
+// to Every.
 func (p *Prober) Run(ctx context.Context) {
 	var probes sync.WaitGroup
 	defer probes.Wait()
@@ -85,7 +98,7 @@ func (p *Prober) Run(ctx context.Context) {
 		due := make(chan struct{}, 1)
 		stop = func() bool { return false }
 		if scheduled {
-			stop = p.after(wait, notify(due))
+			stop = p.AfterFunc.Start(wait, timer.Notify(due))
 		}
 		select {
 		case <-ctx.Done():
@@ -120,7 +133,7 @@ func (p *Prober) startDue(ctx context.Context, probes *sync.WaitGroup) (wait tim
 }
 
 // probe asks who the account in dir is, sets what it finds, and schedules
-// the next probe Every after this one returned.
+// the next probe, counted from when this one returned.
 func (p *Prober) probe(ctx context.Context, dir domain.ConfigDir) {
 	status, err := p.Status(ctx, dir)
 	at := p.now()
@@ -130,7 +143,13 @@ func (p *Prober) probe(ctx context.Context, dir domain.ConfigDir) {
 
 	p.mu.Lock()
 	s := p.dirs[dir]
-	s.probing, s.next = false, at.Add(p.every())
+	s.probing = false
+	if err == nil {
+		s.next, s.retry = at.Add(p.every()), 0
+	} else {
+		wait := min(cmp.Or(s.retry, firstRetry), p.every())
+		s.next, s.retry = at.Add(wait), min(2*wait, p.every())
+	}
 	p.mu.Unlock()
 	p.signal()
 }
@@ -159,21 +178,4 @@ func (p *Prober) now() time.Time {
 		return time.Now()
 	}
 	return p.Clock()
-}
-
-func (p *Prober) after(d time.Duration, f func()) (stop func() bool) {
-	if p.AfterFunc == nil {
-		return time.AfterFunc(d, f).Stop
-	}
-	return p.AfterFunc(d, f)
-}
-
-// notify returns a function that signals ch without blocking.
-func notify(ch chan struct{}) func() {
-	return func() {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
 }

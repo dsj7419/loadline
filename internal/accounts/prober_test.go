@@ -247,11 +247,44 @@ func TestProber_FailureKeepsPreviousAccount(t *testing.T) {
 		t.Fatalf("set %+v after a failed probe, want only the first account", got)
 	}
 
-	// The failure does not stop the schedule.
-	h.clock.Advance(every)
+	// The failure does not stop the schedule: the retry comes sooner.
+	h.clock.Advance(5 * time.Minute)
 	h.settle(t, 3)
 	if got := h.log.accounts(); len(got) != 2 || got[1].Auth != domain.AuthAPIKey {
 		t.Errorf("set %+v, want the third probe's API-key account", got)
+	}
+}
+
+// A probe can fail for a moment, as when claude is being updated. The retry
+// comes five minutes later, then waits twice as long after each failure in
+// a row, up to the six-hour schedule a success keeps.
+func TestProber_RetriesAFailureSoonerBackingOffToThe6hSchedule(t *testing.T) {
+	h := newHarness()
+	failed := answer{err: errors.New("auth status: exit status 3")}
+	for range 8 {
+		h.auth.queue(dirA, failed)
+	}
+	h.auth.queue(dirA, answer{status: signedIn}, failed)
+	h.run(t)
+	h.prober.Observe(dirA)
+
+	waits := []time.Duration{
+		5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute, 80 * time.Minute,
+		160 * time.Minute, 320 * time.Minute, every, // eight failures
+		every,           // a success
+		5 * time.Minute, // and a failure after it starts again
+	}
+	for i, want := range waits {
+		h.settle(t, i+1)
+		if got := h.clock.Pending(); !slices.Equal(got, []time.Duration{want}) {
+			t.Fatalf("after probe %d, next probe in %v, want %v", i+1, got, want)
+		}
+		if i < len(waits)-1 {
+			h.clock.Advance(want)
+		}
+	}
+	if got := h.log.accounts(); len(got) != 1 {
+		t.Errorf("set %d accounts, want the one success's", len(got))
 	}
 }
 

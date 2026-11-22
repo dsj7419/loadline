@@ -24,6 +24,7 @@ import (
 	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/server"
+	"github.com/dsj7419/loadline/internal/timer"
 	"github.com/dsj7419/loadline/internal/tracker"
 	"github.com/dsj7419/loadline/internal/web"
 )
@@ -56,7 +57,9 @@ type ServeOptions struct {
 	// as it starts.
 	NoOpen bool
 	// Demo serves a made-up machine instead of this one: claude never runs,
-	// and the spool is left alone.
+	// the spool is left alone, and the ingest routes refuse every event, so
+	// that the hooks keep theirs for the real server. A demo never takes a
+	// port that is already in use.
 	Demo bool
 	// Runner runs claude. Nil means the claude binary the config names, or
 	// the one on PATH.
@@ -126,7 +129,7 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
-		return refuseToListen(ctx, port, err, stdio)
+		return refuseToListen(ctx, port, o.Demo, err, stdio)
 	}
 	// Opened only once the port is ours, so that one server at a time
 	// writes the log.
@@ -143,15 +146,22 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 
 // refuseToListen explains a listen that failed. A port that a loadline
 // already serves is no failure: two sessions that start together each start
-// a server, and the one that loses the race leaves quietly.
-func refuseToListen(ctx context.Context, port int, err error, stdio IO) int {
-	if !isAddrInUse(err) {
+// a server, and the one that loses the race leaves quietly. A demo is not
+// one of them, and says why it cannot start.
+func refuseToListen(ctx context.Context, port int, demoMode bool, err error, stdio IO) int {
+	switch {
+	case isAccessDenied(err):
+		_, _ = fmt.Fprintf(stdio.Err, "loadline: port %d %s; pass --port to use another\n", port, accessDeniedReason)
+	case !isAddrInUse(err):
 		return fail(stdio, fmt.Errorf("listen on port %d: %w", port, err))
-	}
-	if (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx) {
+	case demoMode:
+		_, _ = fmt.Fprintf(stdio.Err,
+			"loadline: port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere\n", port)
+	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx):
 		return exitOK
+	default:
+		_, _ = fmt.Fprintf(stdio.Err, "loadline: port %d is in use by another program\n", port)
 	}
-	_, _ = fmt.Fprintf(stdio.Err, "loadline: port %d is in use by another program\n", port)
 	return exitFailure
 }
 
@@ -161,7 +171,7 @@ type instance struct {
 	port      int
 	idleAfter time.Duration
 	clock     func() time.Time
-	ticker    tracker.Ticker
+	after     timer.AfterFunc
 	log       *slog.Logger
 	failures  *failureLog
 
@@ -178,16 +188,16 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 	if clock == nil {
 		clock = time.Now
 	}
-	ticker := o.Ticker
-	if ticker == nil {
-		ticker = wallTicker{}
+	var after timer.AfterFunc
+	if o.Ticker != nil {
+		after = o.Ticker.AfterFunc
 	}
 	s := &instance{
 		opts:      o,
 		port:      port,
 		idleAfter: time.Duration(cfg.IdleExitMinutes) * time.Minute,
 		clock:     clock,
-		ticker:    ticker,
+		after:     after,
 		log:       log,
 		failures:  newFailureLog(log, clock),
 		spool:     forward.Spool{Dir: o.Paths.SpoolDir, MaxFiles: forward.DefaultMaxFiles},
@@ -199,9 +209,9 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 			ContextPct:    cfg.Alerts.ContextPct,
 			NeedsYouAfter: time.Duration(cfg.Alerts.NeedsYouSeconds) * time.Second,
 		},
-		Ticker: ticker,
+		Ticker: o.Ticker,
 	}
-	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log}
+	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo}
 	if o.Demo {
 		trackerCfg.Budgets = demo.Budgets()
 		s.tracker = tracker.New(clock, trackerCfg, tracker.NopRecorder{})
@@ -229,7 +239,7 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		Slow:      poll.DefaultSlow,
 		Debounce:  poll.DefaultDebounce,
 		Clock:     clock,
-		AfterFunc: ticker.AfterFunc,
+		AfterFunc: after,
 	}
 	s.prober = &accounts.Prober{
 		Status:    s.probeAccount(client),
@@ -237,7 +247,7 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		Labels:    labels,
 		Every:     accounts.DefaultEvery,
 		Clock:     clock,
-		AfterFunc: ticker.AfterFunc,
+		AfterFunc: after,
 	}
 	for _, dir := range startDirs {
 		s.prober.Observe(dir)
@@ -335,7 +345,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	if !s.opts.Demo {
 		// Restart recovery: what the hooks spooled while no server ran goes
 		// in before the first poll, which would otherwise find those
-		// sessions missing.
+		// sessions missing, and which confirms what it applied.
 		s.drain(work)
 		workers.Go(func() { s.poller.Run(work) })
 		workers.Go(func() { s.prober.Run(work) })
@@ -343,7 +353,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	}
 	if s.idleAfter > 0 {
 		workers.Go(func() {
-			if waitIdle(work, s.tracker.HasLive, s.idleAfter, s.clock, s.ticker) {
+			if waitIdle(work, s.tracker.HasLive, s.idleAfter, s.clock, s.after) {
 				close(idle)
 			}
 		})
@@ -395,11 +405,11 @@ func newHTTPServer(base context.Context, handler http.Handler, log *slog.Logger)
 	}
 }
 
-// drain applies the hook events the spool holds, then asks for a poll to
-// confirm what they said. An event that can never be applied is set aside,
-// so that it cannot hold up the ones after it. Once ctx has ended the drain
-// stops, and what is left waits for the next one.
-func (s *instance) drain(ctx context.Context) {
+// drain applies the hook events the spool holds and returns how many. An
+// event that can never be applied is set aside, so that it cannot hold up
+// the ones after it. Once ctx has ended the drain stops, and what is left
+// waits for the next one.
+func (s *instance) drain(ctx context.Context) int {
 	undeliverable := 0
 	drained, err := s.spool.Drain(func(env protocol.Envelope) error {
 		if ctx.Err() != nil {
@@ -414,19 +424,20 @@ func (s *instance) drain(ctx context.Context) {
 	if drained > 0 || undeliverable > 0 {
 		s.log.Info("spool drained", "events", drained, "setAside", undeliverable)
 	}
-	if drained > 0 {
-		s.poller.Kick()
-	}
 	if err != nil && ctx.Err() == nil {
 		s.failures.note("spool drain failed", s.spool.Dir, err)
 	}
+	return drained
 }
 
-// drainEvery drains the spool every drainEvery until ctx ends: a hook that
-// found the server busy or not yet listening spools its event.
+// drainEvery drains the spool every drainEvery until ctx ends, and asks for
+// a poll to confirm what each drain applied: a hook that found the server
+// busy or not yet listening spools its event.
 func (s *instance) drainEvery(ctx context.Context) {
-	for sleep(ctx, s.ticker, drainEvery) {
-		s.drain(ctx)
+	for s.after.Sleep(ctx, drainEvery) {
+		if s.drain(ctx) > 0 {
+			s.poller.Kick()
+		}
 	}
 }
 
@@ -434,7 +445,7 @@ func (s *instance) drainEvery(ctx context.Context) {
 // checks every idleCheckEvery see it, or false when ctx ends first. The
 // span starts at the first check that finds no live session, so the server
 // never leaves earlier than idleAfter after the last one it saw.
-func waitIdle(ctx context.Context, live func() bool, idleAfter time.Duration, clock func() time.Time, ticker tracker.Ticker) bool {
+func waitIdle(ctx context.Context, live func() bool, idleAfter time.Duration, clock func() time.Time, after timer.AfterFunc) bool {
 	var idleSince time.Time
 	for {
 		switch now := clock(); {
@@ -445,22 +456,9 @@ func waitIdle(ctx context.Context, live func() bool, idleAfter time.Duration, cl
 		case now.Sub(idleSince) >= idleAfter:
 			return true
 		}
-		if !sleep(ctx, ticker, idleCheckEvery) {
+		if !after.Sleep(ctx, idleCheckEvery) {
 			return false
 		}
-	}
-}
-
-// sleep waits d on ticker, reporting false when ctx ended first.
-func sleep(ctx context.Context, ticker tracker.Ticker, d time.Duration) bool {
-	due := make(chan struct{})
-	stop := ticker.AfterFunc(d, func() { close(due) })
-	defer stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-due:
-		return true
 	}
 }
 
@@ -475,53 +473,4 @@ func (s pollSink) KnownDirs() []domain.ConfigDir {
 	dirs := append(s.Tracker.KnownDirs(), s.start...)
 	slices.Sort(dirs)
 	return slices.Compact(dirs)
-}
-
-// wallTicker schedules on wall-clock timers.
-type wallTicker struct{}
-
-func (wallTicker) AfterFunc(d time.Duration, f func()) func() bool {
-	return time.AfterFunc(d, f).Stop
-}
-
-// failureRepeat is how long a failure goes unlogged after it was logged,
-// for as long as it repeats exactly.
-const failureRepeat = time.Minute
-
-// failureLog logs the failures of work that repeats, such as polls, no more
-// than once a minute for each failure and subject: a missing or broken
-// claude fails every poll the same way.
-type failureLog struct {
-	log   *slog.Logger
-	clock func() time.Time
-
-	mu     sync.Mutex
-	logged map[failure]time.Time
-}
-
-type failure struct{ what, subject, err string }
-
-func newFailureLog(log *slog.Logger, clock func() time.Time) *failureLog {
-	return &failureLog{log: log, clock: clock, logged: make(map[failure]time.Time)}
-}
-
-// note logs that what failed for subject with err, unless it logged the same
-// failure less than a minute ago.
-func (f *failureLog) note(what, subject string, err error) {
-	key := failure{what: what, subject: subject, err: err.Error()}
-	now := f.clock()
-	f.mu.Lock()
-	for k, at := range f.logged {
-		if now.Sub(at) >= failureRepeat || now.Before(at) {
-			delete(f.logged, k)
-		}
-	}
-	_, recent := f.logged[key]
-	if !recent {
-		f.logged[key] = now
-	}
-	f.mu.Unlock()
-	if !recent {
-		f.log.Warn(what, "subject", subject, "err", err)
-	}
 }

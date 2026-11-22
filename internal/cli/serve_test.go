@@ -763,3 +763,129 @@ func TestServe_LogsStartupShutdownAndFailuresOncePerMinute(t *testing.T) {
 		t.Error("log holds the ingest token")
 	}
 }
+
+// A demo server takes none of the real hooks' events: they would show as
+// made up, and the hooks, finding them taken, would not keep them for the
+// real server. Refused, a hook spools its event as it does when no server
+// runs.
+func TestServe_DemoRefusesTheHooksSoTheySpool(t *testing.T) {
+	f := newServeFixture(t)
+	f.start(func(o *cli.ServeOptions) { o.Demo = true })
+	client := forward.Client{BaseURL: forward.LoopbackURL(f.port), Token: f.token(), HTTP: f.http}
+
+	err := client.Send(t.Context(), forward.HookPath, f.envelope(protocol.KindHook, f.defaultDir(), t0,
+		`{"session_id":"real-1","hook_event_name":"SessionStart"}`))
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Errorf("Send to a demo server = %v, want a 503 refusal", err)
+	}
+
+	env := cli.Env{
+		Getenv: func(string) string { return "" },
+		Home:   f.home,
+		Now:    f.clock.Now,
+		Exe:    testExe,
+		Spawn:  (&spawner{}).spawn,
+	}
+	cfg := config.Defaults()
+	cfg.Port = f.port
+	in := strings.NewReader(`{"session_id":"real-2","hook_event_name":"UserPromptSubmit"}`)
+	if code := cli.RunHook(t.Context(), in, env, f.paths, cfg); code != 0 {
+		t.Fatalf("RunHook = %d, want 0", code)
+	}
+	spooled, err := os.ReadDir(f.paths.SpoolDir)
+	if err != nil || len(spooled) != 1 {
+		t.Errorf("spool holds %d entries (%v), want the refused hook's event", len(spooled), err)
+	}
+	v := f.snapshot()
+	if len(v.Sessions) != 5 {
+		t.Errorf("demo shows %d sessions, want its own 5", len(v.Sessions))
+	}
+	for _, id := range []domain.SessionID{"real-1", "real-2"} {
+		if _, ok := sessionByID(v, id); ok {
+			t.Errorf("demo shows the real session %s", id)
+		}
+	}
+}
+
+// The demo never takes the place of a server quietly: on a port a server
+// already holds it says so, where a second real server leaves without a word.
+func TestServe_DemoOnAHeldPortFails(t *testing.T) {
+	f := newServeFixture(t)
+	f.start()
+
+	var stdout, stderr bytes.Buffer
+	o := f.options()
+	o.Demo = true
+	code := cli.Serve(t.Context(), o, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+
+	want := fmt.Sprintf("loadline: port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere\n", f.port)
+	if code != 1 || stderr.String() != want || stdout.Len() != 0 {
+		t.Errorf("demo Serve = %d, stdout %q, stderr %q; want 1 and %q", code, stdout.String(), stderr.String(), want)
+	}
+}
+
+func TestRunServe_DemoAndPortFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LOADLINE_HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	contents := fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude"))
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.RunServe(ctx, []string{"--demo", "--no-open", "--port", fmt.Sprint(port)},
+			cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard})
+	}()
+	client := forward.Client{BaseURL: forward.LoopbackURL(port)}
+	waitFor(t, "the demo on the --port port", func() bool { return client.Healthy(t.Context()) })
+
+	token, err := config.ReadToken(filepath.Join(home, "token"))
+	if err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	client.Token = token
+	body, err := client.Get(t.Context(), "/api/snapshot", 32<<20)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	var v tracker.View
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(v.Sessions) != 5 {
+		t.Errorf("--demo served %d sessions, want the demo's 5", len(v.Sessions))
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("RunServe = %d, want 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the demo did not stop")
+	}
+}
+
+// The startup drain runs before the first poll, which already covers what it
+// applied: it asks for no poll of its own.
+func TestServe_StartupDrainAsksForNoExtraPoll(t *testing.T) {
+	f := newServeFixture(t)
+	f.spool(f.envelope(protocol.KindHook, f.defaultDir(), t0.Add(-time.Minute),
+		`{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`))
+	f.start()
+	waitFor(t, "the first poll", func() bool { return len(f.claude.dirsCalled(agentsCommand)) > 0 })
+	// The poll does not list s1, which ended a minute ago, so the poller
+	// waits its idle interval.
+	f.waitArmed(30 * time.Second)
+
+	// A kick would arm its debounce at once beside the poller's own timer.
+	time.Sleep(50 * time.Millisecond)
+	if pending := f.clock.Pending(); slices.Contains(pending, 500*time.Millisecond) {
+		t.Errorf("timers %v hold a debounced poll after the startup drain, want none", pending)
+	}
+}

@@ -141,14 +141,20 @@ func orAbsent(s string) string {
 	return s
 }
 
-// printable replaces the control characters in s with spaces. Session names
-// and labels come from outside, and a newline, tab or escape sequence in one
-// would break the table or drive the terminal.
+// printable replaces the control characters in s with spaces and drops its
+// format characters. Session names and labels come from outside: a newline,
+// tab or escape sequence would break the table or drive the terminal, and a
+// format character such as a right-to-left override, invisible itself,
+// would make the text around it read as something else.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		switch {
+		case unicode.IsControl(r):
 			return ' '
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		default:
+			return r
 		}
-		return r
 	}, s)
 }

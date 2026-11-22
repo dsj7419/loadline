@@ -36,7 +36,7 @@ func startIdleWatch(t *testing.T, idleAfter time.Duration, live bool) *idleWatch
 	ctx, cancel := context.WithCancel(t.Context())
 	w := &idleWatch{clock: clocktest.New(idleT0), cancel: cancel, done: make(chan bool, 1)}
 	w.live.Store(live)
-	go func() { w.done <- waitIdle(ctx, w.live.Load, idleAfter, w.clock.Now, w.clock) }()
+	go func() { w.done <- waitIdle(ctx, w.live.Load, idleAfter, w.clock.Now, w.clock.AfterFunc) }()
 	t.Cleanup(cancel)
 	return w
 }
