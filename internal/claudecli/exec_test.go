@@ -266,6 +266,29 @@ func waitForFile(path string) bool {
 	return exists(path)
 }
 
+// readPublished waits for the file a helper renames into place at path, as
+// writePIDFile does, and reads it. For a moment after the new name appears,
+// the rename that put it there still holds the file, as a virus scanner may
+// too, and Windows refuses to open it for reading; that refusal is waited
+// out.
+func readPublished(t *testing.T, path, what string) []byte {
+	t.Helper()
+	if !waitForFile(path) {
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data
+		}
+		if !isSharingViolation(err) || time.Now().After(deadline) {
+			t.Fatalf("read %s: %v", what, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // helperExec returns an Exec that runs the test binary in the given helper
 // mode.
 func helperExec(t *testing.T, mode string) Exec {
@@ -498,13 +521,7 @@ func TestExec_RunDoesNotWaitForAGrandchildHoldingThePipes(t *testing.T) {
 func descendantPID(t *testing.T, pidFile string) int {
 	t.Helper()
 
-	if !waitForFile(pidFile) {
-		t.Fatal("the descendant never reported its process ID")
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("read the descendant's process ID: %v", err)
-	}
+	data := readPublished(t, pidFile, "the descendant's process ID")
 	pid, err := strconv.Atoi(string(data))
 	if err != nil {
 		t.Fatalf("descendant process ID %q: %v", data, err)

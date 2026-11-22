@@ -13,3 +13,7 @@ func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+// isSharingViolation is false everywhere but Windows, where an open file can
+// refuse other opens.
+func isSharingViolation(error) bool { return false }
