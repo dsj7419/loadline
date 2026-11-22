@@ -145,6 +145,7 @@ func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 		t.Skip("no POSIX shell here; TestBashForm_WrapsAllButPlainCommands checks the commands")
 	}
 	shellPaths = shellPaths[:scaled(len(shellPaths), 1)]
+	t.Logf("shells: %q", shellPaths)
 	tapStandIn := filepath.Join(t.TempDir(), "loadline")
 	if err := os.WriteFile(tapStandIn, []byte("#!/bin/sh\nexec cat\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -165,14 +166,17 @@ func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 
 			if got != want || gotCode != wantCode {
 				t.Errorf("%s: %q printed %q (exit %d) behind tap, %q (exit %d) on its own",
-					filepath.Base(shell), tc.original, got, gotCode, want, wantCode)
+					shell, tc.original, got, gotCode, want, wantCode)
 			}
 		}
 	}
 }
 
 // availableShells finds bash and sh. On Windows that means Git for Windows,
-// never the bash.exe in System32, which starts WSL.
+// never the bash.exe in System32, which starts WSL. Elsewhere it takes the
+// system's /bin/bash and /bin/sh first, the shells users have, and then those
+// on PATH, which may be newer: macOS ships bash 3.2 and a runner may put a
+// later bash first on PATH. A shell found twice runs once.
 func availableShells() []string {
 	var candidates []string
 	if runtime.GOOS == "windows" {
@@ -181,6 +185,7 @@ func availableShells() []string {
 				filepath.Join(dir, "Git", "bin", "bash.exe"), filepath.Join(dir, "Git", "bin", "sh.exe"))
 		}
 	} else {
+		candidates = append(candidates, "/bin/bash", "/bin/sh")
 		for _, name := range []string{"bash", "sh"} {
 			if path, err := exec.LookPath(name); err == nil {
 				candidates = append(candidates, path)
@@ -188,8 +193,17 @@ func availableShells() []string {
 		}
 	}
 	var found []string
+	seen := make(map[string]bool)
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil { //nolint:gosec // G703: probes where the shells under test are installed
+		resolved, err := filepath.EvalSymlinks(c)
+		if err != nil {
+			continue
+		}
+		// bash keeps to POSIX when it runs as sh, so the name it runs under
+		// is part of which shell it is.
+		shell := resolved + "\x00" + filepath.Base(c)
+		if !seen[shell] {
+			seen[shell] = true
 			found = append(found, c)
 		}
 	}
