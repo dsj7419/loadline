@@ -122,3 +122,31 @@ func TestShares_NothingToShareIsAnEmptyMap(t *testing.T) {
 		t.Errorf("Shares(nil) = %#v, want an empty, non-nil map", got)
 	}
 }
+
+// Costs too large to add up must not make a share infinite or NaN: the view
+// that carries it could not be encoded. The account's total stops at the
+// largest finite cost.
+func TestShares_StayFiniteWhenCostsOverflow(t *testing.T) {
+	nearMax := 0.9 * math.MaxFloat64
+	spend := []domain.Spend{
+		spendAgo(10, dirA, "A1", nearMax),
+		spendAgo(20, dirA, "A1", nearMax),
+		spendAgo(30, dirA, "A2", nearMax),
+		spendAgo(10, dirB, "B1", nearMax),
+		spendAgo(20, dirB, "B1", nearMax),
+	}
+
+	got := domain.Shares(spend, t0, shareWindow)
+
+	if len(got) != 3 {
+		t.Fatalf("Shares() = %v, want a share for A1, A2 and B1", got)
+	}
+	for session, share := range got {
+		if math.IsNaN(share) || share <= 0 || share > 1 {
+			t.Errorf("%s's share is %v, want a fraction above 0 and at most 1", session, share)
+		}
+	}
+	if got["B1"] != 1 {
+		t.Errorf("B1's share is %v, want 1: it is its account's only session", got["B1"])
+	}
+}

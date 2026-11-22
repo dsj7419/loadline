@@ -19,7 +19,9 @@ type Spend struct {
 // and so are calls with a cost that is not a positive, finite number.
 //
 // A session billed to two accounts, because it moved, reports the larger of
-// its two shares.
+// its two shares. Sums of spend stop at the largest finite cost, so a share
+// is never NaN or infinite, and an account whose total is zero or not finite
+// gives no share.
 func Shares(spend []Spend, now time.Time, window time.Duration) map[SessionID]float64 {
 	type sessionOnAccount struct {
 		dir     ConfigDir
@@ -32,13 +34,18 @@ func Shares(spend []Spend, now time.Time, window time.Duration) map[SessionID]fl
 		if s.At.Before(oldest) || !isSpendable(s.CostUSD) {
 			continue
 		}
-		bySession[sessionOnAccount{s.Dir, s.Session}] += s.CostUSD
-		byAccount[s.Dir] += s.CostUSD
+		key := sessionOnAccount{s.Dir, s.Session}
+		bySession[key] = addSpend(bySession[key], s.CostUSD)
+		byAccount[s.Dir] = addSpend(byAccount[s.Dir], s.CostUSD)
 	}
 
 	shares := make(map[SessionID]float64, len(bySession))
 	for key, cost := range bySession {
-		shares[key.session] = max(shares[key.session], cost/byAccount[key.dir])
+		total := byAccount[key.dir]
+		if !isSpendable(total) {
+			continue
+		}
+		shares[key.session] = max(shares[key.session], cost/total)
 	}
 	return shares
 }
@@ -47,4 +54,13 @@ func Shares(spend []Spend, now time.Time, window time.Duration) map[SessionID]fl
 // finite. NaN fails the comparison.
 func isSpendable(costUSD float64) bool {
 	return costUSD > 0 && !math.IsInf(costUSD, 1)
+}
+
+// addSpend adds costs, stopping at the largest finite cost: a total that
+// reached infinity would make the shares of its sessions NaN or zero.
+func addSpend(a, b float64) float64 {
+	if sum := a + b; !math.IsInf(sum, 1) {
+		return sum
+	}
+	return math.MaxFloat64
 }
