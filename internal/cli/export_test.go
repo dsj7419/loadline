@@ -9,6 +9,12 @@ import (
 // enough to exit.
 const IdleCheckEvery = idleCheckEvery
 
+// TapSendTimeout returns the bound on the tap's post.
+func TapSendTimeout() time.Duration { return tapSendTimeout }
+
+// HookSendTimeout returns the bound on the hook's post.
+func HookSendTimeout() time.Duration { return hookSendTimeout }
+
 // SetTapSendTimeout replaces the bound on the tap's post for the rest of the
 // test.
 func SetTapSendTimeout(t *testing.T, timeout time.Duration) {

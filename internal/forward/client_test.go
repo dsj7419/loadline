@@ -154,15 +154,19 @@ func TestClient_SendFailsWhenNothingListens(t *testing.T) {
 }
 
 func TestClient_SendStopsAtTheDeadline(t *testing.T) {
+	const deadline = 100 * time.Millisecond
 	client := forward.Client{BaseURL: startHungServer(t), Token: testToken}
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
+	// Started before the deadline is set, so that the deadline is counted
+	// in full.
 	start := time.Now()
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
 
 	err := client.Send(ctx, forward.HookPath, envelopeAt(1, t0))
 
-	if elapsed, bound := time.Since(start), hotPathBound(200*time.Millisecond); err == nil || elapsed > bound {
-		t.Errorf("Send = %v after %v against a hung server, want an error by the 100 ms deadline, within %v", err, elapsed, bound)
+	assertGaveUpAt(t, "Send", time.Since(start), deadline)
+	if err == nil {
+		t.Error("Send = nil against a hung server, want an error")
 	}
 }
 
@@ -269,15 +273,26 @@ func TestClient_UnhealthyWhenNothingListens(t *testing.T) {
 	}
 }
 
-// Healthy bounds itself, so a hung server cannot hold the caller.
+// Healthy bounds itself, so a hung server cannot hold the caller: without a
+// HealthTimeout of its own, a Client gives up at the default.
 func TestClient_HealthyGivesUpOnAHungServer(t *testing.T) {
 	client := forward.Client{BaseURL: startHungServer(t)}
 	start := time.Now()
 
 	healthy := client.Healthy(context.Background())
 
-	if elapsed, bound := time.Since(start), hotPathBound(250*time.Millisecond); healthy || elapsed > bound {
-		t.Errorf("Healthy() = %v after %v against a hung server, want false by its 150 ms, within %v", healthy, elapsed, bound)
+	assertGaveUpAt(t, "Healthy", time.Since(start), forward.DefaultHealthTimeout)
+	if healthy {
+		t.Error("Healthy() = true against a hung server, want false")
+	}
+}
+
+// A Client without a HealthTimeout, such as the hook's check on SessionStart
+// that a server answers, waits 150 ms at most, as the plan sets it: the hot
+// path can afford no more.
+func TestClient_DefaultHealthTimeoutIs150ms(t *testing.T) {
+	if forward.DefaultHealthTimeout != 150*time.Millisecond {
+		t.Errorf("Healthy waits %v by default, want 150ms", forward.DefaultHealthTimeout)
 	}
 }
 

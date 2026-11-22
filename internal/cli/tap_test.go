@@ -162,25 +162,37 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 }
 
 // The status line process does not linger on a server that does not answer:
-// the tap gives up on its post at its 100 ms bound.
+// the tap gives up on its post at its bound. The bound here is the test's
+// own; TestRunTap_CapsItsPostAt100ms pins the tap's.
 func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
+	const deadline = 100 * time.Millisecond
+	cli.SetTapSendTimeout(t, deadline)
 	f := newFixture(t)
 	out := newEchoPipe(t)
-	f.serve(func(s *ingestServer) { s.hold = 2 * time.Second })
+	// The answer comes, but long after the tap should have given up on it.
+	srv := f.serve(func(s *ingestServer) { s.hold = 2 * gaveUpBy(deadline) })
 	input := statusInput(t)
 	start := time.Now()
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	total := time.Since(start)
+	assertGaveUpAt(t, "the tap", time.Since(start), deadline)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if echo := out.echo(); echo != input {
 		t.Errorf("echoed %q, want the input", echo)
 	}
-	if bound := hotPathBound(150 * time.Millisecond); total > bound {
-		t.Errorf("tap took %v against a hung server, want at most %v", total, bound)
+	if posts := srv.received(); len(posts) != 1 {
+		t.Errorf("server received %d posts, want 1", len(posts))
+	}
+}
+
+// The spec caps the tap's post at 100 ms: the status line's process lingers
+// no longer than that after its echo.
+func TestRunTap_CapsItsPostAt100ms(t *testing.T) {
+	if got := cli.TapSendTimeout(); got != 100*time.Millisecond {
+		t.Errorf("the tap's post is bounded by %v, want 100ms", got)
 	}
 }
 

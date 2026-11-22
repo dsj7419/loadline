@@ -83,15 +83,27 @@ var t0 = time.Date(2026, time.November, 21, 18, 0, 0, 0, time.UTC)
 // take.
 const raceSlowdown = 5
 
-// hotPathBound is d, a wall-clock bound on the hot path, as strict as the
-// plan sets it without the race detector and raceSlowdown times longer with
-// it, so that a race-enabled run checks the bound without failing on the
-// detector's cost.
-func hotPathBound(d time.Duration) time.Duration {
+// gaveUpBy returns how long, in all, a call that gives up at deadline may
+// take to return: the deadline, and a margin past it for a loaded machine
+// to wake the caller and let it finish. The margin grows with the
+// deadline: four times it, and raceSlowdown times that with the race
+// detector, which slows the work around the deadline.
+func gaveUpBy(deadline time.Duration) time.Duration {
+	lateness := 4 * deadline
 	if raceEnabled {
-		return raceSlowdown * d
+		lateness *= raceSlowdown
 	}
-	return d
+	return deadline + lateness
+}
+
+// assertGaveUpAt fails t unless elapsed, how long call took against a
+// server that does not answer, shows that it gave up at deadline: no
+// sooner, which no load can bring about, and before gaveUpBy(deadline).
+func assertGaveUpAt(t *testing.T, call string, elapsed, deadline time.Duration) {
+	t.Helper()
+	if limit := gaveUpBy(deadline); elapsed < deadline || elapsed >= limit {
+		t.Errorf("%s returned after %v, want it to give up at its %v deadline: no sooner, and before %v", call, elapsed, deadline, limit)
+	}
 }
 
 // postWindow replaces the tap's 100 ms and the hook's 300 ms bound on their

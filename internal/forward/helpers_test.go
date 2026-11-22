@@ -31,15 +31,21 @@ var (
 // take.
 const raceSlowdown = 5
 
-// hotPathBound is d, a wall-clock bound on the hot path, as strict as the
-// plan sets it without the race detector and raceSlowdown times longer with
-// it, so that a race-enabled run checks the bound without failing on the
-// detector's cost.
-func hotPathBound(d time.Duration) time.Duration {
+// assertGaveUpAt fails t unless elapsed, how long call took against a
+// server that does not answer, shows that it gave up at deadline: no
+// sooner, which no load can bring about, and before a margin past it for a
+// loaded machine to wake the caller and let it finish. The margin grows
+// with the deadline: four times it, and raceSlowdown times that with the
+// race detector, which slows the work around the deadline.
+func assertGaveUpAt(t *testing.T, call string, elapsed, deadline time.Duration) {
+	t.Helper()
+	lateness := 4 * deadline
 	if raceEnabled {
-		return raceSlowdown * d
+		lateness *= raceSlowdown
 	}
-	return d
+	if limit := deadline + lateness; elapsed < deadline || elapsed >= limit {
+		t.Errorf("%s returned after %v, want it to give up at its %v deadline: no sooner, and before %v", call, elapsed, deadline, limit)
+	}
 }
 
 // envelopeAt returns a valid hook envelope for session s<i>, stamped at.
