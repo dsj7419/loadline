@@ -25,6 +25,10 @@ const (
 	// holdEnv, when set, names a file the reporter waits for before it
 	// exits, so that a test can look at it while it runs.
 	holdEnv = "LOADLINE_LAUNCH_HOLD"
+	// lingerEnv, when set, has the reporter run on for lingerAfterExit once
+	// it has written that it is exiting, as a race-enabled binary on a
+	// loaded machine may take a while to exit.
+	lingerEnv = "LOADLINE_LAUNCH_LINGER"
 
 	// asReporter reports on itself and exits.
 	asReporter = "report"
@@ -35,6 +39,11 @@ const (
 	// holdLimit is the longest a reporter waits for its hold file, so that
 	// none outlives a test that failed before releasing it.
 	holdLimit = 30 * time.Second
+	// lingerAfterExit is well past goleak's retry window of about 430 ms (20
+	// retries, sleeping from 1 microsecond and doubling up to 100 ms), so
+	// that a goroutine left waiting for a lingering child is still there for
+	// goleak to find.
+	lingerAfterExit = 2 * time.Second
 )
 
 func TestMain(m *testing.M) {
@@ -85,6 +94,9 @@ func runReporter() int {
 	}
 	if err := publish(path+".exit", nil); err != nil {
 		return 1
+	}
+	if os.Getenv(lingerEnv) != "" {
+		time.Sleep(lingerAfterExit)
 	}
 	return 0
 }
@@ -146,11 +158,17 @@ func runSpawner() int {
 // child is a reporter a test is about to start.
 type child struct {
 	report, hold string
+	// reaped, once the test has opened the child as its browser, is closed
+	// when Open's reaper has waited for the child to exit.
+	reaped <-chan struct{}
+	// pid is the child's process ID, once the test has read its report.
+	pid int
 }
 
 // expectChild arranges for the next copy of the test binary to report on
 // itself, and, when hold is set, to wait until the test releases it. The
-// test's end releases it and waits for it to exit.
+// test's end releases it, waits for it to exit and, if it was opened as a
+// browser, for Open's reaper to have waited for it.
 func expectChild(t *testing.T, hold bool) *child {
 	t.Helper()
 	dir := t.TempDir()
@@ -164,8 +182,17 @@ func expectChild(t *testing.T, hold bool) *child {
 	t.Cleanup(func() {
 		c.release(t)
 		c.waitExit(t)
+		c.waitReaped(t)
 	})
 	return c
+}
+
+// open opens url in b, which starts the child, as Open does, and keeps
+// what the test's end needs to wait for the child to be reaped.
+func (c *child) open(url string, b launch.Browser) error {
+	reaped, err := launch.OpenBrowser(url, b)
+	c.reaped = reaped
+	return err
 }
 
 // read waits for the child's report.
@@ -176,6 +203,7 @@ func (c *child) read(t *testing.T) helperReport {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("decode the report %s: %v", data, err)
 	}
+	c.pid = report.PID
 	return report
 }
 
@@ -194,8 +222,8 @@ func (c *child) release(t *testing.T) {
 	}
 }
 
-// waitExit waits until the child is about to exit, which it does at once
-// once it has written that it is.
+// waitExit waits until the child has written that it is about to exit. A
+// race-enabled child can still take a second or more to do so.
 func (c *child) waitExit(t *testing.T) {
 	t.Helper()
 	if _, err := os.Stat(c.report); errors.Is(err, fs.ErrNotExist) && t.Failed() {
@@ -203,6 +231,47 @@ func (c *child) waitExit(t *testing.T) {
 		return
 	}
 	waitForFile(t, c.report+".exit", "the started program to exit")
+}
+
+// waitReaped waits until Open's reaper has waited for the child, which can
+// run on for a while after it has written that it is exiting. A test that
+// ended first would leave the reaper behind, for goleak to find once the
+// package's tests are done.
+func (c *child) waitReaped(t *testing.T) {
+	t.Helper()
+	if c.reaped == nil {
+		return
+	}
+	limit := reapLimit()
+	select {
+	case <-c.reaped:
+	case <-time.After(limit):
+		t.Errorf("%s had not exited %v after the test ended, so Open's reaper still waits for it", c.process(), limit)
+	}
+}
+
+// process names the child's process, by its ID once its report has given
+// it.
+func (c *child) process() string {
+	if c.pid == 0 {
+		return "the started program, which never reported its process ID,"
+	}
+	return fmt.Sprintf("the started program, process %d,", c.pid)
+}
+
+// raceSlowdown is how much longer the race detector may make a test binary
+// take to exit.
+const raceSlowdown = 5
+
+// reapLimit is how long a test's end waits for a browser it opened to exit
+// and be reaped: well past lingerAfterExit, and raceSlowdown times longer
+// under the race detector, which slows a test binary's exit.
+func reapLimit() time.Duration {
+	const limit = 10 * time.Second
+	if raceEnabled {
+		return raceSlowdown * limit
+	}
+	return limit
 }
 
 func waitForFile(t *testing.T, path, what string) {

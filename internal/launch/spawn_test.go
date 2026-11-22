@@ -6,8 +6,11 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"sync"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 
 	"github.com/dsj7419/loadline/internal/launch"
 )
@@ -59,6 +62,11 @@ func TestSpawnDetached_KeepsNoneOfTheSpawnersStreams(t *testing.T) {
 	if err := spawner.Start(); err != nil {
 		t.Fatalf("start the spawner: %v", err)
 	}
+	// exec watches the test's context until the spawner is waited for, so a
+	// test that fails before it waits must still wait, or the watch outlives
+	// the test.
+	wait := sync.OnceValue(spawner.Wait)
+	t.Cleanup(func() { _ = wait() })
 	_ = writeEnd.Close()
 	output := make(chan []byte, 1)
 	go func() {
@@ -74,7 +82,7 @@ func TestSpawnDetached_KeepsNoneOfTheSpawnersStreams(t *testing.T) {
 	case <-time.After(holdLimit / 3):
 		t.Fatal("the spawner's output stayed open after it exited: the program it spawned holds it")
 	}
-	if err := spawner.Wait(); err != nil {
+	if err := wait(); err != nil {
 		t.Errorf("the spawner failed: %v", err)
 	}
 	c.read(t)
@@ -94,8 +102,7 @@ func TestSpawnDetached_FailsForAMissingProgram(t *testing.T) {
 func TestOpen_StartsTheBrowserWithTheURLAsOneArgument(t *testing.T) {
 	c := expectChild(t, false)
 
-	err := launch.Open(dashboardURL, launch.Browser{Pref: testBinary(t), AppWindow: true})
-	if err != nil {
+	if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t), AppWindow: true}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
@@ -119,4 +126,24 @@ func TestOpen_RefusesAnUnknownBrowser(t *testing.T) {
 	if err := launch.Open(dashboardURL, launch.Browser{Pref: "opera"}); err == nil {
 		t.Error("Open with an unknown browser succeeded, want an error")
 	}
+}
+
+// A browser may run on for a while after it has said it is exiting, as a
+// race-enabled binary on a loaded machine does. A test that waited only for
+// it to say so would end while Open's reaper still waits for it, and goleak
+// would find the reaper once the package's tests are done. This browser
+// lingers past goleak's retries, so the check fails unless reaped is closed
+// only once the reaper has waited for it.
+func TestOpenBrowser_ClosesReapedOnlyOnceTheBrowserHasExited(t *testing.T) {
+	// Registered first, so that it runs last, once the child's own cleanup
+	// has waited for it.
+	t.Cleanup(func() { goleak.VerifyNone(t) })
+	c := expectChild(t, false)
+	t.Setenv(lingerEnv, "1")
+
+	if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t)}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	c.read(t)
 }

@@ -84,23 +84,35 @@ func chromiumArgs(url string, appWindow bool) []string {
 // started. The browser runs in the home directory, with none of the
 // caller's standard streams.
 func Open(url string, b Browser) error {
+	_, err := openBrowser(url, b)
+	return err
+}
+
+// openBrowser is Open, and also returns a channel that is closed once the
+// browser has exited and been reaped, which a caller that must not outlive
+// it can wait for.
+func openBrowser(url string, b Browser) (reaped <-chan struct{}, err error) {
 	name, args, err := Command(url, b, installed)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cmd, err := browserCommand(name, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", name, err)
+		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
 	// Most launchers hand the URL to a running browser and exit at once.
 	// Waiting for them here, rather than releasing them, reaps them as they
 	// exit, so that on Unix none lingers as a zombie for as long as the
 	// server runs.
-	go func() { _ = cmd.Wait() }()
-	return nil
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = cmd.Wait()
+	}()
+	return done, nil
 }
 
 // browserCommand is the command Open runs.
