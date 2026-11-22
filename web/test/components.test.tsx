@@ -670,6 +670,7 @@ describe('AccountCard', () => {
     balanceUSD: 20,
     spentUSD: 6.4,
     remainingUSD: 13.6,
+    days: 30,
     onCreditsSince: '2026-11-21T17:42:00Z',
     active: true,
     source: 'estimate',
@@ -715,11 +716,16 @@ describe('AccountCard', () => {
     expect(card.textContent).not.toMatch(/on credits/i);
   });
 
-  it('says what an estimate is made from', () => {
-    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: onCredits })} now={signal(now)} />);
+  it.each([
+    ['Estimated from the last 30 days of usage', 30],
+    ['Estimated from the last 7 days of usage', 7],
+    ['Estimated from the last 1 day of usage', 1],
+  ])('says what an estimate is made from: %s', (title, days) => {
+    const credits = { ...onCredits, days };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits })} now={signal(now)} />);
 
     const row = screen.getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'));
-    expect(row.getAttribute('title')).toBe('Estimated from the last 30 days of usage');
+    expect(row.getAttribute('title')).toBe(title);
   });
 
   it('gives reported figures as the spend limit reports them', () => {

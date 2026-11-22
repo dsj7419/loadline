@@ -7,14 +7,14 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 )
 
-const (
-	// creditKeep is how far back the tracker holds what credit estimates
-	// read: the thirty days the view's spend covers.
-	creditKeep = keepDays * 24 * time.Hour
-	// reportedFor is how long a reported spend limit stands without a newer
-	// status line reporting it again.
-	reportedFor = time.Hour
-)
+// reportedFor is how long a reported spend limit stands without a newer
+// status line reporting it again.
+const reportedFor = time.Hour
+
+// creditHistory is how far back the tracker holds what credit estimates read.
+func (t *Tracker) creditHistory() time.Duration {
+	return time.Duration(t.cfg.CreditDays) * 24 * time.Hour
+}
 
 // creditCall is a model call as a credit estimate reads it.
 type creditCall struct {

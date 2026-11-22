@@ -28,6 +28,7 @@ test.describe('long text and large amounts', () => {
               balanceUSD: 1e21,
               spentUSD: 1e300,
               remainingUSD: 0,
+              days: 30,
               onCreditsSince: '2026-11-21T17:40:00Z',
               active: true,
               source: 'estimate',

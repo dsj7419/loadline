@@ -820,6 +820,31 @@ func TestServe_CreditsComeFromTheConfig(t *testing.T) {
 	})
 }
 
+// Credits are estimated over the history the server keeps, so a restart does
+// not change them.
+func TestServe_CreditsCountTheDaysTheHistoryKeeps(t *testing.T) {
+	for name, tc := range map[string]struct {
+		retention string
+		days      int
+	}{
+		"a week of history":    {retention: `"retentionDays":7,`, days: 7},
+		"the default 30 days":  {days: 30},
+		"a year, capped at 30": {retention: `"retentionDays":365,`, days: 30},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newServeFixture(t)
+			f.mkdirs(f.dir(".claude-b"))
+			f.writeConfig(`{` + tc.retention + `"accounts":[{"configDir":"~/.claude-b","credits":[{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"}]}]}`)
+			f.start()
+
+			waitFor(t, "the credits", func() bool {
+				a, ok := accountByDir(f.snapshot(), f.dir(".claude-b"))
+				return ok && a.Credits != nil && a.Credits.Days == tc.days
+			})
+		})
+	}
+}
+
 func TestServe_DemoShowsAnAccountOnCredits(t *testing.T) {
 	f := newServeFixture(t)
 	f.start(func(o *cli.ServeOptions) { o.Demo = true })

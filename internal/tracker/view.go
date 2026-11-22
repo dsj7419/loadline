@@ -57,6 +57,8 @@ type CreditsView struct {
 	BalanceUSD   float64 `json:"balanceUSD"`
 	SpentUSD     float64 `json:"spentUSD"`
 	RemainingUSD float64 `json:"remainingUSD"`
+	// Days is how many days back an estimate counts spend.
+	Days int `json:"days"`
 	// OnCreditsSince is when the account went on credits; null unless Active.
 	OnCreditsSince Timestamp `json:"onCreditsSince"`
 	// Active says the account is at a plan limit and working on credits.
@@ -245,7 +247,7 @@ func (t *Tracker) buildView(now time.Time) View {
 		if account.Auth == domain.AuthSubscription {
 			credits, show := entry.creditEstimate(t.cfg.Credits[dir], now)
 			if show {
-				view.Credits = creditsView(credits)
+				view.Credits = creditsView(credits, t.cfg.CreditDays)
 			}
 			alerting.Credits[dir] = credits
 		}
@@ -336,11 +338,12 @@ func windowView(w *domain.Window, observedAt time.Time, p domain.Projection) *Wi
 	return view
 }
 
-func creditsView(e domain.CreditEstimate) *CreditsView {
+func creditsView(e domain.CreditEstimate, days int) *CreditsView {
 	return &CreditsView{
 		BalanceUSD:     e.BalanceUSD,
 		SpentUSD:       e.SpentUSD,
 		RemainingUSD:   e.RemainingUSD,
+		Days:           days,
 		OnCreditsSince: Timestamp(e.OnCreditsSince),
 		Active:         e.Active,
 		Source:         e.Source,

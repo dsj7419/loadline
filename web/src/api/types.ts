@@ -87,6 +87,8 @@ export type CreditsView = {
   readonly balanceUSD: number;
   readonly spentUSD: number;
   readonly remainingUSD: number;
+  /** How many days back an estimate counts spend: the history the server keeps, up to 30. */
+  readonly days: Int;
   /** When the account went on credits; null unless active. */
   readonly onCreditsSince: Timestamp | null;
   /** The account is at a plan limit and working on credits. */

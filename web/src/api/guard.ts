@@ -87,6 +87,7 @@ const creditsView = shape<CreditsView>({
   balanceUSD: finite,
   spentUSD: finite,
   remainingUSD: finite,
+  days: integer,
   onCreditsSince: nullable(timestamp),
   active: flag,
   source: oneOf(creditSources),

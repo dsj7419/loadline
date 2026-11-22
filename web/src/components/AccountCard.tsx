@@ -143,11 +143,12 @@ type CreditsProps = {
 // shown as they are.
 function Credits({ credits, now }: CreditsProps) {
   const estimate = credits.source === 'estimate';
+  const days = credits.days === 1 ? '1 day' : `${credits.days} days`;
   return (
     <div class="credits">
       <p
         class="credits-figures"
-        title={estimate ? 'Estimated from the last 30 days of usage' : 'As the spend limit reports them'}
+        title={estimate ? `Estimated from the last ${days} of usage` : 'As the spend limit reports them'}
       >
         Credits {estimate ? '≈ ' : ''}
         <Amount usd={credits.spentUSD} /> of <Amount usd={credits.balanceUSD} /> used ·{' '}

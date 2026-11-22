@@ -54,7 +54,7 @@ func TestTracker_CreditsEstimatedFromCallsAtTheLimit(t *testing.T) {
 	v := h.tr.Snapshot()
 
 	want := tracker.CreditsView{
-		BalanceUSD: 20, SpentUSD: 6.25, RemainingUSD: 13.75,
+		BalanceUSD: 20, SpentUSD: 6.25, RemainingUSD: 13.75, Days: 30,
 		OnCreditsSince: tracker.Timestamp(at(60)), Active: true, Source: domain.CreditSourceEstimate,
 	}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
@@ -113,7 +113,7 @@ func TestTracker_ReportedSpendLimitReplacesTheEstimate(t *testing.T) {
 	h.clock.Set(at(100))
 
 	want := tracker.CreditsView{
-		BalanceUSD: 500, SpentUSD: 314.25, RemainingUSD: 185.75,
+		BalanceUSD: 500, SpentUSD: 314.25, RemainingUSD: 185.75, Days: 30,
 		OnCreditsSince: tracker.Timestamp(at(0)), Active: true, Source: domain.CreditSourceReported,
 	}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
@@ -127,7 +127,7 @@ func TestTracker_ReportedSpendLimitIsShownWithoutGrants(t *testing.T) {
 	st.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
 	h.tr.Apply(st)
 
-	want := tracker.CreditsView{BalanceUSD: 50, SpentUSD: 12.5, RemainingUSD: 37.5, Source: domain.CreditSourceReported}
+	want := tracker.CreditsView{BalanceUSD: 50, SpentUSD: 12.5, RemainingUSD: 37.5, Days: 30, Source: domain.CreditSourceReported}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
 		t.Errorf("credits %+v, want %+v", got, want)
 	}
@@ -169,7 +169,7 @@ func TestTracker_CreditsSpanClosesAtTheReset(t *testing.T) {
 
 	v := h.tr.Snapshot()
 
-	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Source: domain.CreditSourceEstimate}
+	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Days: 30, Source: domain.CreditSourceEstimate}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
 		t.Errorf("credits %+v, want %+v", got, want)
 	}
@@ -218,7 +218,7 @@ func TestTracker_CreditsSurviveARestart(t *testing.T) {
 	})
 
 	want := tracker.CreditsView{
-		BalanceUSD: 20, SpentUSD: 3.75, RemainingUSD: 16.25,
+		BalanceUSD: 20, SpentUSD: 3.75, RemainingUSD: 16.25, Days: 30,
 		OnCreditsSince: tracker.Timestamp(spanStart), Active: true, Source: domain.CreditSourceEstimate,
 	}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
@@ -398,6 +398,40 @@ func TestTracker_OnCreditsSinceHoldsWhileAMergedSpanAgesOut(t *testing.T) {
 	}
 }
 
+// Credit estimates count no further back than the history keeps, at most
+// thirty days, so a tracker restarted from it counts what one that ran on
+// does; the view says how many days that is.
+func TestTracker_CreditsCountTheDaysTheHistoryKeeps(t *testing.T) {
+	const day = 86400
+	for name, tc := range map[string]struct {
+		creditDays, wantDays int
+		wantSpentUSD         float64
+	}{
+		"a week of history":         {creditDays: 7, wantDays: 7, wantSpentUSD: 7},
+		"a day of history":          {creditDays: 1, wantDays: 1, wantSpentUSD: 1},
+		"unset, thirty days":        {creditDays: 0, wantDays: 30, wantSpentUSD: 30},
+		"more history, thirty days": {creditDays: 45, wantDays: 30, wantSpentUSD: 30},
+	} {
+		t.Run(name, func(t *testing.T) {
+			grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 100, AddedAt: at(-40 * day)}}}
+			h := newSubscribedHarness(t, tracker.Config{Credits: grants, CreditDays: tc.creditDays, Alerts: defaultAlerts})
+			for d := -31; d <= 0; d++ {
+				h.clock.Set(at(d * day))
+				h.tr.Apply(withWindows(statusLine(d*day, s1), nil, window(100, time.Time{})))
+				h.tr.RecordAPI(request(at(d*day+10), s1, "Opus 5.5", 1))
+				h.tr.Snapshot()
+			}
+			h.clock.Set(at(60))
+
+			got := h.account(dirA).Credits
+
+			if got == nil || got.Days != tc.wantDays || got.SpentUSD != tc.wantSpentUSD || !time.Time(got.OnCreditsSince).Equal(at(-31*day)) {
+				t.Errorf("credits %+v, want $%v spent over the last %d days, on credits since %v", got, tc.wantSpentUSD, tc.wantDays, at(-31*day))
+			}
+		})
+	}
+}
+
 func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
 	for name, tc := range map[string]struct {
 		grants   map[domain.ConfigDir][]domain.CreditGrant
@@ -405,7 +439,7 @@ func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
 	}{
 		"with grants, back to the estimate": {
 			grants:   twentyDollars,
-			afterAll: &tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Source: domain.CreditSourceEstimate},
+			afterAll: &tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Days: 30, Source: domain.CreditSourceEstimate},
 		},
 		"without grants, gone": {},
 	} {
@@ -440,7 +474,7 @@ func TestTracker_ADroppedWindowClosesASpanWithNoKnownReset(t *testing.T) {
 	h.tr.RecordAPI(request(at(90), s1, "Opus 5.5", 4))
 	h.clock.Set(at(100))
 
-	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Source: domain.CreditSourceEstimate}
+	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Days: 30, Source: domain.CreditSourceEstimate}
 	if got := h.account(dirA).Credits; got == nil || *got != want {
 		t.Errorf("credits %+v, want %+v", got, want)
 	}

@@ -193,6 +193,7 @@ describe('the View contract', () => {
     ['NaN for an amount', ['sessions', 0, 'contextPct'], Number.NaN],
     ['a fractional count', ['sessions', 0, 'subagents'], 1.5],
     ['a fractional token count', ['models', 0, 'input'], 10.25],
+    ['a fractional number of days of credit history', ['accounts', 0, 'credits', 'days'], 7.5],
     ['a list element of the wrong type', ['alerts', 0], 'needs_you'],
   ])('rejects %s', (_, path, replacement) => {
     expect(isView(edit(golden, path, replacement))).toBe(false);

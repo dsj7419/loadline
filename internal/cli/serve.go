@@ -246,6 +246,9 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	s.configured = settings.dirs
 	startDirs := slices.Concat(settings.dirs, []domain.ConfigDir{defaultDir})
 	trackerCfg.Labels, trackerCfg.Budgets, trackerCfg.Credits = settings.labels, settings.budgets, settings.credits
+	// Credit estimates count no further back than the history keeps, which
+	// is all a restart gives back.
+	trackerCfg.CreditDays = cfg.RetentionDays
 	s.history = s.openHistory(ctx, cfg.RetentionDays)
 	s.tracker = tracker.New(clock, trackerCfg, s.history.recorder())
 

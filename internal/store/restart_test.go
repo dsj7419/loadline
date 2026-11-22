@@ -42,18 +42,22 @@ type creditsRun struct {
 	// play drives the tracker, from the account's sign-in to just before
 	// the restart.
 	play func(c *manualClock, tr *tracker.Tracker)
-	// check holds the tracker that never restarted to what the scenario
-	// says it reports, so that two trackers wrong alike cannot pass.
+	// check holds the tracker that never restarted, under a thirty-day
+	// retention, to what the scenario says it reports, so that two trackers
+	// wrong alike cannot pass.
 	check func(t *testing.T, credits *tracker.CreditsView)
 }
 
-func newCreditsTracker(t *testing.T, c *manualClock, grants []domain.CreditGrant, rec tracker.Recorder) *tracker.Tracker {
+// newCreditsTracker is a tracker as the server sets one up for a history
+// that keeps retentionDays.
+func newCreditsTracker(t *testing.T, c *manualClock, grants []domain.CreditGrant, retentionDays int, rec tracker.Recorder) *tracker.Tracker {
 	t.Helper()
 	tr := tracker.New(c.Now, tracker.Config{
-		Credits:  map[domain.ConfigDir][]domain.CreditGrant{dirA: grants},
-		Alerts:   domain.AlertConfig{WeeklyPct: 90, ContextPct: 85, NeedsYouAfter: 20 * time.Second},
-		Location: time.UTC,
-		Ticker:   heldTicker{},
+		Credits:    map[domain.ConfigDir][]domain.CreditGrant{dirA: grants},
+		CreditDays: retentionDays,
+		Alerts:     domain.AlertConfig{WeeklyPct: 90, ContextPct: 85, NeedsYouAfter: 20 * time.Second},
+		Location:   time.UTC,
+		Ticker:     heldTicker{},
 	}, rec)
 	t.Cleanup(tr.Close)
 	return tr
@@ -141,49 +145,80 @@ var creditsRuns = map[string]creditsRun{
 	},
 }
 
+// restartAt is when the server restarts in these tests.
+var restartAt = at(60)
+
+// restart plays run on a tracker that records to a new history keeping
+// retentionDays, lets prune have the history as the downtime left it, and
+// restarts as the server does: it restores a new tracker from what the
+// history loads at restartAt. It returns the credits the tracker that ran on
+// shows at restartAt, and what the page shows of them from both trackers.
+func restart(t *testing.T, run creditsRun, retentionDays int, prune func(t *testing.T, s *store.SQLite, since time.Time)) (ranOn *tracker.CreditsView, ranOnPage, restartedPage string) {
+	t.Helper()
+	s, _ := openStore(t)
+	rec, _ := newRecorder(t, s)
+	clock := &manualClock{}
+	live := newCreditsTracker(t, clock, run.grants, retentionDays, rec)
+	run.play(clock, live)
+	closeRecorder(t, rec)
+	if rec.Dropped() != 0 || rec.Errors() != 0 {
+		t.Fatalf("the history missed %d changes and lost %d", rec.Dropped(), rec.Errors())
+	}
+	clock.Set(restartAt)
+	ranOn, ranOnPage = creditsState(t, live.Snapshot())
+
+	since := restartAt.Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	prune(t, s, since)
+	restarted := newCreditsTracker(t, clock, run.grants, retentionDays, nil)
+	restarted.Restore(load(t, s, since))
+	_, restartedPage = creditsState(t, restarted.Snapshot())
+	return ranOn, ranOnPage, restartedPage
+}
+
 // A tracker restored from the history after a restart holds the spans, the
 // spend and the time on credits that the one that ran on holds, whether the
 // history was pruned at the restart, a day before it, or not since it was
 // last written.
 func TestRestart_RebuildsTheCreditsTheTrackerHeld(t *testing.T) {
-	restartAt := at(60)
-	retention := 30 * 24 * time.Hour
-	since := restartAt.Add(-retention)
-	histories := map[string]func(t *testing.T, s *store.SQLite){
-		"pruned at the restart": func(t *testing.T, s *store.SQLite) {
+	histories := map[string]func(t *testing.T, s *store.SQLite, since time.Time){
+		"pruned at the restart": func(t *testing.T, s *store.SQLite, since time.Time) {
 			t.Helper()
 			must(t, s.Prune(t.Context(), since))
 		},
-		"pruned a day before": func(t *testing.T, s *store.SQLite) {
+		"pruned a day before": func(t *testing.T, s *store.SQLite, since time.Time) {
 			t.Helper()
 			must(t, s.Prune(t.Context(), since.Add(-24*time.Hour)))
 		},
-		"not pruned since": func(*testing.T, *store.SQLite) {},
+		"not pruned since": func(*testing.T, *store.SQLite, time.Time) {},
 	}
 	for name, run := range creditsRuns {
 		for history, prune := range histories {
 			t.Run(name+", "+history, func(t *testing.T) {
-				s, _ := openStore(t)
-				rec, _ := newRecorder(t, s)
-				clock := &manualClock{}
-				ranOn := newCreditsTracker(t, clock, run.grants, rec)
-				run.play(clock, ranOn)
-				closeRecorder(t, rec)
-				if rec.Dropped() != 0 || rec.Errors() != 0 {
-					t.Fatalf("the history missed %d changes and lost %d", rec.Dropped(), rec.Errors())
-				}
-				clock.Set(restartAt)
-				ranOnCredits, want := creditsState(t, ranOn.Snapshot())
-				run.check(t, ranOnCredits)
+				ranOn, want, got := restart(t, run, 30, prune)
 
-				prune(t, s)
-				restarted := newCreditsTracker(t, clock, run.grants, nil)
-				restarted.Restore(load(t, s, since))
-
-				if _, got := creditsState(t, restarted.Snapshot()); got != want {
+				run.check(t, ranOn)
+				if got != want {
 					t.Errorf("after the restart\n got %s\nwant %s, as the tracker that ran on has it", got, want)
 				}
 			})
 		}
+	}
+}
+
+// A history kept for fewer than thirty days holds fewer days of spend, and
+// the tracker counts no more than it, so a restart changes nothing.
+func TestRestart_CreditsCountTheDaysTheHistoryKeeps(t *testing.T) {
+	run := creditsRuns["a long stretch at a limit with no known reset keeps its start"]
+
+	ranOn, want, got := restart(t, run, 7, func(t *testing.T, s *store.SQLite, since time.Time) {
+		t.Helper()
+		must(t, s.Prune(t.Context(), since))
+	})
+
+	if ranOn == nil || ranOn.SpentUSD != 7 || ranOn.Days != 7 || !time.Time(ranOn.OnCreditsSince).Equal(at(-31*days)) {
+		t.Errorf("credits %+v, want $7 spent over the 7 days kept, on credits since %v", ranOn, at(-31*days))
+	}
+	if got != want {
+		t.Errorf("after the restart\n got %s\nwant %s, as the tracker that ran on has it", got, want)
 	}
 }

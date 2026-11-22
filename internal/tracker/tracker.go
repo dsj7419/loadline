@@ -42,7 +42,12 @@ type Config struct {
 	// Credits are the usage credits the owner recorded for each account,
 	// keyed by normalized config dir.
 	Credits map[domain.ConfigDir][]domain.CreditGrant
-	Alerts  domain.AlertConfig
+	// CreditDays is how many days back credit estimates count spend. The
+	// server sets it to the days its history keeps, so a tracker restored
+	// from the history counts what one that ran on does. It is at most 30,
+	// the days the view's spend covers; zero means 30.
+	CreditDays int
+	Alerts     domain.AlertConfig
 	// ShareWindow is how far back a session's share of its account's spend
 	// looks. Zero means 60 minutes.
 	ShareWindow time.Duration
@@ -113,6 +118,9 @@ func New(clock Clock, cfg Config, rec Recorder) *Tracker {
 	cfg.Labels, cfg.Budgets, cfg.Credits = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets), cloneGrants(cfg.Credits)
 	if cfg.ShareWindow <= 0 {
 		cfg.ShareWindow = defaultShareWindow
+	}
+	if cfg.CreditDays <= 0 || cfg.CreditDays > keepDays {
+		cfg.CreditDays = keepDays
 	}
 	if cfg.Location == nil {
 		cfg.Location = time.Local
@@ -292,7 +300,9 @@ func (t *Tracker) Restore(s Restored) {
 		t.usage.add(row.Dir, row.Session, row.Model, row.Minute, usageOfRow(row))
 		// Usage is kept by the minute, so a restored call is dated at the
 		// start of its minute: one made in the minute an account reached its
-		// limit may fall just outside the span on credits.
+		// limit may fall just before the span on credits it was made in, and
+		// one made in the minute a span closed, after it closed, just inside
+		// that span.
 		if entry, ok := t.accounts[row.Dir]; ok {
 			entry.credits.recordCall(row.Minute, row.CostUSD)
 		}
@@ -579,7 +589,7 @@ func (t *Tracker) expire(now time.Time) {
 	}
 	t.usage.prune(dayOf(now, t.cfg.Location)-keepDays+1, now.Add(-t.cfg.ShareWindow))
 	t.pending.prune(now.Add(-pendingFor))
-	horizon, oldest := now.Add(-sampleHorizon), now.Add(-creditKeep)
+	horizon, oldest := now.Add(-sampleHorizon), now.Add(-t.creditHistory())
 	for _, a := range t.accounts {
 		a.credits.prune(domain.OnCreditsSpans(a.samples, now), horizon, oldest)
 		a.pruneSamples(horizon, oldest)
