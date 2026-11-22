@@ -222,6 +222,41 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Needs you copper-lantern Main' })).toBe(button);
   });
 
+  it('keeps focus on the same session as views come in', () => {
+    const { send } = renderApp();
+    const at = (hour: number) => `2026-11-21T${String(hour).padStart(2, '0')}:00:00Z`;
+    const working = (id: string, hour: number, fields: Record<string, unknown> = {}) =>
+      sessionOf({ id, name: id, state: 'working', startedAt: at(hour), ...fields });
+    send(viewOf({ sessions: [working('s1', 10), working('s2', 11), working('s3', 12)] }));
+    const button = (id: string) => screen.getByRole('button', { name: new RegExp(` ${id} `) });
+    button('s2').focus();
+
+    // Status lines only: the server reorders, and the figures change.
+    send(viewOf({ sessions: [working('s2', 11, { costUSD: 9 }), working('s3', 12), working('s1', 10, { costUSD: 4 })] }));
+    expect(document.activeElement).toBe(button('s2'));
+
+    // Another session moves to another group.
+    send(viewOf({ sessions: [working('s1', 10), working('s2', 11), working('s3', 12, { state: 'idle' })] }));
+    expect(document.activeElement).toBe(button('s2'));
+
+    // The focused session moves to another group, and back.
+    send(viewOf({ sessions: [working('s1', 10), working('s2', 11, { state: 'needs_you' }), working('s3', 12)] }));
+    expect(document.activeElement).toBe(button('s2'));
+    send(viewOf({ sessions: [working('s1', 10), working('s2', 11), working('s3', 12)] }));
+    expect(document.activeElement).toBe(button('s2'));
+  });
+
+  it('leaves focus alone once the user has moved it off the rows', () => {
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1' }), sessionOf({ id: 's2', name: 's2', startedAt: '2026-11-21T17:30:00Z' })] }));
+    const row = screen.getByRole('button', { name: / s1 / });
+    row.focus();
+    row.blur();
+
+    send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1', state: 'idle' }), sessionOf({ id: 's2', name: 's2' })] }));
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('moves focus to the Sessions heading when the open session leaves the view', async () => {
     const user = userEvent.setup();
     const { send } = renderApp();

@@ -1,6 +1,6 @@
 import { useSignal, type ReadonlySignal } from '@preact/signals';
-import type { Ref, RefObject } from 'preact';
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { Ref } from 'preact';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
 import type { AccountView, SessionView, View } from '../api/types';
 import { alertTitle } from '../model/alerts';
 import { groupSessions } from '../model/group';
@@ -12,6 +12,7 @@ import { drawFavicon as drawTabIcon } from './Favicon';
 import { Header, type LinkStatus } from './Header';
 import { ModelsBar } from './ModelsBar';
 import { browserNotifications, browserOptIn, createNotifier, type NotificationApi } from './Notifier';
+import { useKeepRowFocus, useReturnFocus } from './rowFocus';
 import { SessionGroup } from './SessionGroup';
 
 /** Follows the server's views until the returned function is called. */
@@ -70,6 +71,7 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
   const closeDetail = useCallback(() => setOpenId(null), []);
   const sessionsHeading = useRef<HTMLHeadingElement>(null);
   useReturnFocus(openId, sessionsHeading);
+  useKeepRowFocus(sessionsHeading);
   useEffect(() => {
     // A session that leaves the view takes its details with it.
     if (openId !== null && view !== null && open === null) {
@@ -97,28 +99,6 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
       {open !== null && <DetailPanel session={open} now={now} onClose={closeDetail} />}
     </>
   );
-}
-
-// Once the details close, focus goes back to the row they were opened from,
-// found afresh because the row may have moved to another group meanwhile. A
-// session that has left the view has no row, so focus goes to the heading of
-// the list it was in.
-function useReturnFocus(openId: string | null, fallback: RefObject<HTMLElement>): void {
-  const opened = useRef<string | null>(null);
-  useLayoutEffect(() => {
-    if (openId !== null) {
-      opened.current = openId;
-      return;
-    }
-    const id = opened.current;
-    opened.current = null;
-    if (id === null) {
-      return;
-    }
-    const rows = document.querySelectorAll<HTMLElement>('[data-session]');
-    const row = [...rows].find((r) => r.dataset['session'] === id);
-    (row ?? fallback.current)?.focus();
-  }, [openId]);
 }
 
 type AccountsProps = {

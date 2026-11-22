@@ -32,15 +32,29 @@ const groupOf: Readonly<Record<SessionState, GroupKey>> = {
 };
 
 /**
- * Sorts sessions into groups by state, keeping the server's order within
- * each, and leaves out empty groups.
+ * Sorts sessions into groups by state, and leaves out empty groups. Within a
+ * group the newest session comes first, then the lowest ID. The server's own
+ * order moves with every status line; this one moves only when a session
+ * changes group, so rows hold still under the reader's eyes and keyboard.
  */
 export function groupSessions(sessions: readonly SessionView[]): readonly Group[] {
+  const ordered = [...sessions].sort(newestFirst);
   return groups
     .map(({ key, label }) => ({
       key,
       label,
-      sessions: sessions.filter(({ state }) => groupOf[state] === key),
+      sessions: ordered.filter(({ state }) => groupOf[state] === key),
     }))
     .filter((group) => group.sessions.length > 0);
+}
+
+function newestFirst(a: SessionView, b: SessionView): number {
+  const byStart = Date.parse(b.startedAt) - Date.parse(a.startedAt);
+  if (byStart !== 0) {
+    return byStart;
+  }
+  if (a.id === b.id) {
+    return 0;
+  }
+  return a.id < b.id ? -1 : 1;
 }
