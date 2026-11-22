@@ -133,6 +133,24 @@ func TestServe_DemoKeepsNoHistory(t *testing.T) {
 	}
 }
 
+// A configured account that claude cannot be asked about, its dir being
+// missing, shows what an earlier run kept of it.
+func TestServe_RestoresAConfiguredAccount(t *testing.T) {
+	f := newServeFixture(t)
+	b := f.dir(".claude-b")
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"}]}`)
+	kept := domain.Account{Dir: b, Email: "b@example.com", Plan: "Max 20x", Auth: domain.AuthSubscription}
+	if err := f.openHistory().UpsertAccount(t.Context(), kept); err != nil {
+		t.Fatalf("UpsertAccount: %v", err)
+	}
+	f.start()
+
+	a, ok := accountByDir(f.snapshot(), b)
+	if !ok || a.Label != "B" || a.Email != kept.Email || a.Plan != kept.Plan || a.Auth != kept.Auth {
+		t.Errorf("account %s listed %t as %+v, want B with what the history kept", b, ok, a)
+	}
+}
+
 // A row the server cannot read costs that row, and the log says how many.
 func TestServe_RestoresAroundARowItCannotRead(t *testing.T) {
 	f := newServeFixture(t)

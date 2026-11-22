@@ -1553,6 +1553,49 @@ func TestTracker_SetAccountKeepsLimitsAndKnownEmail(t *testing.T) {
 	}
 }
 
+// An account added before anything is seen of it is listed under its
+// configured label; one already known keeps what is known of it.
+func TestTracker_AddAccountsListsThemBeforeAnythingIsSeen(t *testing.T) {
+	h := newHarness(t, tracker.Config{Labels: map[domain.ConfigDir]string{dirB: "B"}})
+	known := domain.Account{Dir: dirA, Email: "dev@example.com"}
+	h.tr.SetAccount(known)
+	views, cancel := h.tr.Subscribe()
+	defer cancel()
+	// Past the publish interval, so that a change goes out at once.
+	h.clock.Advance(time.Second)
+
+	h.tr.AddAccounts([]domain.ConfigDir{dirA, dirB, dirC})
+
+	type row struct {
+		dir          domain.ConfigDir
+		label, email string
+	}
+	accountRows := func(v tracker.View) []row {
+		rows := make([]row, len(v.Accounts))
+		for i, a := range v.Accounts {
+			rows[i] = row{a.Dir, a.Label, a.Email}
+		}
+		return rows
+	}
+	wantRows := []row{{dirA, "dev", "dev@example.com"}, {dirB, "B", ""}, {dirC, ".claude-work", ""}}
+	if got := accountRows(receive(t, views)); !slices.Equal(got, wantRows) {
+		t.Errorf("published accounts\n got %v\nwant %v", got, wantRows)
+	}
+	_, recorded, _, _ := h.rec.recorded()
+	wantRecorded := []domain.Account{known, {Dir: dirB}, {Dir: dirC}}
+	if !slices.Equal(recorded, wantRecorded) {
+		t.Errorf("accounts recorded\n got %+v\nwant %+v", recorded, wantRecorded)
+	}
+
+	// Accounts already listed change nothing.
+	h.clock.Advance(time.Second)
+	h.tr.AddAccounts([]domain.ConfigDir{dirB, dirC})
+	assertNoView(t, views)
+	if _, again, _, _ := h.rec.recorded(); !slices.Equal(again, wantRecorded) {
+		t.Errorf("accounts recorded\n got %+v\nwant %+v, nothing more", again, wantRecorded)
+	}
+}
+
 func TestTracker_HasLiveAndKnownDirs(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	if h.tr.HasLive() || len(h.tr.KnownDirs()) != 0 {

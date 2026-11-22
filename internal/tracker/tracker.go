@@ -235,6 +235,25 @@ func (t *Tracker) SetAccount(a domain.Account) {
 	}
 }
 
+// AddAccounts lists the account of each dir from now on, though nothing has
+// been seen of it yet: an account the config names is shown before any
+// poll, probe or event reaches it, and while its config dir is missing. An
+// account already known stays as it is.
+func (t *Tracker) AddAccounts(dirs []domain.ConfigDir) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	added := false
+	for _, dir := range dirs {
+		if entry, isNew := t.accountEntry(dir); isNew {
+			t.rec.AccountChanged(entry.account)
+			added = true
+		}
+	}
+	if added {
+		t.changed()
+	}
+}
+
 // sameIdentity reports whether a and b describe the same owner and sign-in,
 // however far apart they were probed.
 func sameIdentity(a, b domain.Account) bool {

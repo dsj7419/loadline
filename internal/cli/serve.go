@@ -191,10 +191,12 @@ type instance struct {
 	tracker *tracker.Tracker
 	srv     *server.Server
 	spool   forward.Spool
-	// dirs, poller and prober are nil in demo mode.
-	dirs   *existingDirs
-	poller *poll.Poller
-	prober *accounts.Prober
+	// configured holds the config dirs of the accounts the config names.
+	// configured, dirs, poller and prober are nil in demo mode.
+	configured []domain.ConfigDir
+	dirs       *existingDirs
+	poller     *poll.Poller
+	prober     *accounts.Prober
 	// history is nil in demo mode, and when its database cannot be opened.
 	history *history
 }
@@ -240,8 +242,9 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	}
 
 	defaultDir := config.ResolveConfigDir("", o.Home)
-	startDirs, labels, budgets := accountSettings(cfg.Accounts, o.Home)
-	startDirs = append(startDirs, defaultDir)
+	configured, labels, budgets := accountSettings(cfg.Accounts, o.Home)
+	s.configured = configured
+	startDirs := append(slices.Clone(configured), defaultDir)
 	trackerCfg.Labels, trackerCfg.Budgets = labels, budgets
 	s.history = s.openHistory(ctx, cfg.RetentionDays)
 	s.tracker = tracker.New(clock, trackerCfg, s.history.recorder())
@@ -381,6 +384,11 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	// first would replace the session it restores. The hooks spool what is
 	// refused meanwhile, for the drain below.
 	s.history.restore(ctx, s.tracker)
+	// The configured accounts are listed from the start, not from the first
+	// poll of their dirs, which a missing dir or a failing claude may never
+	// bring. Added after the restore, which keeps nothing of an account the
+	// tracker already knows.
+	s.tracker.AddAccounts(s.configured)
 	s.srv.OpenIngest()
 	if s.opts.Ready != nil {
 		s.opts.Ready(listener.Addr().String())

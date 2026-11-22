@@ -771,6 +771,37 @@ func TestServe_LabelsAndBudgetsComeFromTheConfig(t *testing.T) {
 	})
 }
 
+// Every account the config names is listed, under its label, from the
+// moment the server is ready, and stays listed though nothing is ever seen
+// of it: claude cannot be run for one, and the other's dir is missing.
+func TestServe_ListsEveryConfiguredAccountFromTheStart(t *testing.T) {
+	f := newServeFixture(t)
+	work := f.dir(".claude-work")
+	f.mkdirs(work)
+	f.claude.fail = errors.New("locate claude: executable file not found")
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"},{"configDir":"~/.claude-work","label":"Work"}]}`)
+	f.start()
+
+	configured := []struct {
+		dir   domain.ConfigDir
+		label string
+	}{{f.dir(".claude-b"), "B"}, {work, "Work"}}
+	assertListed := func(when string) {
+		t.Helper()
+		view := f.snapshot()
+		for _, want := range configured {
+			if a, ok := accountByDir(view, want.dir); !ok || a.Label != want.label {
+				t.Errorf("%s: account %s listed %t with label %q, want it listed as %q", when, want.dir, ok, a.Label, want.label)
+			}
+		}
+	}
+	assertListed("once the server is ready")
+	waitFor(t, "a failed poll and probe of Work", func() bool {
+		return f.claude.callsFor(work, agentsCommand) > 0 && f.claude.callsFor(work, authCommand) > 0
+	})
+	assertListed("after claude failed for Work")
+}
+
 func TestServe_LogsStartupShutdownAndFailuresOncePerMinute(t *testing.T) {
 	f := newServeFixture(t)
 	f.claude.fail = fmt.Errorf("locate claude: executable file not found")
