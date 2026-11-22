@@ -123,32 +123,38 @@ func RunServe(ctx context.Context, args []string, stdio IO) int {
 // returns 1 when it cannot start, and 0 without a word when another
 // loadline already serves the port: binding the port is what keeps to one
 // server per machine. It makes the data directory private to the user each
-// time it starts. What the running server has to say goes to its log
-// file in the data directory, never to stdout or stderr.
+// time it starts. Why it could not start goes to stderr and to its log file
+// in the data directory; what the running server has to say goes to the log
+// alone, never to stdout or stderr.
 func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
+	trust := cmp.Or(o.TrustFrom, trustFrom)
+	failToStart := func(err error) int { return startFailed(stdio, o.Paths.DataDir, trust, err) }
 	cfg, err := config.Load(o.Paths.ConfigFile, o.Home)
 	if err != nil {
-		return fail(stdio, err)
+		return failToStart(err)
 	}
 	port := cfg.Port
 	if o.Port != 0 {
 		if err := config.ValidatePort(o.Port); err != nil {
-			return fail(stdio, err)
+			return failToStart(err)
 		}
 		port = o.Port
 	}
 	token, err := config.EnsureToken(o.Paths.TokenFile)
 	if err != nil {
-		return fail(stdio, err)
+		return failToStart(err)
 	}
 	// Before the log and the history are written there.
-	if err := datadir.Secure(o.Paths.DataDir, cmp.Or(o.TrustFrom, trustFrom)); err != nil {
-		return fail(stdio, err)
+	if err := datadir.Secure(o.Paths.DataDir, trust); err != nil {
+		return failToStart(err)
 	}
 
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddress(port))
 	if err != nil {
-		return refuseToListen(ctx, port, o.Demo, err, stdio)
+		if refusal := listenRefusal(ctx, port, o.Demo, err); refusal != nil {
+			return failToStart(refusal)
+		}
+		return exitOK
 	}
 	// Opened only once the port is ours, so that one server at a time
 	// writes the log.
@@ -169,25 +175,23 @@ func listenAddress(port int) string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 }
 
-// refuseToListen explains a listen that failed. A port that a loadline
-// already serves is no failure: two sessions that start together each start
-// a server, and the one that loses the race leaves quietly. A demo is not
-// one of them, and says why it cannot start.
-func refuseToListen(ctx context.Context, port int, demoMode bool, err error, stdio IO) int {
+// listenRefusal explains a listen that failed, or returns nil for a port
+// that a loadline already serves, which is no failure: two sessions that
+// start together each start a server, and the one that loses the race
+// leaves quietly. A demo is not one of them, and says why it cannot start.
+func listenRefusal(ctx context.Context, port int, demoMode bool, err error) error {
 	switch {
 	case isAccessDenied(err):
-		_, _ = fmt.Fprintf(stdio.Err, "loadline: port %d %s; pass --port to use another\n", port, accessDeniedReason)
+		return fmt.Errorf("port %d %s; pass --port to use another", port, accessDeniedReason)
 	case !isAddrInUse(err):
-		return fail(stdio, fmt.Errorf("listen on port %d: %w", port, err))
+		return fmt.Errorf("listen on port %d: %w", port, err)
 	case demoMode:
-		_, _ = fmt.Fprintf(stdio.Err,
-			"loadline: port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere\n", port)
+		return fmt.Errorf("port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere", port)
 	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx):
-		return exitOK
+		return nil
 	default:
-		_, _ = fmt.Fprintf(stdio.Err, "loadline: port %d is in use by another program\n", port)
+		return fmt.Errorf("port %d is in use by another program", port)
 	}
-	return exitFailure
 }
 
 // instance is one running server and the work it runs beside its routes.

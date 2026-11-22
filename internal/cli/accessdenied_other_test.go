@@ -23,18 +23,21 @@ func accessDeniedListenError(port int) error {
 	}
 }
 
-func TestRefuseToListen_AccessDeniedNamesThePortAndSuggestsAnother(t *testing.T) {
+func TestListenRefusal_AccessDeniedNamesThePortAndSuggestsAnother(t *testing.T) {
 	const port = 18290
 	for _, demoMode := range []bool{false, true} {
 		t.Run(fmt.Sprintf("demo %v", demoMode), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 
-			code := refuseToListen(t.Context(), port, demoMode, accessDeniedListenError(port),
-				IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+			refusal := listenRefusal(t.Context(), port, demoMode, accessDeniedListenError(port))
+			if refusal == nil {
+				t.Fatal("listenRefusal = nil, want the port refused")
+			}
+			code := fail(IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr}, refusal)
 
 			want := "loadline: port 18290 is not open to this program; pass --port to use another\n"
 			if code != exitFailure || stderr.String() != want || stdout.Len() != 0 {
-				t.Errorf("refuseToListen = %d, stdout %q, stderr %q; want 1 and %q", code, stdout.String(), stderr.String(), want)
+				t.Errorf("listenRefusal then fail = %d, stdout %q, stderr %q; want 1 and %q", code, stdout.String(), stderr.String(), want)
 			}
 		})
 	}

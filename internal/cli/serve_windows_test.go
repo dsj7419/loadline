@@ -28,7 +28,7 @@ const soExclusiveAddrUse = ^windows.SO_REUSEADDR
 // A wildcard listen by a newly built test binary makes Windows Defender
 // Firewall ask, interactively, whether to let it accept connections, and
 // leaves a rule behind for each answer. So it runs only in CI (which sets
-// CI=true); refuseToListen's own test covers the message everywhere.
+// CI=true); listenRefusal's own test covers the message everywhere.
 func listenExclusively(t *testing.T) int {
 	t.Helper()
 	if os.Getenv("CI") != "true" {

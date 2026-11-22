@@ -345,7 +345,8 @@ It exits 1 when any check fails. Common fixes:
 - **The per-model view stays empty.** Something else already configures telemetry (see install's
   warning), or the OpenTelemetry feed is not arriving.
 - **"no Loadline server answers".** Start a session, or run `loadline open`. The server's log,
-  `loadline.log` in the data directory, says why it stopped or could not start.
+  `loadline.log` in the data directory, says why it stopped or could not start. A server kept from
+  starting by the data directory itself writes nothing there; the **data directory** line says why.
 - **"port 8289 is in use by another program".** Set `port` in the config file and run
   `loadline install` again.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
