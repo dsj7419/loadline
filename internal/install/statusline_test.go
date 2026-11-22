@@ -68,6 +68,38 @@ func TestBashForm_GroupsAllButPlainCommands(t *testing.T) {
 	}
 }
 
+func TestUsesPowerShellWrapper(t *testing.T) {
+	own := []byte(`{"statusLine": {"type": "command", "command": "my-status"}}`)
+	wrapped, _, _ := plan(t, own, options(install.ShellPowerShell))
+	printing, _, _ := plan(t, []byte(`{}`), options(install.ShellPowerShell))
+	piped, _, _ := plan(t, own, options(install.ShellBash))
+
+	tests := []struct {
+		name     string
+		settings []byte
+		want     bool
+	}{
+		{name: "the PowerShell form around the user's command", settings: wrapped, want: true},
+		{name: "the same after a byte-order mark", settings: append([]byte(utf8BOM), wrapped...), want: true},
+		{name: "the PowerShell form that prints its own line", settings: printing},
+		{name: "the bash pipe form", settings: piped},
+		{name: "the user's own command", settings: own},
+		{name: "no status line", settings: []byte(`{}`)},
+		{
+			name:     "a PowerShell form changed by hand",
+			settings: []byte(`{"statusLine": {"command": "& \"` + goldenExe + `\" tap --run-b64 'not base64'"}}`),
+		},
+		{name: "invalid JSON", settings: []byte(`{"statusLine": `)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := install.UsesPowerShellWrapper(tt.settings, goldenExe); got != tt.want {
+				t.Errorf("UsesPowerShellWrapper = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBashForm_KeepsTheOriginalsMeaning runs each original and the command
 // install makes of it through real shells, with a stand-in for tap that
 // copies stdin to stdout as tap does, and expects the same output.

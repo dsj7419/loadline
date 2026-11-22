@@ -120,13 +120,19 @@ func installOptions(paths config.Paths, port int) (install.Options, error) {
 }
 
 // installPlanner plans each settings file for the shell Claude Code will run
-// its status line with, which the file's own env can change.
+// its status line with.
 func installPlanner(opts install.Options) planner {
 	return func(settings []byte) ([]byte, []install.Change, []string, error) {
 		o := opts
-		o.Shell = install.DetectShell(install.SettingsEnv(settings, os.Getenv), isFile)
+		o.Shell = statusLineShell(settings)
 		return install.Plan(settings, o)
 	}
+}
+
+// statusLineShell is the shell Claude Code will run the status line of
+// settings with, which the file's own env can change.
+func statusLineShell(settings []byte) install.Shell {
+	return install.DetectShell(install.SettingsEnv(settings, os.Getenv), isFile)
 }
 
 // prepareInstall copies the running binary into place and creates the token,

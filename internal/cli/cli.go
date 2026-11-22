@@ -34,6 +34,7 @@ Commands:
   tap        Pass a status line's input through and forward it
   install    Wire Loadline into Claude Code's settings
   uninstall  Remove Loadline from Claude Code's settings
+  doctor     Check the setup, the server and the feeds that reach it
   version    Print the version
   help       Show this help
 `
@@ -61,6 +62,8 @@ func Run(ctx context.Context, args []string, stdio IO) int {
 		return runInstall(args[1:], stdio)
 	case "uninstall":
 		return runUninstall(args[1:], stdio)
+	case "doctor":
+		return runDoctor(ctx, args[1:], stdio)
 	case "version":
 		return printStdout(stdio, "loadline "+Version+"\n")
 	case "help", "-h", "--help":

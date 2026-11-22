@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/base64"
 	"slices"
 	"strconv"
@@ -152,6 +153,25 @@ func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 		return parseRunB64(rest)
 	}
 	return parsePipe(rest)
+}
+
+// UsesPowerShellWrapper reports whether the status line in settings is the
+// PowerShell form install writes around a user's own command, for which tap
+// starts PowerShell to run that command on every refresh. Settings that are
+// not valid JSON report false.
+func UsesPowerShellWrapper(settings []byte, exe string) bool {
+	body := bytes.TrimPrefix(settings, []byte(utf8BOM))
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	command := gjson.GetBytes(body, "statusLine.command")
+	if command.Type != gjson.String || !strings.HasPrefix(command.Str, powerShellCall) {
+		return false
+	}
+	// Behind the PowerShell call, only the wrapper and the print form are
+	// install's.
+	tap, match := parseTapCommand(command.Raw, exe)
+	return match == tapped && !tap.print
 }
 
 // cutLauncher splits off the program a command starts with: a quoted path,
