@@ -51,7 +51,9 @@ Options:
                        JSON, leaving out what is not known yet.
   --run <command>      Run <command> as the status line, with the JSON on its
                        stdin, and pass its output and exit code through. It
-                       runs through powershell on Windows and sh elsewhere.
+                       runs through sh, or on Windows through PowerShell 7
+                       when pwsh.exe is on PATH and Windows PowerShell
+                       otherwise.
                        Everything after --run is the command, joined with
                        single spaces. Windows PowerShell 5.1 does not escape
                        double quotes in the arguments it passes to programs,

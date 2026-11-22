@@ -9,17 +9,28 @@ import (
 	"unicode/utf16"
 )
 
-// statusLineCommand runs command through Windows PowerShell. The command
-// travels as -EncodedCommand, base64 of its UTF-16LE text, so that no layer
-// of command-line quoting can change it on the way. The window PowerShell
-// would open stays hidden.
+// statusLineCommand runs command through PowerShell. The command travels as
+// -EncodedCommand, base64 of its UTF-16LE text, so that no layer of
+// command-line quoting can change it on the way. The window PowerShell would
+// open stays hidden.
 func statusLineCommand(ctx context.Context, command string) *exec.Cmd {
 	// The command is the user's own status line, which Claude Code would
 	// otherwise run itself.
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", //nolint:gosec // G204: see above
+	cmd := exec.CommandContext(ctx, powerShell(exec.LookPath), "-NoProfile", "-NonInteractive", //nolint:gosec // G204: see above
 		"-EncodedCommand", encodedCommand(command))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd
+}
+
+// powerShell names the PowerShell to run a status line with: PowerShell 7
+// when lookPath finds it, since it also runs what was written for Windows
+// PowerShell 5.1 but not the other way round, and otherwise Windows
+// PowerShell, which every Windows has.
+func powerShell(lookPath func(file string) (string, error)) string {
+	if path, err := lookPath("pwsh.exe"); err == nil {
+		return path
+	}
+	return "powershell.exe"
 }
 
 // encodedCommand is command in the form -EncodedCommand takes.
