@@ -433,7 +433,11 @@ func (r failingReader) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-func TestTap_UsageErrors(t *testing.T) {
+// Options the tap cannot read, as from an install by a newer version, must
+// never blank the status line: the tap passes its input through and forwards
+// it, as it does with no options, and then says on one line what was wrong.
+func TestTap_BadOptionsStillPassTheInputThrough(t *testing.T) {
+	input := statusInput(t)
 	for _, args := range [][]string{
 		{"--bogus"},
 		{"stray"},
@@ -444,17 +448,16 @@ func TestTap_UsageErrors(t *testing.T) {
 		{"--run-b64", "a", "b"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
+			code, stdout, stderr, srv := tapThroughCLI(t, input, args...)
 
-			code := cli.Run(context.Background(), append([]string{"tap"}, args...), cli.IO{
-				In: failingReader{t}, Out: &stdout, Err: &stderr,
-			})
-
-			if code != 2 {
-				t.Errorf("exit code = %d, want 2", code)
+			if code != 0 || stdout != input {
+				t.Errorf("tap %q = %d, stdout %q; want 0 and the input unchanged", args, code, stdout)
 			}
-			if stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage: loadline tap") {
-				t.Errorf("stdout %q, stderr %q; want nothing and the tap usage", stdout.String(), stderr.String())
+			if !strings.HasPrefix(stderr, "loadline tap: ") || strings.Count(stderr, "\n") != 1 || !strings.HasSuffix(stderr, "\n") {
+				t.Errorf("stderr %q, want one line saying what was wrong", stderr)
+			}
+			if posts := srv.received(); len(posts) != 1 {
+				t.Errorf("server received %d posts, want 1", len(posts))
 			}
 		})
 	}

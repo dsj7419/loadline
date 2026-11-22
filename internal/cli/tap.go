@@ -75,16 +75,24 @@ type TapMode struct {
 
 var errTapHelp = errors.New("help requested")
 
-// runTapCommand runs the tap command for this process.
+// runTapCommand runs the tap command for this process. Options it cannot
+// read, as an install by a newer version might write, must never blank the
+// status line: the tap then does what it does with none, and says on stderr
+// what was wrong once the status line has its output.
 func runTapCommand(ctx context.Context, args []string, stdio IO) int {
-	mode, err := parseTapArgs(args)
-	if errors.Is(err, errTapHelp) {
+	mode, argsErr := parseTapArgs(args)
+	if errors.Is(argsErr, errTapHelp) {
 		return printStdout(stdio, tapUsage)
 	}
-	if err != nil {
-		_, _ = fmt.Fprintf(stdio.Err, "loadline tap: %v\n\n%s", err, tapUsage)
-		return exitUsage
+	code := runTap(ctx, mode, stdio)
+	if argsErr != nil {
+		_, _ = fmt.Fprintf(stdio.Err, "loadline tap: %v; passed the input through unchanged\n", argsErr)
 	}
+	return code
+}
+
+// runTap runs the tap in mode for this process.
+func runTap(ctx context.Context, mode TapMode, stdio IO) int {
 	mode.Stderr = stdio.Err
 	// A status line whose reader has gone would otherwise end the tap at the
 	// echo, by SIGPIPE, before it forwards anything. With the signal
