@@ -27,9 +27,6 @@ func TestFS_ServesIndex(t *testing.T) {
 		"fonts/jetbrains-mono-latin-500-normal.woff2",
 		"fonts/inter-LICENSE.txt",
 		"fonts/jetbrains-mono-LICENSE.txt",
-		"licenses/preact-LICENSE.txt",
-		"licenses/preact-signals-LICENSE.txt",
-		"licenses/preact-signals-core-LICENSE.txt",
 	} {
 		info, err := fs.Stat(assets, name)
 		if err != nil {
@@ -53,6 +50,25 @@ func TestFS_ServesIndex(t *testing.T) {
 	for _, ref := range []string{`<link rel="stylesheet" href="/app.css">`, `<script type="module" src="/app.js"></script>`} {
 		if !strings.Contains(body, ref) {
 			t.Errorf("GET / does not load %s; got:\n%s", ref, body)
+		}
+	}
+}
+
+// app.js bundles these MIT-licensed packages, whose license must go with
+// every copy of them.
+func TestFS_CarriesTheLicensesOfTheBundledPackages(t *testing.T) {
+	for _, name := range []string{
+		"licenses/preact-LICENSE.txt",
+		"licenses/preact-signals-LICENSE.txt",
+		"licenses/preact-signals-core-LICENSE.txt",
+	} {
+		text, err := fs.ReadFile(web.FS(), name)
+		if err != nil {
+			t.Errorf("read %s: %v", name, err)
+			continue
+		}
+		if !strings.Contains(string(text), "Permission is hereby granted") {
+			t.Errorf("%s does not hold the MIT license; got:\n%s", name, text)
 		}
 	}
 }

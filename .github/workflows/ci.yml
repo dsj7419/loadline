@@ -5,13 +5,18 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+  # The release workflow runs these checks on the tagged commit first.
+  workflow_call:
 
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes the run before it; runs on main
+# and on tags always finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   go:
@@ -42,6 +47,10 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -timeout 20m ./...
+      - name: Test the full generated cases
+        # Under the race detector these tests run a reduced set of cases, to
+        # stay inside CI time; without it they run every one, and every shell.
+        run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestReadHookInput_' ./internal/install/ ./internal/protocol/
 
   lint:
     name: lint (${{ matrix.goos }})

@@ -53,6 +53,10 @@ changelog:
   disable: true
 
 release:
+  # The release workflow publishes it once the archives are attested. A rerun
+  # replaces the draft a failed run left behind.
+  draft: true
+  replace_existing_draft: true
   prerelease: auto
   header: |
     See [CHANGELOG.md](https://github.com/dsj7419/loadline/blob/{{ .Tag }}/CHANGELOG.md) for what changed.
