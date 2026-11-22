@@ -206,10 +206,39 @@ func TestRunHook_OtherEventsDoNotStartTheServer(t *testing.T) {
 	}
 }
 
+// Against a server that takes connections and never answers, the hook
+// gives up its check at its 150 ms and its post at its 300 ms, starts a
+// server and spools the event.
+func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
+	f := newFixture(t)
+	f.serve(func(s *ingestServer) { s.slowHealth, s.hold = time.Hour, time.Hour })
+	start := time.Now()
+
+	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
+
+	elapsed := time.Since(start)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if started := f.spawns.started(); !slices.Equal(started, []string{testExe + " serve"}) {
+		t.Errorf("started %v, want [%s serve]", started, testExe)
+	}
+	if spooled := f.spooled(); len(spooled) != 1 {
+		t.Errorf("spooled %d events, want 1", len(spooled))
+	}
+	if bound := hotPathBound(600 * time.Millisecond); elapsed > bound {
+		t.Errorf("hook took %v against a hung server, want its 150 ms check and 300 ms send at most, within %v", elapsed, bound)
+	}
+}
+
+// A running server is left alone. This one answers its health check later
+// than the hook's own 150 ms would wait, so that the check is seen to take
+// the Env's bound, which a loaded machine cannot outlast.
 func TestRunHook_SessionStartLeavesARunningServerAlone(t *testing.T) {
 	cli.SetHookSendTimeout(t, postWindow)
 	f := newFixture(t)
-	srv := f.serve()
+	f.healthTimeout = probeWindow
+	srv := f.serve(func(s *ingestServer) { s.slowHealth = 300 * time.Millisecond })
 
 	f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 

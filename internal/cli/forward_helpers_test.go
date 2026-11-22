@@ -65,6 +65,11 @@ func hotPathBound(d time.Duration) time.Duration {
 // not make the post miss its window.
 const postWindow = 30 * time.Second
 
+// probeWindow replaces the hook's 150 ms bound on its check that a server
+// answers, in tests that need the check to find a running server but are
+// not about that bound.
+const probeWindow = 30 * time.Second
+
 type fakeClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -113,6 +118,9 @@ type fixture struct {
 	spawns *spawner
 	home   string
 	vars   map[string]string
+	// healthTimeout is the Env's bound on the hook's check that a server
+	// answers; zero leaves the hook's own.
+	healthTimeout time.Duration
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -141,11 +149,12 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) env() cli.Env {
 	return cli.Env{
-		Getenv: func(name string) string { return f.vars[name] },
-		Home:   f.home,
-		Now:    f.clock.Now,
-		Exe:    testExe,
-		Spawn:  f.spawns.spawn,
+		Getenv:        func(name string) string { return f.vars[name] },
+		Home:          f.home,
+		Now:           f.clock.Now,
+		Exe:           testExe,
+		Spawn:         f.spawns.spawn,
+		HealthTimeout: f.healthTimeout,
 	}
 }
 
@@ -234,6 +243,9 @@ type ingestServer struct {
 	// hold, when set, is how long each ingest request waits for an answer
 	// that never comes.
 	hold time.Duration
+	// slowHealth, when set, is how long every other request, such as the
+	// health check, waits before it is answered.
+	slowHealth time.Duration
 
 	mu    sync.Mutex
 	posts []post
@@ -252,9 +264,22 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 	port := portOf(f.t, ts.Listener.Addr())
 	loadline := server.New(server.Deps{State: s.sink, Token: f.token(), Port: port}).Handler()
 	release := make(chan struct{})
+	// wait holds r for d, and reports false when its client or the test
+	// gave up first.
+	wait := func(r *http.Request, d time.Duration) bool {
+		select {
+		case <-time.After(d):
+			return true
+		case <-r.Context().Done():
+		case <-release:
+		}
+		return false
+	}
 	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/ingest/") {
-			loadline.ServeHTTP(w, r)
+			if s.slowHealth == 0 || wait(r, s.slowHealth) {
+				loadline.ServeHTTP(w, r)
+			}
 			return
 		}
 		raw, err := io.ReadAll(r.Body)
@@ -265,11 +290,7 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 		s.record(r.URL.Path, raw)
 		switch {
 		case s.hold > 0:
-			select {
-			case <-time.After(s.hold):
-			case <-r.Context().Done():
-			case <-release:
-			}
+			wait(r, s.hold)
 		case s.answer != 0:
 			w.WriteHeader(s.answer)
 		default:

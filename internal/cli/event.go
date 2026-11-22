@@ -23,6 +23,10 @@ type Env struct {
 	// server.
 	Exe   string
 	Spawn func(exe string, args ...string) error
+	// HealthTimeout bounds the hook's check, on SessionStart, that a server
+	// answers. Zero means the forward client's 150 ms, which the hot path
+	// can afford.
+	HealthTimeout time.Duration
 }
 
 // processEnv returns the Env of this process. A home directory or an

@@ -57,7 +57,7 @@ func RunHook(ctx context.Context, in io.Reader, env Env, paths config.Paths, cfg
 		return exitOK
 	}
 
-	client := forward.Client{BaseURL: forward.LoopbackURL(cfg.Port)}
+	client := forward.Client{BaseURL: forward.LoopbackURL(cfg.Port), HealthTimeout: env.HealthTimeout}
 	if input.HookEventName == sessionStart && !client.Healthy(ctx) {
 		_ = env.Spawn(env.Exe, "serve")
 	}

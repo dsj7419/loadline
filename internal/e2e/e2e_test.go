@@ -123,6 +123,11 @@ type machine struct {
 	stop func()
 }
 
+// serveStartPatience is how long serve waits for the server to listen. How
+// soon it starts is no test's concern, and a loaded machine with the race
+// detector on can take seconds to open the history and restore it.
+const serveStartPatience = 30 * time.Second
+
 // serve runs the server in-process until it is stopped or the test ends.
 func serve(t *testing.T, o cli.ServeOptions) *machine {
 	t.Helper()
@@ -151,8 +156,8 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 	case <-ready:
 	case code := <-done:
 		t.Fatalf("Serve returned %d before listening: %s", code, stderr.String())
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not listen")
+	case <-time.After(serveStartPatience):
+		t.Fatalf("Serve did not listen within %v", serveStartPatience)
 	}
 
 	token, err := config.EnsureToken(o.Paths.TokenFile)
