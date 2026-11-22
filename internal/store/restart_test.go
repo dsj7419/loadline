@@ -103,8 +103,9 @@ func creditsState(t *testing.T, v tracker.View) (credits *tracker.CreditsView, p
 	return credits, string(data)
 }
 
-// A span on credits that opened before the days the history keeps, in the
-// reviewer's case, and a long stretch at a limit whose reset is unknown.
+// A span on credits that opened before the days the history keeps and reset
+// within them, with a call made inside it, and a long stretch at a limit
+// whose reset is unknown.
 var creditsRuns = map[string]creditsRun{
 	"a span opened before the days kept holds a call made within them": {
 		grants: []domain.CreditGrant{{USD: 20, AddedAt: at(-40 * days)}},
