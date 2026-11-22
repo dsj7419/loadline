@@ -11,6 +11,18 @@ import (
 	"strings"
 )
 
+// Entry is what Inspect tells of a path itself.
+type Entry struct {
+	// Link reports a symbolic link, or on Windows a junction or another
+	// reparse point, which opening the path would follow somewhere else.
+	Link bool
+	// Folder reports a folder.
+	Folder bool
+	// Names is how many names the file has: more than one when it was hard
+	// linked, and it is then also wherever its other names are.
+	Names uint64
+}
+
 // andList joins names as a sentence lists them: "a", "a and b", "a, b and c".
 func andList(names []string) string {
 	if len(names) < 2 {

@@ -367,3 +367,37 @@ func TestSecure_LeavesAFileOutsideTheDataDirectoryAsItIs(t *testing.T) {
 		})
 	}
 }
+
+// A junction hidden in a folder that keeps the user out, and that keeps them
+// out itself: locking the spool passed its list down to the junction. Doctor
+// reports the spool; Secure makes the spool listable, finds the junction
+// and refuses it, changing nothing where it leads; doctor then reports the
+// junction.
+func TestSecure_RefusesAJunctionHiddenInAFolderThatKeepsTheUserOut(t *testing.T) {
+	home, top := loadlineHome(t)
+	project, doc := elsewhere(t, top)
+	spool := filepath.Join(home, "spool")
+	hidden := filepath.Join(spool, "x")
+	junction(t, hidden, project)
+	beforeProject, beforeDoc := fspermtest.AccessList(t, project), fspermtest.AccessList(t, doc)
+	fspermtest.SetAccessList(t, spool, "D:P(A;OICI;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+
+	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, spool+" keeps you from seeing what it holds") {
+		t.Errorf("Check before = %q, %v; want it to report %s", got, err, spool)
+	}
+	err := datadir.Secure(home, top)
+
+	if err == nil || !strings.HasPrefix(err.Error(), hidden+" is a link") {
+		t.Errorf("Secure = %v, want it to refuse %s as a link", err, hidden)
+	}
+	if after := fspermtest.AccessList(t, project); after != beforeProject {
+		t.Errorf("the access list of %s, where the junction leads, went from %s to %s", project, beforeProject, after)
+	}
+	if after := fspermtest.AccessList(t, doc); after != beforeDoc {
+		t.Errorf("the access list of %s went from %s to %s", doc, beforeDoc, after)
+	}
+	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, hidden+" is a link") {
+		t.Errorf("Check after = %q, %v; want it to report %s as a link", got, err, hidden)
+	}
+}

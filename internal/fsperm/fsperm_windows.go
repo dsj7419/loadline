@@ -289,21 +289,25 @@ func IsLink(path string) (bool, error) {
 	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0, nil
 }
 
-// Links returns how many names the file at path has: more than one when it
-// was hard linked, and is then also wherever its other names are.
-func Links(path string) (uint64, error) {
-	// Its attributes alone, which the folder that holds it lets its lister
-	// read, so that a file whose own list keeps the user out is read too.
+// Inspect tells what path itself is, a link not followed. It reads the
+// path's attributes alone, which the folder that holds it lets its lister
+// read, so that a file or a link whose own list keeps the user out is read
+// too.
+func Inspect(path string) (Entry, error) {
 	handle, err := openItself(path, windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return 0, fmt.Errorf("read %s: %w", path, err)
+		return Entry{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return 0, fmt.Errorf("read %s: %w", path, err)
+		return Entry{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	return uint64(info.NumberOfLinks), nil
+	return Entry{
+		Link:   info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0,
+		Folder: info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0,
+		Names:  uint64(info.NumberOfLinks),
+	}, nil
 }
 
 // PrivateHere gives dir the access list of privateDescriptor, as Private

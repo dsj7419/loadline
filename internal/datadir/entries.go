@@ -216,24 +216,16 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 		// file from a link, which no writer makes and which is refused.
 		return nil
 	}
-	var isLink bool
-	var info fs.FileInfo
+	// What the path itself is, read even when its own list keeps the user
+	// out, as one in a folder that was just made listable may.
+	var entry fsperm.Entry
 	err := settle(func() (err error) {
-		if isLink, err = fsperm.IsLink(path); err != nil || isLink {
+		if entry, err = fsperm.Inspect(path); err != nil {
 			return err
-		}
-		if info, err = os.Lstat(path); err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
 		}
 		// A second name puts the file wherever that name is too, and
 		// whatever is done to it here is done to it there.
-		switch names, err := fsperm.Links(path); {
-		case err != nil:
-			return err
-		case names > 1:
+		if !entry.Link && !entry.Folder && entry.Names > 1 {
 			return errMoreNames
 		}
 		return nil
@@ -246,17 +238,17 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 		return nil
 	case err != nil:
 		return err
-	case isLink:
+	case entry.Link:
 		t.link = path
 		return nil
 	}
 	t.paths = append(t.paths, path)
 	if fix != nil {
-		if err := fix.before(path, info.IsDir()); err != nil {
+		if err := fix.before(path, entry.Folder); err != nil {
 			return err
 		}
 	}
-	if !info.IsDir() {
+	if !entry.Folder {
 		return nil
 	}
 	entries, err := os.ReadDir(path)

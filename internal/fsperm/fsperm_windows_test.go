@@ -762,6 +762,17 @@ func TestClearExplicit_LeavesOnlyWhatThePrivateFolderPassesDown(t *testing.T) {
 	}
 }
 
+// junction makes link a directory junction to target, as any user may in a
+// folder they can create directories in.
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	//nolint:gosec // G204: the paths are the test's own temporary folders
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+}
+
 func TestIsLink_TellsAJunctionFromAFolder(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
@@ -787,29 +798,40 @@ func TestIsLink_TellsAJunctionFromAFolder(t *testing.T) {
 	}
 }
 
-// A file's names are counted from what its folder's listing lets the user
-// read, so even one whose own list keeps the user out is counted.
-func TestLinks_CountsTheNamesOfAFileEvenOneThatKeepsTheUserOut(t *testing.T) {
+// What a path is, and how many names a file has, is read from what its
+// folder's listing lets the user read, so even one whose own list keeps the
+// user out is told: a file with a second name, and a junction.
+func TestInspect_TellsWhatAPathIsEvenOneThatKeepsTheUserOut(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "loadline")
 	if err := fsperm.MkdirAll(root); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(root, "token")
 	write(t, file)
-	if names, err := fsperm.Links(file); err != nil || names != 1 {
-		t.Errorf("Links of a new file = %d, %v; want 1", names, err)
+	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 1}) {
+		t.Errorf("Inspect of a new file = %+v, %v; want a file of one name", got, err)
+	}
+	if got, err := fsperm.Inspect(root); err != nil || !got.Folder || got.Link {
+		t.Errorf("Inspect of a folder = %+v, %v; want a folder", got, err)
 	}
 	if err := os.Link(file, filepath.Join(root, "elsewhere")); err != nil {
 		t.Skipf("cannot make a hard link here: %v", err)
 	}
-	fspermtest.SetAccessListAsIs(t, file, "D:P(A;;FA;;;SY)")
-	t.Cleanup(func() { _ = fsperm.ClearExplicit(file) })
+	link := filepath.Join(root, "bin")
+	junction(t, link, t.TempDir())
+	for _, path := range []string{file, link} {
+		fspermtest.SetAccessListAsIs(t, path, "D:P(A;;FA;;;SY)")
+		t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+	}
 	if _, err := os.ReadFile(file); err == nil {
 		t.Fatalf("%s can still be read, so the test proves nothing", file)
 	}
 
-	if names, err := fsperm.Links(file); err != nil || names != 2 {
-		t.Errorf("Links of a file with a second name that keeps the user out = %d, %v; want 2", names, err)
+	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 2}) {
+		t.Errorf("Inspect of a file with a second name that keeps the user out = %+v, %v; want a file of two names", got, err)
+	}
+	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
+		t.Errorf("Inspect of a junction that keeps the user out = %+v, %v; want a link", got, err)
 	}
 }
 

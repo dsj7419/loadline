@@ -182,7 +182,7 @@ func TestIsLink_TellsASymlinkFromAFile(t *testing.T) {
 	}
 }
 
-func TestLinks_CountsTheNamesOfAFile(t *testing.T) {
+func TestInspect_TellsWhatAPathIs(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "token")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -191,8 +191,18 @@ func TestLinks_CountsTheNamesOfAFile(t *testing.T) {
 	if err := os.Link(file, filepath.Join(dir, "elsewhere")); err != nil {
 		t.Fatal(err)
 	}
+	link := filepath.Join(dir, "bin")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
 
-	if names, err := fsperm.Links(file); err != nil || names != 2 {
-		t.Errorf("Links = %d, %v; want 2", names, err)
+	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 2}) {
+		t.Errorf("Inspect(%s) = %+v, %v; want a file of two names", file, got, err)
+	}
+	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
+		t.Errorf("Inspect(%s) = %+v, %v; want a link", link, got, err)
+	}
+	if got, err := fsperm.Inspect(dir); err != nil || !got.Folder || got.Link {
+		t.Errorf("Inspect(%s) = %+v, %v; want a folder", dir, got, err)
 	}
 }
