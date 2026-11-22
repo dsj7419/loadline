@@ -68,10 +68,14 @@ func MovableAncestor(dir, top string) (string, error) {
 	}
 }
 
-// ownedBy reports folder as belonging to owner, someone other than those
-// Loadline trusts with it.
-func ownedBy(folder, owner string) string {
-	return folder + " belongs to " + owner + ", who can give themselves the right to delete or rename it, or what it holds"
+// foreignOwner reports folder as belonging to someone other than those
+// Loadline trusts with it (ForeignOwner), or "" when it does not.
+func foreignOwner(folder string) (string, error) {
+	owner, err := ForeignOwner(folder)
+	if err != nil || owner == "" {
+		return "", err
+	}
+	return folder + " belongs to " + owner + ", who can give themselves the right to delete or rename it, or what it holds", nil
 }
 
 func exists(path string) bool {

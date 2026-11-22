@@ -99,10 +99,11 @@ var ownerOf = func(path string) (uint32, error) {
 	return stat.Uid, nil
 }
 
-// foreignOwner reports folder as belonging to someone other than the user
-// or root, who may change its mode, or "" when it does not.
-func foreignOwner(folder string) (string, error) {
-	uid, err := ownerOf(folder)
+// ForeignOwner names the owner of path when that is anyone but the user or
+// root, or returns "" when it is one of them. The owner may always change
+// path's mode.
+func ForeignOwner(path string) (string, error) {
+	uid, err := ownerOf(path)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +115,7 @@ func foreignOwner(folder string) (string, error) {
 	if account, err := user.LookupId(id); err == nil {
 		name = account.Username
 	}
-	return ownedBy(folder, name), nil
+	return name, nil
 }
 
 // samePath reports whether a and b name the same folder.

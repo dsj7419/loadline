@@ -332,11 +332,12 @@ func emptiable(folder string) (string, error) {
 	return folder + " lets " + andList(others) + " change its permissions or owner, and with that delete or rename it, or what it holds", nil
 }
 
-// foreignOwner reports folder as belonging to someone other than the user,
+// ForeignOwner names the owner of path when that is anyone but the user,
 // SYSTEM, Administrators or TrustedInstaller, which owns the system's own
-// folders, or "" when it does not.
-func foreignOwner(folder string) (string, error) {
-	owner, err := ownerOf(folder)
+// folders, or returns "" when it is one of them. The owner may always
+// change who can use path, whatever its access list says.
+func ForeignOwner(path string) (string, error) {
+	owner, err := ownerOf(path)
 	if err != nil {
 		return "", err
 	}
@@ -351,7 +352,7 @@ func foreignOwner(folder string) (string, error) {
 	if slices.ContainsFunc(append(trusted, trustedInstaller), owner.Equals) {
 		return "", nil
 	}
-	return ownedBy(folder, accountName(owner)), nil
+	return accountName(owner), nil
 }
 
 // othersGranted names the trustees besides the user, SYSTEM and

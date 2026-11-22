@@ -172,11 +172,39 @@ func contentProblem(dir string) (string, error) {
 	if foreign != "" {
 		return foreignProblem(dir, foreign), nil
 	}
-	_, link, err := ownPaths(dir)
-	if err != nil || link == "" {
+	paths, link, err := ownPaths(dir)
+	if err != nil {
 		return "", err
 	}
-	return linkProblem(link), nil
+	if link != "" {
+		return linkProblem(link), nil
+	}
+	for _, path := range paths {
+		if problem, err := ownerProblem(path); err != nil || problem != "" {
+			return problem, err
+		}
+	}
+	return "", nil
+}
+
+// ownerProblem reports path, one of Loadline's files or folders, as
+// belonging to someone else, who may always let anyone at it, whatever
+// Loadline makes of its access list, or "" when it does not. A path that is
+// being deleted is waited for (settle), and once gone, has no problem.
+func ownerProblem(path string) (string, error) {
+	var owner string
+	err := settle(func() (err error) {
+		owner, err = foreignOwner(path)
+		return err
+	})
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil || owner == "":
+		return "", err
+	}
+	return path + " belongs to " + owner + ", who can always change who may read or replace it, " +
+		"which Loadline's own files must not allow: remove it, then run loadline install", nil
 }
 
 // exposed reports path as not private when exposure finds someone else it

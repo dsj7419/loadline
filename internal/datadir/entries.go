@@ -123,6 +123,10 @@ func linkProblem(path string) string {
 	return path + " is a link, which Loadline's own files must never be: remove it, then run loadline install"
 }
 
+// foreignOwner is fsperm.ForeignOwner. Tests replace it: an account that is
+// not elevated, or not root, cannot give a file another owner.
+var foreignOwner = fsperm.ForeignOwner
+
 // ownPaths returns what Loadline keeps in dir: each entry it owns, and
 // everything below the folders among them, except the regular files that
 // are still being written (Temporary). It follows no link: it stops at the
