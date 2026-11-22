@@ -722,10 +722,14 @@ func TestMethods_UnknownMethodIsAJSON405(t *testing.T) {
 		uncacheable           bool
 	}{
 		{method: http.MethodPut, target: "/api/snapshot", allow: "GET, HEAD", uncacheable: true},
-		{method: http.MethodOptions, target: "/api/events", allow: "GET, HEAD", uncacheable: true},
+		// The event stream and the login route refuse HEAD, so they
+		// advertise GET alone.
+		{method: http.MethodOptions, target: "/api/events", allow: "GET", uncacheable: true},
+		{method: http.MethodHead, target: "/api/events", allow: "GET", uncacheable: true},
 		{method: http.MethodDelete, target: "/ingest/hook", allow: "GET, HEAD, POST", uncacheable: true},
 		{method: http.MethodPatch, target: "/v1/logs", allow: "GET, HEAD, POST", uncacheable: true},
-		{method: http.MethodPost, target: "/login", allow: "GET, HEAD", uncacheable: true},
+		{method: http.MethodPost, target: "/login", allow: "GET", uncacheable: true},
+		{method: http.MethodPut, target: "/login", allow: "GET", uncacheable: true},
 		{method: http.MethodPost, target: "/", allow: "GET, HEAD"},
 		{method: http.MethodDelete, target: "/app.js", allow: "GET, HEAD"},
 	}
@@ -733,7 +737,9 @@ func TestMethods_UnknownMethodIsAJSON405(t *testing.T) {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
 			h := newHarness(t)
 
-			rec := h.do(tokenRequest(tt.method, tt.target, nil))
+			// A route that took the request by mistake and streams would
+			// hold it until the deadline, and then fail on its status.
+			rec := h.do(withDeadline(t, tokenRequest(tt.method, tt.target, nil)))
 
 			assertJSONError(t, rec, http.StatusMethodNotAllowed)
 			if got := rec.Header().Get("Allow"); got != tt.allow {
@@ -747,6 +753,36 @@ func TestMethods_UnknownMethodIsAJSON405(t *testing.T) {
 			}
 			if got := rec.Header().Get("Cache-Control"); tt.uncacheable && got != "no-store" {
 				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			h.assertNothingApplied(t)
+		})
+	}
+}
+
+// A path that is not in canonical form is redirected to the canonical one,
+// whatever the method, as the mux does. The redirect keeps the method, which
+// is judged at the canonical path.
+func TestMethods_NonCanonicalPathIsRedirected(t *testing.T) {
+	tests := []struct{ method, target, location string }{
+		{method: http.MethodPut, target: "/api//snapshot", location: "/api/snapshot"},
+		{method: http.MethodPost, target: "/api/../login", location: "/login"},
+		{method: http.MethodGet, target: "/api//snapshot", location: "/api/snapshot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
+			h := newHarness(t)
+
+			rec := h.do(tokenRequest(tt.method, tt.target, nil))
+
+			assertStatus(t, rec, http.StatusTemporaryRedirect)
+			if got := rec.Header().Get("Location"); got != tt.location {
+				t.Errorf("Location = %q, want %q", got, tt.location)
+			}
+			if got := rec.Header().Get("Allow"); got != "" {
+				t.Errorf("Allow = %q on a redirect, want none", got)
+			}
+			if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+				t.Errorf("Content-Security-Policy = %q, want the policy", got)
 			}
 			h.assertNothingApplied(t)
 		})

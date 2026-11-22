@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,10 +41,12 @@ func unstartedServer(t *testing.T) (*httptest.Server, int) {
 
 // newStreamServer serves a harness over a real connection, which an event
 // stream needs. configure, when set, runs before serving starts.
-func newStreamServer(t *testing.T, configure func(*server.Server, *http.Server)) (*harness, *httptest.Server) {
+func newStreamServer(t *testing.T, configure func(*server.Server, *http.Server),
+	opts ...func(*server.Deps),
+) (*harness, *httptest.Server) {
 	t.Helper()
 	ts, port := unstartedServer(t)
-	h := newHarness(t, func(d *server.Deps) { d.Port = port })
+	h := newHarness(t, append(opts, func(d *server.Deps) { d.Port = port })...)
 	if configure != nil {
 		configure(h.srv, ts.Config)
 	}
@@ -135,6 +139,49 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// logRecorder is a log handler that keeps every record. The server logs no
+// attributes through With, so the handler has none of its own to keep.
+type logRecorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (l *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l *logRecorder) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = append(l.records, r.Clone())
+	return nil
+}
+
+func (l *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *logRecorder) WithGroup(string) slog.Handler      { return l }
+
+// find returns the attributes, as text by key, of each record logged at level
+// with message, or with any message when message is empty.
+func (l *logRecorder) find(level slog.Level, message string) []map[string]string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var found []map[string]string
+	for _, r := range l.records {
+		if r.Level != level || (message != "" && r.Message != message) {
+			continue
+		}
+		attrs := make(map[string]string)
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.String()
+			return true
+		})
+		found = append(found, attrs)
+	}
+	return found
+}
+
+func withLog(logs *logRecorder) func(*server.Deps) {
+	return func(d *server.Deps) { d.Log = slog.New(logs) }
 }
 
 func assertStreamEnded(t *testing.T, h *harness, s *stream) {
@@ -523,5 +570,90 @@ func TestSSE_StreamsTheTrackersViews(t *testing.T) {
 	v := decode(s.nextView(t))
 	if len(v.Sessions) != 1 || v.Sessions[0].ID != "s1" {
 		t.Errorf("view after the hook has sessions %+v, want s1", v.Sessions)
+	}
+}
+
+func TestSSE_HeadIsRefused(t *testing.T) {
+	h := newHarness(t)
+	r := withDeadline(t, cookieRequest("/api/events"))
+	r.Method = http.MethodHead
+
+	rec := h.do(r)
+
+	assertStatus(t, rec, http.StatusMethodNotAllowed)
+	if got := rec.Header().Get("Allow"); got != http.MethodGet {
+		t.Errorf("Allow = %q, want GET", got)
+	}
+	if calls := h.sink.callOrder(); len(calls) != 0 {
+		t.Errorf("state calls = %v for a refused HEAD, want none", calls)
+	}
+}
+
+func TestSSE_LogsWhyAStreamEnded(t *testing.T) {
+	tests := []struct {
+		name   string
+		end    func(*harness, *stream)
+		reason string
+	}{
+		{name: "the client went away", end: func(_ *harness, s *stream) { s.cancel() }, reason: "request ended"},
+		{name: "the subscription closed", end: func(h *harness, _ *stream) { h.sink.closeSubscriptions() }, reason: "subscription closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &logRecorder{}
+			h, ts := newStreamServer(t, nil, withLog(logs))
+			s := openStream(t, ts)
+			s.nextView(t)
+
+			tt.end(h, s)
+
+			eventually(t, "the stream to log its end", func() bool {
+				return len(logs.find(slog.LevelDebug, "event stream closed")) > 0
+			})
+			closed := logs.find(slog.LevelDebug, "event stream closed")
+			if len(closed) != 1 || !strings.Contains(closed[0]["reason"], tt.reason) {
+				t.Errorf("closing records = %v, want one whose reason mentions %q", closed, tt.reason)
+			}
+			if warnings := logs.find(slog.LevelWarn, ""); len(warnings) != 0 {
+				t.Errorf("warnings = %v for a stream over a real connection, want none", warnings)
+			}
+		})
+	}
+}
+
+func TestSSE_LogsAFailedWrite(t *testing.T) {
+	logs := &logRecorder{}
+	h := newHarness(t, withLog(logs))
+	server.SetPingInterval(h.srv, time.Hour)
+	w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: 0}
+
+	serveBrokenStream(t, h, w, func() {})
+
+	closed := logs.find(slog.LevelDebug, "event stream closed")
+	if len(closed) != 1 || !strings.Contains(closed[0]["reason"], "broken pipe") {
+		t.Errorf("closing records = %v, want one whose reason is the write error", closed)
+	}
+}
+
+// A writer without deadlines streams, but a client that stops reading could
+// then hold its stream forever, so the server says so, once.
+func TestSSE_WarnsOnceWhenStreamWritesHaveNoDeadline(t *testing.T) {
+	logs := &logRecorder{}
+	h := newHarness(t, withLog(logs))
+
+	for range 3 {
+		// A request that has already ended still gets the snapshot, and
+		// then the stream ends at once.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		rec := httptest.NewRecorder()
+		h.handler.ServeHTTP(rec, cookieRequest("/api/events").WithContext(ctx))
+		if !strings.HasPrefix(rec.Body.String(), "event: view\n") {
+			t.Fatalf("stream = %q, want the snapshot", rec.Body.String())
+		}
+	}
+
+	if warnings := logs.find(slog.LevelWarn, ""); len(warnings) != 1 {
+		t.Errorf("warnings = %v after three streams without write deadlines, want exactly one", warnings)
 	}
 }

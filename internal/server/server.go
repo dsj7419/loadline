@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -87,6 +88,7 @@ type Server struct {
 	uiCookie           []byte
 	pingEvery          time.Duration
 	streamWriteTimeout time.Duration
+	noDeadlineWarning  sync.Once
 
 	limiter *tokenBucket
 	recent  *recentIDs
@@ -158,20 +160,44 @@ func (s *Server) routes(static http.Handler) http.Handler {
 	mux.Handle("POST /ingest/status", s.ingest(s.handleStatus))
 	mux.Handle("POST /v1/logs", s.ingest(s.handleLogs))
 	mux.Handle("GET /api/snapshot", s.requireUI(http.HandlerFunc(s.handleSnapshot)))
-	mux.Handle("GET /api/events", s.requireUI(http.HandlerFunc(s.handleEvents)))
 	mux.Handle("GET /api/diag", s.requireToken(http.HandlerFunc(s.handleDiag)))
 	mux.Handle("POST /api/login-code", s.requireToken(http.HandlerFunc(s.handleLoginCode)))
-	mux.HandleFunc("GET /login", s.handleLogin)
+	// These routes take GET alone. The mux routes HEAD to a GET route too,
+	// but a HEAD from a link checker or a preview must not spend a login
+	// code, and a HEAD must not hold an event stream whose output is thrown
+	// away.
+	getOnly := map[string]http.Handler{
+		"/api/events": s.requireUI(http.HandlerFunc(s.handleEvents)),
+		"/login":      http.HandlerFunc(s.handleLogin),
+	}
+	for path, h := range getOnly {
+		mux.Handle("GET "+path, s.refuseHead(h))
+	}
 	mux.Handle("GET /", static)
-	return secureHeaders(s.checkHost(s.checkOrigin(s.refuseUnroutedMethods(mux))))
+	return secureHeaders(s.checkHost(s.checkOrigin(s.refuseUnroutedMethods(mux, getOnly))))
+}
+
+// refuseHead answers HEAD with the 405 that refuseUnroutedMethods gives any
+// other method the route does not take.
+func (s *Server) refuseHead(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Allow", http.MethodGet)
+			s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // refuseUnroutedMethods answers a request that no route takes with the same
 // short JSON error as every other refusal; the mux would answer in plain
-// text. Since GET / takes every path, such a request always has the wrong
-// method. The methods to list in Allow come from the handler the mux reserves
-// for that case, run against a writer that keeps only headers.
-func (s *Server) refuseUnroutedMethods(mux *http.ServeMux) http.Handler {
+// text. Since GET / takes every path, such a request has the wrong method,
+// or a path the mux redirects to its canonical form, which it is left to do.
+// The methods to list in Allow come from the handler the mux reserves for
+// that case, run against a writer that keeps only headers; a GET-only route
+// lists GET alone.
+func (s *Server) refuseUnroutedMethods(mux *http.ServeMux, getOnly map[string]http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, pattern := mux.Handler(r)
 		if pattern != "" {
@@ -180,7 +206,15 @@ func (s *Server) refuseUnroutedMethods(mux *http.ServeMux) http.Handler {
 		}
 		probe := headerOnly{header: make(http.Header)}
 		h.ServeHTTP(probe, r)
-		w.Header().Set("Allow", probe.header.Get("Allow"))
+		allow := probe.header.Get("Allow")
+		if allow == "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		if _, ok := getOnly[r.URL.Path]; ok {
+			allow = http.MethodGet
+		}
+		w.Header().Set("Allow", allow)
 		s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
 	})
 }
