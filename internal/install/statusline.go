@@ -74,9 +74,11 @@ const (
 	edited
 )
 
-// literal returns the command for shell as a JSON string literal. It
-// reports false for an original that ends in an unescaped backslash, which
-// would join the group's closing line to it.
+// literal returns the command for shell as a JSON string literal; a blank
+// original gets the print form, never an empty group. It reports false for a
+// bash original that ends in a backslash: escaped or not, it can join the
+// group's closing line to the command, because on Windows the command line
+// that reaches Git Bash may have one backslash where the file has two.
 func (t tapCommand) literal(exe string, shell Shell) (string, bool) {
 	launcher := `"` + exe + `"`
 	if shell == ShellPowerShell {
@@ -86,13 +88,13 @@ func (t tapCommand) literal(exe string, shell Shell) (string, bool) {
 
 	var body string
 	switch {
-	case t.print:
+	case t.print || strings.TrimSpace(original) == "":
 		body = escapeJSON(launcher + printSuffix)
 	case shell == ShellPowerShell:
 		body = escapeJSON(launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close)
 	case isPlainCommand(original):
 		body = escapeJSON(launcher+tapPipe) + raw(t.original)
-	case endsInEscape(original):
+	case strings.HasSuffix(original, `\`):
 		return "", false
 	default:
 		body = escapeJSON(launcher+tapPipe+groupOpen) + raw(t.original) + escapeJSON(groupClose)
@@ -125,13 +127,6 @@ func isPlainRune(r rune) bool {
 	default:
 		return strings.ContainsRune(` _./~:=+@%,-'"`, r)
 	}
-}
-
-// endsInEscape reports whether s ends in a backslash that escapes whatever
-// follows it.
-func endsInEscape(s string) bool {
-	backslashes := len(s) - len(strings.TrimRight(s, `\`))
-	return backslashes%2 == 1
 }
 
 // parseTapCommand tells whether a status-line command, given as its JSON
@@ -183,11 +178,21 @@ func parsePipe(rest []char) (tapCommand, tapMatch) {
 	}
 	inner, grouped := cutText(after, groupOpen)
 	if !grouped {
-		return tapCommand{original: after}, tapped
+		return tappedOriginal(after)
 	}
 	original, closed := cutSuffix(inner, groupClose)
 	if !closed {
 		return tapCommand{}, edited
+	}
+	return tappedOriginal(original)
+}
+
+// tappedOriginal is a tapped command with the user's own original. Nothing
+// but blanks behind the prefix means there was no status line of the user's
+// own, so tap prints its own.
+func tappedOriginal(original []char) (tapCommand, tapMatch) {
+	if strings.TrimSpace(text(original)) == "" {
+		return tapCommand{print: true}, tapped
 	}
 	return tapCommand{original: original}, tapped
 }
@@ -206,7 +211,7 @@ func parseRunB64(rest []char) (tapCommand, tapMatch) {
 	if err != nil || !utf8.Valid(decoded) || base64.RawURLEncoding.EncodeToString(decoded) != text(encoded) {
 		return tapCommand{}, edited
 	}
-	return tapCommand{original: splitString(jsonString(string(decoded)))}, tapped
+	return tappedOriginal(splitString(jsonString(string(decoded))))
 }
 
 // cutText reports whether chars start with prefix, and returns the rest.

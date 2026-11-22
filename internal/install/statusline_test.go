@@ -15,26 +15,40 @@ import (
 	"github.com/dsj7419/loadline/internal/install"
 )
 
-// bashFormCases are status-line commands, and the command install makes of
-// each: plain commands follow the pipe as they are, and anything else runs
-// in a group so the pipe still feeds the whole of it.
+// The forms install gives a user's status-line command under bash.
+const (
+	plainForm   = iota // after the pipe as it is
+	groupedForm        // in a group, so the pipe still feeds all of it
+	leftAlone          // not tapped at all
+)
+
+// bashFormCases are status-line commands and the form install puts each in.
 var bashFormCases = []struct {
 	original string
-	grouped  bool
+	form     int
 }{
-	{"cat", false},
-	{"bash ~/.claude/statusline.sh", false},
-	{`printf '%s' "$(cat)"`, true},
-	{"cd / && cat", true},
-	{"read line; echo \"got $line\"", true},
-	{"read line\necho \"got $line\"", true},
-	{"export GREETING=hi; cat; echo $GREETING", true},
-	{"! false && cat", true},
-	{"time cat", true},
-	{"if true; then cat; fi", true},
-	{"cat # a trailing comment", true},
-	{"for word in a b; do echo $word; done; cat", true},
-	{"cat <<'EOF'\nfrom a here-document\nEOF", true},
+	{"cat", plainForm},
+	{"   cat", plainForm},
+	{"bash ~/.claude/statusline.sh", plainForm},
+	{`printf '%s' "$(cat)"`, groupedForm},
+	{"cd / && cat", groupedForm},
+	{"cat | tr a-z A-Z", groupedForm},
+	{"{ cat; echo; }", groupedForm},
+	{`FOO=bar bash -c 'echo "$FOO $(cat)"'`, groupedForm},
+	{"read line; echo \"got $line\"", groupedForm},
+	{"read line\necho \"got $line\"", groupedForm},
+	{"export GREETING=hi; cat; echo $GREETING", groupedForm},
+	{"! false && cat", groupedForm},
+	{"time cat", groupedForm},
+	{"if true; then cat; fi", groupedForm},
+	{"cat # a trailing comment", groupedForm},
+	{"for word in a b; do echo $word; done; cat", groupedForm},
+	{"cat <<'EOF'\nfrom a here-document\nEOF", groupedForm},
+	// A trailing backslash, escaped or not, can turn the group's closing
+	// line into a continuation once Windows and Git Bash have passed the
+	// command along.
+	{`echo a\`, leftAlone},
+	{`echo a\\`, leftAlone},
 }
 
 func TestBashForm_GroupsAllButPlainCommands(t *testing.T) {
@@ -43,10 +57,11 @@ func TestBashForm_GroupsAllButPlainCommands(t *testing.T) {
 
 		out, _, _ := plan(t, settings, options(install.ShellBash))
 
-		want := `"` + goldenExe + `" tap | ` + tc.original
-		if tc.grouped {
-			want = `"` + goldenExe + `" tap | { ` + tc.original + "\n}"
-		}
+		want := map[int]string{
+			plainForm:   `"` + goldenExe + `" tap | ` + tc.original,
+			groupedForm: `"` + goldenExe + `" tap | { ` + tc.original + "\n}",
+			leftAlone:   tc.original,
+		}[tc.form]
 		if got := statusCommand(t, out); got != want {
 			t.Errorf("%q became %q, want %q", tc.original, got, want)
 		}

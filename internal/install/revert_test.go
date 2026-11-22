@@ -170,7 +170,9 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		want    string // the restored command
 	}{
 		{"plain bash prefix", `"/opt/loadline/bin/loadline" tap | my-status`, restored, "my-status"},
-		{"plain bash prefix of an empty command", `"/opt/loadline/bin/loadline" tap | `, restored, ""},
+		{"plain bash prefix of an empty command", `"/opt/loadline/bin/loadline" tap | `, removed, ""},
+		{"grouped blank command", "\"/opt/loadline/bin/loadline\" tap | {  \n}", removed, ""},
+		{"PowerShell form of a blank command", `& "C:/x/loadline.exe" tap --run-b64 '` + b64(" ") + `'`, removed, ""},
 		{"grouped bash prefix", "\"/opt/loadline/bin/loadline\" tap | { a && b\n}", restored, "a && b"},
 		{"grouped bash prefix of a group", "\"/opt/loadline/bin/loadline\" tap | { { a\n}\n}", restored, "{ a\n}"},
 		{"PowerShell form", `& "C:/x/loadline.exe" tap --run-b64 '` + b64("echo 'a' \"b\" ‘c’") + `'`, restored, "echo 'a' \"b\" ‘c’"},

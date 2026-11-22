@@ -459,21 +459,46 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 }
 
 func TestPlan_SkipsAnOriginalEndingInABackslash(t *testing.T) {
-	settings := []byte(`{"statusLine": {"type": "command", "command": "status.sh --wide \\"}}`)
+	// Escaped or not: on Windows a doubled backslash can reach Git Bash as a
+	// single one and join the group's closing line to the command.
+	for _, original := range []string{`status.sh --wide \`, `echo a\\`, `echo a\\\`} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
 
-	out, changes, warnings := plan(t, settings, options(install.ShellBash))
+		out, changes, warnings := plan(t, settings, options(install.ShellBash))
 
-	if got := statusCommand(t, out); got != `status.sh --wide \` {
-		t.Errorf("status line = %q, want it left alone", got)
+		if got := statusCommand(t, out); got != original {
+			t.Errorf("status line = %q, want %q left alone", got, original)
+		}
+		if !hasChange(changes, "statusLine.command", install.ActionSkip) ||
+			len(warnings) != 1 || !strings.Contains(warnings[0], "backslash") {
+			t.Errorf("%q: changes %+v and warnings %q, want a skip with a warning about the backslash", original, changes, warnings)
+		}
 	}
-	if !hasChange(changes, "statusLine.command", install.ActionSkip) || len(warnings) != 1 {
-		t.Errorf("changes %+v and warnings %q, want a skip with a warning", changes, warnings)
-	}
+}
 
-	escaped := []byte(`{"statusLine": {"type": "command", "command": "echo a\\\\"}}`)
-	out, _, _ = plan(t, escaped, options(install.ShellBash))
-	if got, want := statusCommand(t, out), `"`+goldenExe+`" tap | { echo a\\`+"\n}"; got != want {
-		t.Errorf("status line = %q, want an escaped backslash grouped: %q", got, want)
+func TestPlan_AnEmptyCommandBehindTheTapPrefixPrints(t *testing.T) {
+	for _, command := range []string{
+		`"D:/old/loadline.exe" tap | `,
+		`"D:/old/loadline.exe" tap |    `,
+		"\"D:/old/loadline.exe\" tap | { \t \n}",
+		`& "D:/old/loadline.exe" tap --run-b64 ''`,
+		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("  \n ") + `'`,
+	} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
+		for _, shell := range shells {
+			out, changes, _ := plan(t, settings, options(shell))
+
+			want := `"` + goldenExe + `" tap --print`
+			if shell == install.ShellPowerShell {
+				want = "& " + want
+			}
+			if got := statusCommand(t, out); got != want {
+				t.Errorf("shell %d: %q became %q, want the print form %q", shell, command, got, want)
+			}
+			if !hasChange(changes, "statusLine.command", install.ActionUpdate) {
+				t.Errorf("shell %d: changes %+v, want statusLine.command updated", shell, changes)
+			}
+		}
 	}
 }
 
