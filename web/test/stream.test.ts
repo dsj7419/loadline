@@ -162,7 +162,9 @@ describe('createStream', () => {
     expect(stream.views).toEqual([view]);
   });
 
-  it('closes a failed connection at once and reconnects after 1 s, 2 s, 5 s and then every 10 s', () => {
+  // A dashboard left open while the server restarts must be back within the
+  // 3 s the new server waits for open dashboards, or it opens another window.
+  it('closes a failed connection at once and reconnects after 1 s and then every 2 s', () => {
     const stream = startStream();
     const waits: number[] = [];
     for (let attempt = 0; attempt < 6; attempt++) {
@@ -173,7 +175,7 @@ describe('createStream', () => {
       waits.push(waitForReconnect());
       expect(stream.opened).toHaveLength(attempt + 2);
     }
-    expect(waits).toEqual([1_000, 2_000, 5_000, 10_000, 10_000, 10_000]);
+    expect(waits).toEqual([1_000, 2_000, 2_000, 2_000, 2_000, 2_000]);
   });
 
   it('starts the backoff over once a valid view arrives', () => {

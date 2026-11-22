@@ -20,18 +20,20 @@ export type StreamSeams = {
   readonly probe?: () => Promise<number>;
 };
 
-// The waits before the first reconnects in a row. Later ones wait the most.
-const firstRetryDelaysMs = [1_000, 2_000, 5_000];
-const maxRetryDelayMs = 10_000;
+// The waits before the first reconnects in a row. Later ones wait the most,
+// which stays under the 3 s a restarted server waits for open dashboards to
+// come back before it opens a window of its own.
+const firstRetryDelaysMs = [1_000];
+const maxRetryDelayMs = 2_000;
 
 const unauthorized = 401;
 
 /**
  * Follows the server's stream of views at url and passes each valid one to
  * onView; a payload that is not a View is dropped. When the connection
- * fails, it closes it and reconnects after 1 s, 2 s, 5 s and then every
- * 10 s, starting over once a valid view arrives. onStatus hears each change:
- * live once a valid view arrives (an open connection alone proves nothing),
+ * fails, it closes it and reconnects after 1 s and then every 2 s, starting
+ * over once a valid view arrives. onStatus hears each change: live once a
+ * valid view arrives (an open connection alone proves nothing),
  * reconnecting when the connection fails. An EventSource cannot see why a
  * connection failed, so the first failure of each run asks the probe, and
  * later failures ask again for as long as the server gives no answer at all:
