@@ -170,17 +170,24 @@ delete them to remove Loadline completely.
   Code's content logging (`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`,
   `OTEL_LOG_RAW_API_BODIES`).
 - **Nothing leaves the machine.** Loadline connects to nothing but its own server on `127.0.0.1`.
-  The only programs it starts are `claude` (for `claude agents --json`, `claude auth status` and `claude --version`)
-  and your browser. It never reads transcripts, `.claude.json` or credentials.
+  The programs it starts are:
+  - itself, as `loadline serve`, when no server is running;
+  - `claude`, for `claude agents --json`, `claude auth status` and `claude --version`;
+  - your browser, or with `browser: auto` the system's opener: `rundll32` on Windows, `open` on
+    macOS, `xdg-open` on Linux;
+  - your own status-line command, when the status line runs it through `tap --run` or
+    `--run-b64`: through `sh`, or on Windows through PowerShell 7 (`pwsh`) when it is on `PATH`
+    and Windows PowerShell otherwise.
+
+  It never reads transcripts, `.claude.json` or credentials.
 - **Token.** Every ingest request needs the `x-loadline-token` header, whose value is the token in
   the data directory. The token is also in the `env` of each settings file install edits, so on
   macOS and Linux install takes group and other permissions off those files and their backups.
 - **Dashboard sign-in.** To open the dashboard, Loadline gets a one-time code from the server,
   valid once and for 60 seconds, and opens `/login?code=…`. That sets the `loadline_ui` cookie
   (`HttpOnly`, `SameSite=Strict`, derived from the token, kept for 30 days) and redirects to the
-  dashboard, so no long-lived secret lands in your
-  browser history. The page loads nothing from outside the binary and runs under a strict content
-  security policy.
+  dashboard, so no long-lived secret lands in your browser history. The page loads nothing from
+  outside the binary and runs under a strict content security policy.
 - **Stored history.** The server keeps accounts, sessions, state changes, rate-limit samples and
   per-minute token and cost totals in a SQLite database in the data directory, for `retentionDays`.
 
@@ -196,8 +203,8 @@ Loadline reads four feeds, all of them interfaces that Claude Code documents:
    lines changed, prompt cache and the account's rate limits. It is also the session's heartbeat.
 2. **Hooks.** Session start and end, prompts, stops and failures, permission requests, questions,
    subagents and compaction, as they happen.
-3. **OpenTelemetry.** Claude Code's `claude_code.api_request` and `claude_code.api_error` log
-   events, for the model, tokens and cost of each API request.
+3. **OpenTelemetry.** Claude Code's `claude_code.api_request` log events, for the model, tokens
+   and cost of each API request.
 4. **`claude agents --json`.** The server polls it for each config directory every 5 s while any
    session is live, every 30 s otherwise, and 500 ms after a hook. Its answer is the source of truth
    for each session's state; hooks change the state between polls. It also finds sessions started

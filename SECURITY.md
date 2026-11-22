@@ -21,7 +21,8 @@ What it defends against:
 
 - **Web pages in your browser.** Any page can send requests to `127.0.0.1`. The server refuses a
   request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>`, and a state-changing
-  request whose `Origin` is another site. Reading the dashboard's data needs the token or the
+  request whose `Origin` is anything but the dashboard's own, `http://127.0.0.1:<port>` or
+  `http://localhost:<port>`, port included. Reading the dashboard's data needs the token or the
   `loadline_ui` cookie, which is `HttpOnly` and `SameSite=Strict`, and sending events needs the
   token, which no page has. The server sends no CORS headers, so a page cannot read its answers,
   and the dashboard runs under a content security policy that allows only its own files.
@@ -53,7 +54,8 @@ What it defends against:
 - **The dashboard cookie's scope.** Browsers do not separate cookies by port, so the `loadline_ui`
   cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits. It does
   not rotate: it is derived from the token and changes only with it. To change both, stop the
-  server, delete the `token` file in the data directory and run `loadline install` again.
+  server (it exits `idleExitMinutes` after the last session ends, or end the `loadline serve`
+  process), delete the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
 - **The shell Claude Code uses on Windows.** Install quotes the status line for Git Bash when it
@@ -62,5 +64,5 @@ What it defends against:
   portable one, its answer can differ from Claude Code's, and the status-line command would then run
   under a shell it was not quoted for. Which PowerShell Claude Code uses without Git Bash is not
   documented; when Loadline runs your status line for PowerShell, it uses PowerShell 7 (`pwsh`)
-  if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` reports which form is in
-  use.
+  if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` warns when the status
+  line uses the PowerShell form, but cannot tell which shell Claude Code will actually use.
