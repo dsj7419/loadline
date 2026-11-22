@@ -41,12 +41,20 @@ export function StateIcon({ state }: { readonly state: SessionState }) {
   );
 }
 
+type StateTagProps = {
+  readonly state: SessionState;
+  /** An id for the state's name, for whatever it labels. */
+  readonly labelId?: string;
+};
+
 /** A session state as an icon and its name. */
-export function StateTag({ state }: { readonly state: SessionState }) {
+export function StateTag({ state, labelId }: StateTagProps) {
   return (
     <span class={`state state-${state}`}>
       <StateIcon state={state} />
-      <span class="state-label">{stateLabels[state]}</span>
+      <span id={labelId} class="state-label">
+        {stateLabels[state]}
+      </span>
     </span>
   );
 }

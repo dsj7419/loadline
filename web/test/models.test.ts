@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modelShares, modelTone } from '../src/model/models';
+import { modelLabel, modelShares, modelTone } from '../src/model/models';
 import { modelOf } from './fixtures';
 
 describe('modelShares', () => {
@@ -87,5 +87,25 @@ describe('modelTone', () => {
       expect(modelTone(name)).toBe(modelTone(name));
     }
     expect(new Set(names.map(modelTone)).size).toBeGreaterThan(1);
+  });
+});
+
+describe('modelLabel', () => {
+  it.each<[string, string]>([
+    ['claude-opus-5-5', 'Opus 5.5'],
+    ['claude-haiku-5-5-20261001', 'Haiku 5.5'],
+    ['claude-sonnet-5-5', 'Sonnet 5.5'],
+    ['claude-fable-5-2', 'Fable 5.2'],
+    ['claude-opus-10-12', 'Opus 10.12'],
+    ['Opus 5.5', 'Opus 5.5'],
+    ['claude-3-5-sonnet-20240620', 'claude-3-5-sonnet-20240620'],
+    ['claude-opus-5', 'claude-opus-5'],
+    ['claude-opus-5-5-2026', 'claude-opus-5-5-2026'],
+    ['claude-opus-5-5[1m]', 'claude-opus-5-5[1m]'],
+    ['xclaude-opus-5-5', 'xclaude-opus-5-5'],
+    ['gpt-oss-120b', 'gpt-oss-120b'],
+    ['', ''],
+  ])('labels %j as %j', (id, want) => {
+    expect(modelLabel(id)).toBe(want);
   });
 });

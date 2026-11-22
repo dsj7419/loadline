@@ -5,18 +5,25 @@
   --radius: 10px;
   --gutter: clamp(16px, 3vw, 32px);
 
-  /* Models keep their colour wherever they appear. */
-  --model-opus: var(--accent2);
-  --model-sonnet: var(--blue);
-  --model-haiku: var(--ok);
-  --model-other1: var(--warn);
-  --model-other2: #c08cf0;
-  --model-other3: var(--muted);
+  /* Models keep their colour wherever they appear. The hues are their own:
+     none is near the accent or the ok, warn and bad colours, so a model's
+     colour never reads as a status. */
+  --model-opus: #a78bfa;
+  --model-sonnet: #22d3ee;
+  --model-haiku: #f0abfc;
+  --model-other1: #94a3b8;
+  --model-other2: #c8b8a6;
+  --model-other3: #737b87;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --model-other2: #7b4cc4;
+    --model-opus: #5b21b6;
+    --model-sonnet: #0e7490;
+    --model-haiku: #c026d3;
+    --model-other1: #475569;
+    --model-other2: #7c6f64;
+    --model-other3: #8a919c;
   }
 }
 
@@ -733,6 +740,7 @@ button.notify:hover {
 }
 
 .row {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
@@ -742,20 +750,11 @@ button.notify:hover {
     "meta meta meta";
   align-items: center;
   gap: 6px 12px;
-  width: 100%;
   padding: 12px 14px;
-  text-align: left;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
 }
 
 .row:hover {
   background: var(--panel2);
-}
-
-.row:focus-visible {
-  outline-offset: -2px;
 }
 
 .row-state {
@@ -768,6 +767,30 @@ button.notify:hover {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* The button holds the name, and its hit area stretches over the whole row. */
+.row-open {
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.row-open::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.row-open:focus-visible {
+  outline: none;
+}
+
+.row-open:focus-visible::after {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
 }
 
 .name {
@@ -925,6 +948,11 @@ button.notify:hover {
   }
 }
 
+/* The panel takes focus only from a click on its text, which needs no ring. */
+.sheet:focus {
+  outline: none;
+}
+
 .sheet-head {
   display: flex;
   align-items: flex-start;
@@ -1007,6 +1035,10 @@ kbd {
 
 .fact code {
   font-size: 12.5px;
+}
+
+.fact-aside {
+  color: var(--muted);
 }
 
 .added {

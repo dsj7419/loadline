@@ -1,4 +1,5 @@
 import { useSignal, type ReadonlySignal } from '@preact/signals';
+import type { Ref, RefObject } from 'preact';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { AccountView, SessionView, View } from '../api/types';
 import { alertTitle } from '../model/alerts';
@@ -10,7 +11,7 @@ import { DetailPanel } from './DetailPanel';
 import { drawFavicon as drawTabIcon } from './Favicon';
 import { Header, type LinkStatus } from './Header';
 import { ModelsBar } from './ModelsBar';
-import { browserNotifications, createNotifier, type NotificationApi } from './Notifier';
+import { browserNotifications, browserOptIn, createNotifier, type NotificationApi } from './Notifier';
 import { SessionGroup } from './SessionGroup';
 
 /** Follows the server's views until the returned function is called. */
@@ -39,7 +40,7 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
   const now = useSignal(new Date());
   const notifier = useMemo(() => {
     const api = notifications === undefined ? browserNotifications() : notifications;
-    return api === null ? null : createNotifier(api);
+    return api === null ? null : createNotifier(api, browserOptIn());
   }, [notifications]);
 
   useEffect(() => connect(setView, setStatus), [connect]);
@@ -67,7 +68,8 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
 
   const open = openId === null ? null : (view?.sessions.find(({ id }) => id === openId) ?? null);
   const closeDetail = useCallback(() => setOpenId(null), []);
-  useReturnFocus(openId);
+  const sessionsHeading = useRef<HTMLHeadingElement>(null);
+  useReturnFocus(openId, sessionsHeading);
   useEffect(() => {
     // A session that leaves the view takes its details with it.
     if (openId !== null && view !== null && open === null) {
@@ -86,7 +88,7 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
             <>
               <AlertBanner alerts={view.alerts} />
               <Accounts accounts={view.accounts} now={now} />
-              <Sessions sessions={view.sessions} now={now} onOpen={setOpenId} />
+              <Sessions sessions={view.sessions} now={now} onOpen={setOpenId} heading={sessionsHeading} />
               <ModelsBar today={view.models} week={view.modelsWeek} />
             </>
           )}
@@ -98,8 +100,10 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
 }
 
 // Once the details close, focus goes back to the row they were opened from,
-// found afresh because the row may have moved to another group meanwhile.
-function useReturnFocus(openId: string | null): void {
+// found afresh because the row may have moved to another group meanwhile. A
+// session that has left the view has no row, so focus goes to the heading of
+// the list it was in.
+function useReturnFocus(openId: string | null, fallback: RefObject<HTMLElement>): void {
   const opened = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (openId !== null) {
@@ -112,7 +116,8 @@ function useReturnFocus(openId: string | null): void {
       return;
     }
     const rows = document.querySelectorAll<HTMLElement>('[data-session]');
-    [...rows].find((row) => row.dataset['session'] === id)?.focus();
+    const row = [...rows].find((r) => r.dataset['session'] === id);
+    (row ?? fallback.current)?.focus();
   }, [openId]);
 }
 
@@ -145,14 +150,18 @@ type SessionsProps = {
   readonly sessions: readonly SessionView[];
   readonly now: ReadonlySignal<Date>;
   readonly onOpen: (id: string) => void;
+  /** The list's heading, which takes focus when nothing better can. */
+  readonly heading: Ref<HTMLHeadingElement>;
 };
 
-function Sessions({ sessions, now, onOpen }: SessionsProps) {
+function Sessions({ sessions, now, onOpen, heading }: SessionsProps) {
   const headingId = useId();
   return (
     <section class="sessions" aria-labelledby={headingId}>
       <div class="section-head">
-        <h2 id={headingId}>Sessions</h2>
+        <h2 id={headingId} ref={heading} tabindex={-1}>
+          Sessions
+        </h2>
         <span class="section-aside num">{sessions.length}</span>
       </div>
       {sessions.length === 0 ? (

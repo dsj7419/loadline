@@ -139,6 +139,26 @@ function largestUnit(ms: number): string {
   return `${Math.floor(ms / day)}d`;
 }
 
+/**
+ * When something happened, as a local clock time: 17:14 today, Fri 23:59
+ * within a week either side, Nov 14 18:00 further off, and Dec 31 2025 23:00
+ * in another year.
+ */
+export function formatWhen(iso: string, now: Date): string {
+  if (!isTimestamp(iso) || Number.isNaN(now.getTime())) {
+    return dash;
+  }
+  const at = new Date(iso);
+  if (at.toDateString() === now.toDateString()) {
+    return clockTime(at);
+  }
+  if (Math.abs(at.getTime() - now.getTime()) < 7 * day) {
+    return `${nameOf(at, { weekday: 'short' })} ${clockTime(at)}`;
+  }
+  const year = at.getFullYear() === now.getFullYear() ? '' : ` ${at.getFullYear()}`;
+  return `${nameOf(at, { month: 'short' })} ${at.getDate()}${year} ${clockTime(at)}`;
+}
+
 // A weekday or month name in English, in the viewer's time zone.
 function nameOf(date: Date, part: Pick<Intl.DateTimeFormatOptions, 'weekday' | 'month'>): string {
   return date.toLocaleDateString('en-US', part);

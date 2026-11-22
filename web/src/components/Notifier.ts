@@ -31,6 +31,37 @@ export function browserNotifications(): NotificationApi | null {
   };
 }
 
+/** Remembers whether the user turned notifications on. */
+export type OptInStore = {
+  readonly load: () => boolean;
+  readonly save: (on: boolean) => void;
+};
+
+const optInKey = 'loadline.notifications';
+
+/**
+ * Keeps the opt-in in local storage. Storage can be disabled, full or
+ * refused outright; then the choice lasts only as long as the page.
+ */
+export function browserOptIn(storage: () => Storage = () => localStorage): OptInStore {
+  return {
+    load: () => {
+      try {
+        return storage().getItem(optInKey) === 'on';
+      } catch {
+        return false;
+      }
+    },
+    save: (on) => {
+      try {
+        storage().setItem(optInKey, on ? 'on' : 'off');
+      } catch {
+        // Without storage the choice is not remembered, which is all.
+      }
+    },
+  };
+}
+
 /** Whether the notifier shows notifications: off until the user turns it on. */
 export type NotifierState = 'off' | 'on' | 'blocked';
 
@@ -53,9 +84,12 @@ const notifyingKinds: ReadonlySet<AlertKind> = new Set<AlertKind>(['needs_you', 
  * previous update. An alert that persists is not new; one that clears and
  * comes back is, because it comes back with a new since. Alerts that were
  * already showing when notifications were turned on never notify.
+ *
+ * It starts on only when the user turned it on before and the browser still
+ * allows notifications; it never asks the browser by itself.
  */
-export function createNotifier(api: NotificationApi): Notifier {
-  const state = signal<NotifierState>(api.permission() === 'denied' ? 'blocked' : 'off');
+export function createNotifier(api: NotificationApi, optIn: OptInStore): Notifier {
+  const state = signal<NotifierState>(initialState(api.permission(), optIn.load()));
   let known: ReadonlySet<string> = new Set();
 
   return {
@@ -63,6 +97,7 @@ export function createNotifier(api: NotificationApi): Notifier {
     toggle: async () => {
       if (state.value === 'on') {
         state.value = 'off';
+        optIn.save(false);
         return;
       }
       if (state.value === 'blocked') {
@@ -70,6 +105,7 @@ export function createNotifier(api: NotificationApi): Notifier {
       }
       const permission = api.permission() === 'granted' ? 'granted' : await askPermission(api);
       state.value = stateFor(permission);
+      optIn.save(state.value === 'on');
     },
     update: (alerts) => {
       const current = new Set<string>();
@@ -86,6 +122,13 @@ export function createNotifier(api: NotificationApi): Notifier {
       known = current;
     },
   };
+}
+
+function initialState(permission: NotificationPermission, optedIn: boolean): NotifierState {
+  if (permission === 'denied') {
+    return 'blocked';
+  }
+  return optedIn && permission === 'granted' ? 'on' : 'off';
 }
 
 async function askPermission(api: NotificationApi): Promise<NotificationPermission> {

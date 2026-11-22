@@ -1,8 +1,10 @@
 // Package demo is the made-up machine that `loadline serve --demo` shows:
 // three accounts and five sessions that between them cover every state,
-// limit, projection and alert the dashboard draws. The scenario is a list of
-// the same observations the real feeds produce, so the real tracker turns it
-// into the view. Every name, address and path in it is invented.
+// limit, projection and alert the dashboard draws. The scenario is made of
+// the observations the real feeds produce, in their shape: hooks, polls,
+// status lines that name a model by display name and ID, and model calls
+// that name it by ID. The real tracker turns them into the view. Every name,
+// address and path in it is invented.
 package demo
 
 import (
@@ -18,12 +20,23 @@ const (
 	dirB    domain.ConfigDir = "C:/Users/example/.claude-b"
 	dirAPI  domain.ConfigDir = "C:/Users/example/.claude-work"
 
-	opus   = "Opus 5.5"
-	sonnet = "Sonnet 5.5"
-	haiku  = "Haiku 5.5"
-
 	contextSize = 200_000
 	projects    = "C:/Users/example/projects/"
+)
+
+// model is a Claude model as Claude Code names it: by ID in a model call, and
+// by display name, as well as ID, in a status line.
+type model struct {
+	id, name string
+	// tokensPerUSD is how many tokens a dollar buys, so the cheaper models
+	// show more tokens for the same spend.
+	tokensPerUSD float64
+}
+
+var (
+	opus   = model{id: "claude-opus-5-5", name: "Opus 5.5", tokensPerUSD: 1}
+	sonnet = model{id: "claude-sonnet-5-5", name: "Sonnet 5.5", tokensPerUSD: 5}
+	haiku  = model{id: "claude-haiku-5-5", name: "Haiku 5.5", tokensPerUSD: 15}
 )
 
 // Budgets returns the daily budget, in US dollars, of each scenario account
@@ -79,7 +92,8 @@ type session struct {
 	name  string
 	email string
 
-	model, effort            string
+	model                    model
+	effort                   string
 	contextUsed              int64
 	linesAdded, linesRemoved int64
 	cacheHitRatio            float64
@@ -128,7 +142,8 @@ func (s *script) status(x session, d time.Duration, costUSD float64, limits *dom
 		Name:       x.name,
 		ProjectDir: projects + x.name,
 		Metrics: domain.Metrics{
-			Model:         x.model,
+			Model:         x.model.name,
+			ModelID:       x.model.id,
 			Effort:        x.effort,
 			ContextPct:    100 * float64(x.contextUsed) / contextSize,
 			ContextSize:   contextSize,
@@ -151,22 +166,18 @@ func (s *script) status(x session, d time.Duration, costUSD float64, limits *dom
 // variation spreads the cost of a run of calls around its typical cost.
 var variation = []float64{0.85, 1.1, 0.95, 1.2, 0.9}
 
-// tokensPerUSD sets how many tokens a dollar buys from each model, so the
-// cheaper models show more tokens for the same spend.
-var tokensPerUSD = map[string]float64{opus: 1, sonnet: 5, haiku: 15}
-
-// callsAt adds a call from x to model at each of times, of typical cost
-// costUSD, and returns what they cost together.
-func (s *script) callsAt(x session, model string, costUSD float64, times []time.Time) float64 {
+// callsAt adds a call from x to m at each of times, of typical cost costUSD,
+// and returns what they cost together.
+func (s *script) callsAt(x session, m model, costUSD float64, times []time.Time) float64 {
 	var total float64
 	for i, at := range times {
 		cost := costUSD * variation[i%len(variation)]
-		tokens := cost * tokensPerUSD[model]
+		tokens := cost * m.tokensPerUSD
 		s.calls = append(s.calls, domain.APIRequest{
 			At:         at,
 			Session:    x.id,
 			Email:      x.email,
-			Model:      model,
+			Model:      m.id,
 			Input:      int64(tokens * 3_000),
 			Output:     int64(tokens * 1_100),
 			CacheRead:  int64(tokens * 52_000),
@@ -179,25 +190,25 @@ func (s *script) callsAt(x session, model string, costUSD float64, times []time.
 	return total
 }
 
-// callsToday adds calls from x to model every interval between from and to
+// callsToday adds calls from x to m every interval between from and to
 // before now.
-func (s *script) callsToday(x session, model string, costUSD float64, from, to, every time.Duration) float64 {
+func (s *script) callsToday(x session, m model, costUSD float64, from, to, every time.Duration) float64 {
 	var times []time.Time
 	for d := from; d >= to; d -= every {
 		times = append(times, s.today(d))
 	}
-	return s.callsAt(x, model, costUSD, times)
+	return s.callsAt(x, m, costUSD, times)
 }
 
-// callsOnDay adds count calls from x to model, every interval from the given
+// callsOnDay adds count calls from x to m, every interval from the given
 // time of day, days before today.
-func (s *script) callsOnDay(x session, model string, costUSD float64, days int, from, every time.Duration, count int) float64 {
+func (s *script) callsOnDay(x session, m model, costUSD float64, days int, from, every time.Duration, count int) float64 {
 	start := s.midnight.AddDate(0, 0, -days).Add(from)
 	times := make([]time.Time, count)
 	for i := range times {
 		times[i] = start.Add(time.Duration(i) * every)
 	}
-	return s.callsAt(x, model, costUSD, times)
+	return s.callsAt(x, m, costUSD, times)
 }
 
 func (s *script) accounts() []domain.Account {

@@ -64,12 +64,18 @@ type WindowsProps = {
 };
 
 function Windows({ account, ownerId, now }: WindowsProps) {
-  const windows = [
+  const reported = [
     { label: '5-hour', window: account.fiveHour },
     { label: 'Weekly', window: account.sevenDay },
-  ].filter((w): w is { label: string; window: WindowView } => w.window !== null && isCurrent(w.window, now));
-  if (windows.length === 0) {
+  ].filter((w): w is { label: string; window: WindowView } => w.window !== null);
+  if (reported.length === 0) {
     return <p class="empty">No rate limits reported yet.</p>;
+  }
+  // The server drops a window once a status line shows it has reset; until
+  // then the page knows only that its figures are out of date.
+  const windows = reported.filter(({ window }) => isCurrent(window, now));
+  if (windows.length === 0) {
+    return <p class="empty">Limits reset; waiting for new figures</p>;
   }
   return (
     <>

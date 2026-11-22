@@ -226,7 +226,7 @@ func TestScenario_ModelsDifferBetweenTodayAndTheWeek(t *testing.T) {
 	for _, at := range []time.Time{now, time.Date(2026, 11, 22, 0, 5, 0, 0, tokyo)} {
 		v := seeded(t, at)
 
-		want := []string{"Haiku 5.5", "Opus 5.5", "Sonnet 5.5"}
+		want := []string{"claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"}
 		if got := modelNames(v.Models); !slices.Equal(got, want) {
 			t.Errorf("at %v today's models are %v, want %v", at, got, want)
 		}
@@ -235,6 +235,37 @@ func TestScenario_ModelsDifferBetweenTodayAndTheWeek(t *testing.T) {
 		}
 		if reflect.DeepEqual(v.Models, v.ModelsWeek) {
 			t.Errorf("at %v today's usage is the week's; want earlier days too", at)
+		}
+	}
+}
+
+// Claude Code names a model by its ID in model calls and by its display name
+// in the status line, and the scenario must look the same.
+func TestScenario_NamesModelsAsClaudeCodeDoes(t *testing.T) {
+	_, events, api := demo.Scenario(now)
+
+	for _, r := range api {
+		if !strings.HasPrefix(r.Model, "claude-") {
+			t.Fatalf("a model call names its model %q, want an ID", r.Model)
+		}
+	}
+	lines := 0
+	for _, e := range events {
+		st, ok := e.(domain.Status)
+		if !ok {
+			continue
+		}
+		lines++
+		if !strings.HasPrefix(st.Metrics.ModelID, "claude-") || strings.HasPrefix(st.Metrics.Model, "claude-") || st.Metrics.Model == "" {
+			t.Fatalf("a status line names its model %q with ID %q, want a display name and an ID", st.Metrics.Model, st.Metrics.ModelID)
+		}
+	}
+	if lines == 0 {
+		t.Fatal("the scenario has no status lines")
+	}
+	for _, s := range seeded(t, now).Sessions {
+		if strings.HasPrefix(s.Model, "claude-") {
+			t.Errorf("session %s shows the model %q, want its display name", s.Name, s.Model)
 		}
 	}
 }

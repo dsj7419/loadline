@@ -1,9 +1,10 @@
 import type { ReadonlySignal } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
-import { useEffect, useId, useLayoutEffect, useRef } from 'preact/hooks';
+import { useId, useLayoutEffect, useRef } from 'preact/hooks';
 import type { SessionView } from '../api/types';
 import { sessionTitle, timeInState } from '../model/describe';
-import { formatPct, formatRelative, formatTokens, formatUSD } from '../model/format';
+import { formatPct, formatRelative, formatTokens, formatUSD, formatWhen } from '../model/format';
+import { modelLabel } from '../model/models';
 import { StateTag } from './StateTag';
 
 type DetailPanelProps = {
@@ -32,24 +33,31 @@ export function DetailPanel({ session, now, onClose }: DetailPanelProps) {
     return () => root.classList.remove('has-dialog');
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      } else if (event.key === 'Tab' && dialog.current !== null) {
-        keepFocusIn(dialog.current, event);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  // Keys are handled on the dialog itself, which holds focus from the moment
+  // it opens, so none is missed while effects wait for the next paint.
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    } else if (event.key === 'Tab' && dialog.current !== null) {
+      keepFocusIn(dialog.current, event);
+    }
+  };
 
   const at = now.value;
   return (
     <div class="overlay">
       <div class="backdrop" onClick={onClose} />
-      <div ref={dialog} class="sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      {/* tabindex -1: a click on the panel's text keeps focus in the panel. */}
+      <div
+        ref={dialog}
+        class="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabindex={-1}
+        onKeyDown={onKeyDown}
+      >
         <header class="sheet-head">
           <div class="sheet-heading">
             <StateTag state={session.state} />
@@ -66,7 +74,7 @@ export function DetailPanel({ session, now, onClose }: DetailPanelProps) {
         <dl class="facts">
           <Fact term="Account">{session.account}</Fact>
           <Fact term="Model">
-            {session.model !== '' ? session.model : '—'}
+            {session.model !== '' ? modelLabel(session.model) : '—'}
             {session.effort !== '' && ` · ${session.effort}`}
           </Fact>
           <Fact term="Context">
@@ -78,7 +86,10 @@ export function DetailPanel({ session, now, onClose }: DetailPanelProps) {
           <Fact term="Lines">
             <span class="added">+{session.linesAdded}</span> <span class="removed">−{session.linesRemoved}</span>
           </Fact>
-          <Fact term="Started">{formatRelative(session.startedAt, at)}</Fact>
+          <Fact term="Started">
+            <time dateTime={session.startedAt}>{formatWhen(session.startedAt, at)}</time>
+            <span class="fact-aside"> · {formatRelative(session.startedAt, at)}</span>
+          </Fact>
           <Fact term="Kind">{session.kind === 'background' ? 'Background' : 'Interactive'}</Fact>
           <Fact term="Process">{session.pid > 0 ? String(session.pid) : '—'}</Fact>
           <Fact term="Session ID" wide>
@@ -110,7 +121,9 @@ function keepFocusIn(container: HTMLElement, event: KeyboardEvent): void {
     return;
   }
   const active = document.activeElement;
-  const outside = !(active instanceof Node) || !container.contains(active);
+  // Focus on the panel itself, after a click on its text, counts as outside
+  // the items, so Tab goes to the first and Shift+Tab to the last.
+  const outside = !(active instanceof Node) || !container.contains(active) || active === container;
   if (event.shiftKey && (active === first || outside)) {
     event.preventDefault();
     last.focus();
@@ -164,7 +177,7 @@ function ModelTable({ session }: { readonly session: SessionView }) {
             <tbody>
               {session.models.map((m) => (
                 <tr key={m.model}>
-                  <th scope="row">{m.model}</th>
+                  <th scope="row">{modelLabel(m.model)}</th>
                   <td>{formatTokens(m.input)}</td>
                   <td>{formatTokens(m.output)}</td>
                   <td>{formatTokens(m.cacheRead)}</td>

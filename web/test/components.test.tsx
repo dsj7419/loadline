@@ -7,7 +7,7 @@ import { sessionStates, type View } from '../src/api/types';
 import { AccountCard } from '../src/components/AccountCard';
 import { App } from '../src/components/App';
 import { ModelsBar } from '../src/components/ModelsBar';
-import { createNotifier, type NotificationApi } from '../src/components/Notifier';
+import { browserOptIn, createNotifier, type NotificationApi, type OptInStore } from '../src/components/Notifier';
 import { SessionRow } from '../src/components/SessionRow';
 import { stateLabels } from '../src/model/describe';
 import type { StreamStatus } from '../src/model/stream';
@@ -25,7 +25,34 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   document.title = '';
+  localStorage.clear();
 });
+
+// Lets Preact render what a plain DOM event changed, without flushing the
+// effects it runs after paint, as a real browser would not have yet.
+async function rendered(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function pressKey(key: string, init: KeyboardEventInit = {}): void {
+  document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+}
+
+function memoryOptIn(initial = false): { store: OptInStore; saved: boolean[] } {
+  let on = initial;
+  const saved: boolean[] = [];
+  return {
+    store: {
+      load: () => on,
+      save: (value: boolean) => {
+        on = value;
+        saved.push(value);
+      },
+    },
+    saved,
+  };
+}
 
 function fakeNotifications(permission: NotificationPermission = 'default', answer: NotificationPermission = 'granted') {
   let current = permission;
@@ -79,6 +106,15 @@ function sessionsRegion() {
   return screen.getByRole('region', { name: 'Sessions' });
 }
 
+// The row a session's button sits in, which holds the session's figures.
+function rowOf(button: HTMLElement): HTMLElement {
+  const row = button.closest('li');
+  if (row === null) {
+    throw new Error('the button is not in a row');
+  }
+  return row;
+}
+
 const waiting = {
   id: 'waiting-1',
   name: 'copper-lantern',
@@ -111,8 +147,8 @@ describe('App', () => {
     send(viewOf({ sessions: sessionStates.map((state) => ({ ...sessionOf({ id: state, name: `row-${state}`, state }) })) }));
 
     for (const state of sessionStates) {
-      const row = within(sessionsRegion()).getByRole('button', { name: new RegExp(`row-${state}`) });
-      expect(row.textContent).toContain(stateLabels[state]);
+      const button = within(sessionsRegion()).getByRole('button', { name: `${stateLabels[state]} row-${state} Main` });
+      expect(rowOf(button).textContent).toContain(stateLabels[state]);
     }
   });
 
@@ -152,6 +188,73 @@ describe('App', () => {
 
     await user.click(within(dialog).getByRole('button', { name: /close/i }));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('handles Escape and Tab from the moment the panel opens', async () => {
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ ...waiting, models: [modelOf({ model: 'claude-opus-5-5', costUSD: 1 })] })] }));
+
+    screen.getByRole('button', { name: /copper-lantern/ }).click();
+    await rendered();
+    const dialog = screen.getByRole('dialog', { name: 'copper-lantern' });
+    const close = within(dialog).getByRole('button', { name: /close/i });
+    expect(document.activeElement).toBe(close);
+
+    pressKey('Tab', { shiftKey: true });
+    expect(document.activeElement).not.toBe(close);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    pressKey('Escape');
+    await rendered();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('gives each row a name that holds still while its figures tick', () => {
+    vi.useFakeTimers({ now });
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ ...waiting, account: 'Main' })] }));
+    const button = screen.getByRole('button', { name: 'Needs you copper-lantern Main' });
+
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(rowOf(button).textContent).toContain('waiting 1m 15s');
+    expect(screen.getByRole('button', { name: 'Needs you copper-lantern Main' })).toBe(button);
+  });
+
+  it('moves focus to the Sessions heading when the open session leaves the view', async () => {
+    const user = userEvent.setup();
+    const { send } = renderApp();
+    const other = { id: 'other', name: 'harbor-api' };
+    send(viewOf({ sessions: [sessionOf({ ...waiting }), sessionOf(other)] }));
+    await user.click(screen.getByRole('button', { name: /copper-lantern/ }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    send(viewOf({ sessions: [sessionOf(other)] }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Sessions' }));
+  });
+
+  it('shows model names and when the session started in the detail panel', async () => {
+    const user = userEvent.setup();
+    const { send } = renderApp();
+    send(
+      viewOf({
+        sessions: [
+          sessionOf({
+            ...waiting,
+            startedAt: '2026-11-21T17:14:00Z',
+            models: [modelOf({ model: 'claude-opus-5-5-20261001', costUSD: 2 })],
+          }),
+        ],
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: /copper-lantern/ }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('rowheader', { name: 'Opus 5.5' })).toBeTruthy();
+    expect(dialog.textContent).toContain('17:14');
+    expect(dialog.textContent).toContain('46m ago');
   });
 
   it('puts the alert count in the title and the favicon', () => {
@@ -203,7 +306,7 @@ describe('App', () => {
     vi.useFakeTimers({ now });
     const { send } = renderApp();
     send(viewOf({ sessions: [sessionOf({ ...waiting })] }));
-    const row = screen.getByRole('button', { name: /copper-lantern/ });
+    const row = rowOf(screen.getByRole('button', { name: /copper-lantern/ }));
     expect(row.textContent).toContain('waiting 1m 12s (permission prompt)');
 
     act(() => {
@@ -256,7 +359,7 @@ describe('SessionRow', () => {
         <SessionRow session={sessionOf(fields)} now={signal(now)} onOpen={onOpen} />
       </ul>,
     );
-    return { row: screen.getByRole('button'), onOpen };
+    return { row: screen.getByRole('listitem'), button: screen.getByRole('button'), onOpen };
   }
 
   it('shows the figures of a session', () => {
@@ -301,10 +404,10 @@ describe('SessionRow', () => {
 
   it('opens on Space as well as on click', async () => {
     const user = userEvent.setup();
-    const { row, onOpen } = renderRow({});
-    row.focus();
+    const { button, onOpen } = renderRow({});
+    button.focus();
     await user.keyboard(' ');
-    await user.click(row);
+    await user.click(button);
     expect(onOpen).toHaveBeenCalledTimes(2);
   });
 });
@@ -371,7 +474,7 @@ describe('AccountCard', () => {
       <AccountCard
         account={accountOf({
           sevenDay: week,
-          models: [modelOf({ model: 'Opus 5.5', costUSD: 3 }), modelOf({ model: 'Haiku 5.5', costUSD: 1 })],
+          models: [modelOf({ model: 'claude-opus-5-5', costUSD: 3 }), modelOf({ model: 'claude-haiku-5-5', costUSD: 1 })],
         })}
         now={signal(now)}
       />,
@@ -379,6 +482,18 @@ describe('AccountCard', () => {
     const card = screen.getByRole('article', { name: 'Main' });
     expect(card.textContent).toContain('Opus 5.5');
     expect(card.textContent).toContain('75%');
+    expect(card.textContent).not.toContain('claude-');
+  });
+
+  it('says the limits reset once every window has passed its reset time', () => {
+    render(<AccountCard account={accountOf({ fiveHour, sevenDay: null })} now={signal(new Date('2026-11-21T20:10:00Z'))} />);
+    expect(screen.queryByRole('meter')).toBeNull();
+    expect(screen.getByText('Limits reset; waiting for new figures')).toBeTruthy();
+  });
+
+  it('says so when no limits have been reported', () => {
+    render(<AccountCard account={accountOf({ fiveHour: null, sevenDay: null })} now={signal(now)} />);
+    expect(screen.getByText('No rate limits reported yet.')).toBeTruthy();
   });
 });
 
@@ -405,6 +520,17 @@ describe('ModelsBar', () => {
     expect(legend()).toEqual([expect.stringMatching(/Sonnet 5\.5.*67%/), expect.stringMatching(/Opus 5\.5.*33%/)]);
   });
 
+  it('names models from their IDs', () => {
+    render(
+      <ModelsBar
+        today={[modelOf({ model: 'claude-opus-5-5', costUSD: 3 }), modelOf({ model: 'claude-haiku-5-5-20261001', costUSD: 1 })]}
+        week={[]}
+      />,
+    );
+    const legend = screen.getAllByRole('listitem').map((item) => item.textContent);
+    expect(legend).toEqual([expect.stringMatching(/^Opus 5\.5 75%/), expect.stringMatching(/^Haiku 5\.5 25%/)]);
+  });
+
   it('says when there is no usage yet', () => {
     render(<ModelsBar today={[]} week={[]} />);
     expect(screen.getByText(/no model usage today/i)).toBeTruthy();
@@ -418,7 +544,7 @@ describe('createNotifier', () => {
 
   it('notifies once for each new needs-you or runs-out alert', async () => {
     const notifications = fakeNotifications('granted');
-    const notifier = createNotifier(notifications.api);
+    const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
     expect(notifier.state.value).toBe('on');
 
@@ -436,7 +562,7 @@ describe('createNotifier', () => {
 
   it('stays quiet while off, and about alerts it already knew of when turned on', async () => {
     const notifications = fakeNotifications('granted');
-    const notifier = createNotifier(notifications.api);
+    const notifier = createNotifier(notifications.api, memoryOptIn().store);
     notifier.update([needsYou]);
     await notifier.toggle();
     notifier.update([needsYou]);
@@ -450,9 +576,61 @@ describe('createNotifier', () => {
 
   it('reports blocked when permission is refused', async () => {
     const notifications = fakeNotifications('default', 'denied');
-    const notifier = createNotifier(notifications.api);
+    const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
     expect(notifier.state.value).toBe('blocked');
-    expect(createNotifier(fakeNotifications('denied').api).state.value).toBe('blocked');
+    expect(createNotifier(fakeNotifications('denied').api, memoryOptIn(true).store).state.value).toBe('blocked');
+  });
+
+  it('comes back on when the user turned it on before and the browser still allows it', () => {
+    const notifications = fakeNotifications('granted');
+    const notifier = createNotifier(notifications.api, memoryOptIn(true).store);
+    expect(notifier.state.value).toBe('on');
+    expect(notifications.requestPermission).not.toHaveBeenCalled();
+  });
+
+  it('stays off after an earlier opt-in when the browser no longer allows it', () => {
+    const notifications = fakeNotifications('default');
+    expect(createNotifier(notifications.api, memoryOptIn(true).store).state.value).toBe('off');
+    expect(notifications.requestPermission).not.toHaveBeenCalled();
+  });
+
+  it('remembers each choice', async () => {
+    const { store, saved } = memoryOptIn();
+    const notifier = createNotifier(fakeNotifications('granted').api, store);
+    await notifier.toggle();
+    await notifier.toggle();
+    expect(saved).toEqual([true, false]);
+  });
+});
+
+describe('browserOptIn', () => {
+  it('keeps the choice in local storage', () => {
+    browserOptIn(() => localStorage).save(true);
+    expect(browserOptIn(() => localStorage).load()).toBe(true);
+    browserOptIn(() => localStorage).save(false);
+    expect(browserOptIn(() => localStorage).load()).toBe(false);
+  });
+
+  it('works where storage is refused', () => {
+    const refused = browserOptIn(() => {
+      throw new DOMException('storage is disabled', 'SecurityError');
+    });
+    expect(refused.load()).toBe(false);
+    expect(() => refused.save(true)).not.toThrow();
+  });
+
+  it('works where storage is full', () => {
+    const full: Storage = {
+      length: 0,
+      clear: () => {},
+      key: () => null,
+      getItem: () => null,
+      removeItem: () => {},
+      setItem: () => {
+        throw new DOMException('quota exceeded', 'QuotaExceededError');
+      },
+    };
+    expect(() => browserOptIn(() => full).save(true)).not.toThrow();
   });
 });

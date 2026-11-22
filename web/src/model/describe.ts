@@ -1,3 +1,4 @@
+import { isTimestamp } from '../api/guard';
 import type { SessionState, SessionView, WindowView } from '../api/types';
 import { needsYouSince } from './alerts';
 import { formatDuration, formatPct, formatRelative, formatReset } from './format';
@@ -55,6 +56,9 @@ function elapsedSince(session: SessionView, now: Date): number {
   const waited = needsYouSince(session, now);
   if (waited !== null) {
     return waited;
+  }
+  if (!isTimestamp(session.stateAt)) {
+    return Number.NaN;
   }
   return Math.max(0, now.getTime() - Date.parse(session.stateAt));
 }

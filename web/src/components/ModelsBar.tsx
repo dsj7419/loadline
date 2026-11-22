@@ -1,7 +1,7 @@
 import { useId, useState } from 'preact/hooks';
 import type { ModelTotal } from '../api/types';
 import { formatPct, formatUSD } from '../model/format';
-import { modelShares, modelTone } from '../model/models';
+import { modelLabel, modelShares, modelTone } from '../model/models';
 
 type SplitProps = {
   readonly models: readonly ModelTotal[];
@@ -29,7 +29,7 @@ export function ModelSplit({ models, label, compact = false, empty = '' }: Split
         {shares.map(({ model, share, costUSD }) => (
           <li key={model} class="legend-item">
             <span class={`swatch model-${modelTone(model)}`} aria-hidden="true" />
-            <span class="legend-name">{model}</span> <span class="legend-pct num">{formatPct(share * 100)}</span>
+            <span class="legend-name">{modelLabel(model)}</span> <span class="legend-pct num">{formatPct(share * 100)}</span>
             {!compact && <span class="legend-cost num"> {formatUSD(costUSD)}</span>}
           </li>
         ))}

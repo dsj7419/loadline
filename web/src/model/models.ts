@@ -65,3 +65,20 @@ function hash(text: string): number {
   }
   return h;
 }
+
+// A Claude model ID, such as claude-opus-5-5 or claude-haiku-5-5-20261001.
+const claudeModelID = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?$/;
+
+/**
+ * The name to show for a model, which usage totals carry by ID: Opus 5.5 for
+ * claude-opus-5-5, with or without a date suffix. An ID of any other shape is
+ * shown as it is.
+ */
+export function modelLabel(id: string): string {
+  const match = claudeModelID.exec(id);
+  if (match === null) {
+    return id;
+  }
+  const [, family = '', major = '', minor = ''] = match;
+  return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}.${minor}`;
+}

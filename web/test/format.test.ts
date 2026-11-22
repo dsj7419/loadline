@@ -6,6 +6,7 @@ import {
   formatReset,
   formatTokens,
   formatUSD,
+  formatWhen,
 } from '../src/model/format';
 
 const notNumbers = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
@@ -184,5 +185,39 @@ describe('formatRelative', () => {
 
   it('shows a dash when now is not a time', () => {
     expect(formatRelative('2026-11-21T17:55:00Z', new Date(Number.NaN))).toBe('—');
+  });
+});
+
+describe('formatWhen', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each<[string, string]>([
+    ['2026-11-21T17:14:00Z', '17:14'],
+    ['2026-11-21T00:00:00Z', '00:00'],
+    ['2026-11-21T23:59:00Z', '23:59'],
+    ['2026-11-20T23:59:00Z', 'Fri 23:59'],
+    ['2026-11-15T09:05:00Z', 'Sun 09:05'],
+    ['2026-11-14T18:00:00Z', 'Nov 14 18:00'],
+    ['2026-11-02T08:30:00Z', 'Nov 2 08:30'],
+    ['2025-12-31T23:00:00Z', 'Dec 31 2025 23:00'],
+  ])('shows %s as %s', (iso, want) => {
+    expect(formatWhen(iso, now)).toBe(want);
+  });
+
+  it('shows the time in the time zone of the viewer', () => {
+    vi.stubEnv('TZ', 'Asia/Tokyo');
+    // 02:30 on Sunday in Tokyo, which is today there.
+    expect(formatWhen('2026-11-21T17:30:00Z', new Date('2026-11-21T18:00:00Z'))).toBe('02:30');
+    expect(formatWhen('2026-11-21T14:30:00Z', new Date('2026-11-21T18:00:00Z'))).toBe('Sat 23:30');
+  });
+
+  it.each(['soon', '', '42'])('shows %j as a dash', (iso) => {
+    expect(formatWhen(iso, now)).toBe('—');
+  });
+
+  it('shows a dash when now is not a time', () => {
+    expect(formatWhen('2026-11-21T17:14:00Z', new Date(Number.NaN))).toBe('—');
   });
 });
