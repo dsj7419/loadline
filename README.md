@@ -329,9 +329,9 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
 - **status line:** a warning when the status line runs through the PowerShell wrapper, which starts
   PowerShell on every refresh. Installing Git for Windows and running `loadline install` again
   avoids it.
-- **token in:** a warning when a settings file is a symlink, so that the token goes into the file
-  it points to, and on macOS and Linux when its mode lets group or others read the token, as a
-  rewrite by Claude Code can leave it.
+- **token in:** a warning when a settings file, or the config folder that holds it, is a link, so
+  that the token goes into the file it ends up in, and on macOS and Linux when its mode lets group or
+  others read the token, as a rewrite by Claude Code can leave it.
 - **binary:** the installed binary exists.
 - **server:** a Loadline server answers on the configured port.
 - **feeds:** each of the four feeds has reached the server in the last 10 minutes while sessions

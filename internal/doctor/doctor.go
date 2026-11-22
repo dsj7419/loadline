@@ -24,6 +24,7 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/install"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
@@ -286,24 +287,48 @@ func checkSettings(path string, target install.Options, shell func([]byte) insta
 	return checks
 }
 
-// symlinked warns when the settings file at path is a symlink: install
-// writes the ingest token into the file it points to, which may sit in a
-// dotfiles repository that its owner publishes.
+// symlinked warns when the settings file at path, or the config dir that
+// holds it, is a link, a symbolic link or on Windows a junction too: install
+// writes the ingest token into the file it ends up in, which may sit in a
+// dotfiles repository that its owner publishes. Links further up, such as
+// the one macOS keeps from /var to /private/var, leave the file where its
+// owner put it and are not reported.
 func symlinked(path string) []Check {
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+	name := "token in " + path
+	if isLink(path) {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return []Check{{Name: name, Status: Warn, Detail: "the file is a symlink that cannot be followed: " + err.Error()}}
+		}
+		return []Check{{
+			Name:   name,
+			Status: Warn,
+			Detail: "the file is a symlink to " + target + ", so install writes the ingest token there; " +
+				"keep that file out of any repository you share",
+		}}
+	}
+	dir := filepath.Dir(path)
+	if !isLink(dir) {
 		return nil
 	}
-	target, err := filepath.EvalSymlinks(path)
+	target, err := os.Readlink(dir)
 	if err != nil {
-		return []Check{{Name: "token in " + path, Status: Warn, Detail: "the file is a symlink that cannot be followed: " + err.Error()}}
+		return []Check{{Name: name, Status: Warn, Detail: "its folder " + dir + " is a link that cannot be followed: " + err.Error()}}
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dir), target)
 	}
 	return []Check{{
-		Name:   "token in " + path,
+		Name:   name,
 		Status: Warn,
-		Detail: "the file is a symlink to " + target + ", so install writes the ingest token there; " +
-			"keep that file out of any repository you share",
+		Detail: "its folder " + dir + " is a link to " + target + ", so install writes the ingest token into " +
+			filepath.Join(target, filepath.Base(path)) + "; keep that folder out of any repository you share",
 	}}
+}
+
+func isLink(path string) bool {
+	link, err := fsperm.IsLink(path)
+	return err == nil && link
 }
 
 // openToOthers warns, outside Windows, when the mode of the settings file at

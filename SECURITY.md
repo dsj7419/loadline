@@ -89,9 +89,10 @@ What it defends against:
   process), delete the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
-- **A symlinked settings file.** When `settings.json` is a symlink, for example into a dotfiles
-  repository, install writes the token into the file it points to, and committing that repository
-  would publish it. `loadline doctor` warns about such a link.
+- **A linked settings file.** When `settings.json`, or the config folder that holds it, is a link,
+  for example into a dotfiles repository (a symbolic link, or on Windows a junction), install writes
+  the token into the file it ends up in, and committing that repository would publish it. `loadline
+  doctor` warns about either link.
 - **Claude Code's own writes.** Claude Code rewrites `settings.json` when you change a setting, with
   permissions of its own choosing, which can let group or others read the token again. On macOS and
   Linux `loadline doctor` reports a settings file whose mode lets them in.
