@@ -352,6 +352,52 @@ func TestTracker_ALongStretchOnCreditsKeepsItsStart(t *testing.T) {
 	}
 }
 
+// A 5-hour span that runs across the thirty days kept and merges into a 7-day
+// span still open now keeps its start, so the merged span's start, which
+// dates the credits_active alert, stays put as the days kept move on. It
+// changes once, when the 5-hour span has aged out entirely and the open span
+// starts where it began itself: that takes a window held at its limit, with
+// no known reset, for a month, and the page notifies of it once more.
+func TestTracker_OnCreditsSinceHoldsWhileAMergedSpanAgesOut(t *testing.T) {
+	const day, hour = 86400, 3600
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 100, AddedAt: at(-40 * day)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+	start := -31 * day
+	h.clock.Set(at(start))
+	h.tr.Apply(withWindows(statusLine(start, s1), window(100, at(start+5*hour)), window(50, at(start+3*day))))
+	h.clock.Set(at(start + hour))
+	h.tr.Apply(withWindows(statusLine(start+hour, s1), window(100, at(start+5*hour)), window(100, time.Time{})))
+	h.tr.RecordAPI(request(at(start+hour+10), s1, "Opus 5.5", 1))
+	h.clock.Set(at(start + 2*hour))
+	h.tr.Apply(withWindows(statusLine(start+2*hour, s1), window(30, at(start+5*hour)), window(100, time.Time{})))
+	h.tr.Snapshot()
+	for d := start + day; d <= start+30*day-2*hour; d += day {
+		h.clock.Set(at(d))
+		h.tr.Apply(withWindows(statusLine(d, s1), nil, window(100, time.Time{})))
+		h.tr.RecordAPI(request(at(d+10), s1, "Opus 5.5", 1))
+		h.tr.Snapshot()
+	}
+
+	for _, tc := range []struct{ now, since int }{
+		{start + 30*day - hour, start},
+		{start + 30*day + 15*60, start},
+		{start + 30*day + 30*60, start},
+		{start + 30*day + 45*60, start},
+		{start + 30*day + 90*60, start},
+		{start + 30*day + 3*hour, start + hour},
+	} {
+		h.clock.Set(at(tc.now))
+		v := h.tr.Snapshot()
+		credits := h.account(dirA).Credits
+		if credits == nil || !credits.Active || !time.Time(credits.OnCreditsSince).Equal(at(tc.since)) {
+			t.Errorf("credits %+v at day %+.4f, want on credits since day %+.4f", credits, float64(tc.now)/day, float64(tc.since)/day)
+		}
+		if active := alertsOfKind(v, domain.AlertCreditsActive); len(active) != 1 || !active[0].Since.Equal(at(tc.since)) {
+			t.Errorf("credits_active alerts %+v at day %+.4f, want one since day %+.4f", active, float64(tc.now)/day, float64(tc.since)/day)
+		}
+	}
+}
+
 func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
 	for name, tc := range map[string]struct {
 		grants   map[domain.ConfigDir][]domain.CreditGrant

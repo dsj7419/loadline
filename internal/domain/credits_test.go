@@ -134,24 +134,37 @@ func TestOnCreditsSpans_OpenAndClosedOnDropOrReset(t *testing.T) {
 	}
 }
 
+// seeded returns a random source that gives the same numbers on every run, so
+// a failure reproduces.
+func seeded(seed uint64) *rand.Rand {
+	return rand.New(rand.NewPCG(seed, 2026)) //nolint:gosec // G404: a fixed seed; nothing secret
+}
+
+// randomSamples returns up to 13 samples in time order, at or around the
+// limit, each with one of resets (seconds after at(0), 0 for an unknown reset)
+// as its window's reset time, and the second the last one was taken at.
+func randomSamples(rng *rand.Rand, resets []int) ([]domain.Sample, int) {
+	values := []float64{40, 99.5, 100, 103}
+	var samples []domain.Sample
+	sec := 0
+	for range rng.IntN(14) {
+		sec += 100 + rng.IntN(900)
+		s := sample(sec, values[rng.IntN(len(values))])
+		if r := resets[rng.IntN(len(resets))]; r > 0 {
+			s.ResetsAt = at(r)
+		}
+		samples = append(samples, s)
+	}
+	return samples, sec
+}
+
 // OnCreditsMarks keeps only the samples where a run at the limit starts or
 // ends, or changes its reset time, and the spans of what it keeps are the
 // spans of all the samples, whatever samples come after.
 func TestOnCreditsMarks_KeepsEverySpan(t *testing.T) {
-	values := []float64{40, 99.5, 100, 103}
-	resets := []int{0, 2_000, 4_000}
-	rng := rand.New(rand.NewPCG(22, 2026)) //nolint:gosec // G404: a fixed seed, so a failure reproduces; nothing secret
+	rng := seeded(22)
 	for range 3000 {
-		var samples []domain.Sample
-		sec := 0
-		for range rng.IntN(14) {
-			sec += 100 + rng.IntN(900)
-			s := sample(sec, values[rng.IntN(len(values))])
-			if r := resets[rng.IntN(len(resets))]; r > 0 {
-				s.ResetsAt = at(r)
-			}
-			samples = append(samples, s)
-		}
+		samples, _ := randomSamples(rng, []int{0, 2_000, 4_000})
 		cut := rng.IntN(len(samples) + 1)
 		older, recent := samples[:cut], samples[cut:]
 
@@ -168,47 +181,38 @@ func TestOnCreditsMarks_KeepsEverySpan(t *testing.T) {
 	}
 }
 
-// clipped is spans from oldest on: those that ended by then are gone, and
-// one that runs across it starts there.
-func clipped(spans []domain.OnCreditsSpan, oldest time.Time) []domain.OnCreditsSpan {
-	var kept []domain.OnCreditsSpan
+// runningAt is spans without those that ended by oldest.
+func runningAt(spans []domain.OnCreditsSpan, oldest time.Time) []domain.OnCreditsSpan {
+	var running []domain.OnCreditsSpan
 	for _, s := range spans {
-		if !s.To.IsZero() && !s.To.After(oldest) {
-			continue
+		if s.To.IsZero() || s.To.After(oldest) {
+			running = append(running, s)
 		}
-		if s.From.Before(oldest) {
-			s.From = oldest
-		}
-		kept = append(kept, s)
 	}
-	return kept
+	return running
+}
+
+// forgetSpans returns the spans of samples once those before oldest are
+// forgotten.
+func forgetSpans(samples []domain.Sample, oldest time.Time) []domain.OnCreditsSpan {
+	return domain.OnCreditsSpans(domain.WindowSamples{SevenDay: domain.ForgetOnCreditsBefore(samples, oldest)}, creditsNow)
 }
 
 // ForgetOnCreditsBefore forgets the samples before a time, but never a span
-// that runs on past it: the spans from that time on stay as they were.
+// that runs on past it: the spans from that time on stay as they were, the
+// start of one that runs across it included.
 func TestForgetOnCreditsBefore_KeepsTheSpansFromThatTimeOn(t *testing.T) {
-	values := []float64{40, 99.5, 100, 103}
-	resets := []int{0, 2_000, 4_000, 9_000}
-	rng := rand.New(rand.NewPCG(55, 2026)) //nolint:gosec // G404: a fixed seed, so a failure reproduces; nothing secret
+	rng := seeded(55)
 	for range 3000 {
-		var samples []domain.Sample
-		sec := 0
-		for range rng.IntN(14) {
-			sec += 100 + rng.IntN(900)
-			s := sample(sec, values[rng.IntN(len(values))])
-			if r := resets[rng.IntN(len(resets))]; r > 0 {
-				s.ResetsAt = at(r)
-			}
-			samples = append(samples, s)
-		}
-		oldest := at(rng.IntN(sec + 2))
+		samples, last := randomSamples(rng, []int{0, 2_000, 4_000, 9_000})
+		oldest := at(rng.IntN(last + 2))
 
 		kept := domain.ForgetOnCreditsBefore(samples, oldest)
 
 		all := domain.OnCreditsSpans(domain.WindowSamples{SevenDay: samples}, creditsNow)
 		left := domain.OnCreditsSpans(domain.WindowSamples{SevenDay: kept}, creditsNow)
-		if !reflect.DeepEqual(clipped(left, oldest), clipped(all, oldest)) {
-			t.Fatalf("samples %v\nkept from %v: %v\nspans %v, want %v", samples, oldest, kept, clipped(left, oldest), clipped(all, oldest))
+		if !reflect.DeepEqual(runningAt(left, oldest), runningAt(all, oldest)) {
+			t.Fatalf("samples %v\nkept from %v: %v\nspans %v, want %v", samples, oldest, kept, runningAt(left, oldest), runningAt(all, oldest))
 		}
 		for i, s := range kept {
 			if s.At.Before(oldest) && i > 0 {
@@ -218,22 +222,46 @@ func TestForgetOnCreditsBefore_KeepsTheSpansFromThatTimeOn(t *testing.T) {
 	}
 }
 
+// Forgetting before one time and then before a later one leaves the spans
+// that forgetting before the later one does. The history forgets at its
+// retention and the tracker at its credits horizon, one after the other, and
+// a restarted tracker must hold the spans one that ran on holds.
+func TestForgetOnCreditsBefore_ForgettingTwiceIsForgettingOnce(t *testing.T) {
+	rng := seeded(57)
+	for range 3000 {
+		samples, last := randomSamples(rng, []int{0, 2_000, 4_000, 9_000})
+		first := rng.IntN(last + 2)
+		then := first + rng.IntN(last+2-first+1)
+
+		twice := forgetSpans(domain.ForgetOnCreditsBefore(samples, at(first)), at(then))
+
+		if once := forgetSpans(samples, at(then)); !reflect.DeepEqual(twice, once) {
+			t.Fatalf("samples %v\nforgotten before %v and then %v: spans %v, want %v", samples, at(first), at(then), twice, once)
+		}
+	}
+}
+
 func TestForgetOnCreditsBefore_ASpanAcrossTheCut(t *testing.T) {
 	for name, tc := range map[string]struct {
 		samples []domain.Sample
 		want    []domain.OnCreditsSpan
 	}{
-		"closed since: it starts at the cut": {
+		// A span keeps its own start, which dates going on credits, even
+		// once a later sample has closed it: dated at the cut instead, it
+		// would move with every cut, and so would the start of an open span
+		// it merges into. The calls before the cut are forgotten all the
+		// same, so what the span counts does not change.
+		"closed since: it keeps its start": {
 			samples: []domain.Sample{full(0, 7000), sample(500, 100), sample(8000, 40)},
-			want:    []domain.OnCreditsSpan{span(1000, 7000)},
+			want:    []domain.OnCreditsSpan{span(0, 7000)},
 		},
-		"still open with no known reset: it keeps its start, which dates going on credits": {
+		"still open with no known reset: it keeps its start": {
 			samples: []domain.Sample{sample(0, 100), sample(2000, 100)},
 			want:    []domain.OnCreditsSpan{span(0, -1)},
 		},
 		"the reset learned before the cut still closes it": {
 			samples: []domain.Sample{sample(0, 100), full(500, 3000), sample(4000, 30)},
-			want:    []domain.OnCreditsSpan{span(1000, 3000)},
+			want:    []domain.OnCreditsSpan{span(0, 3000)},
 		},
 		"ended before the cut: forgotten": {
 			samples: []domain.Sample{full(0, 600), sample(2000, 30)},

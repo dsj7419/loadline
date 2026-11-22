@@ -196,11 +196,13 @@ func OnCreditsMarks(samples []Sample) []Sample {
 
 // ForgetOnCreditsBefore returns samples, which must be in time order, without
 // those taken before oldest, but for the span they leave open at oldest: one
-// sample at the limit stands for it, with the reset time the span had come to
-// by then. It is dated at oldest when a later sample closes the span, and at
-// the span's start while the span is still open, since that start dates the
-// account going on credits. The spans from oldest on are those of samples, so
-// a span never ends before the calls it holds have aged out.
+// sample at the limit stands for it, dated at the span's start, which dates
+// the account going on credits, and with the reset time the span had come to
+// by then. The spans from oldest on are those of samples, their starts
+// included, so a span never ends before the calls it holds have aged out.
+// That sample depends on the samples before oldest alone, so forgetting
+// before one time and then before a later one forgets what forgetting before
+// the later one does.
 func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
 	cut, _ := slices.BinarySearchFunc(samples, oldest, func(s Sample, t time.Time) int { return s.At.Compare(t) })
 	var w spanWalk
@@ -211,15 +213,7 @@ func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
 	if !w.open || reached(w.resetsAt, oldest) {
 		return slices.Clone(kept)
 	}
-	carried := Sample{At: w.from, UsedPct: limitPct, ResetsAt: w.resetsAt}
-	closed := len(w.spans)
-	for _, s := range kept {
-		w.step(s)
-	}
-	if len(w.spans) > closed {
-		carried.At = oldest
-	}
-	return slices.Concat([]Sample{carried}, kept)
+	return slices.Concat([]Sample{{At: w.from, UsedPct: limitPct, ResetsAt: w.resetsAt}}, kept)
 }
 
 // EstimateCredits works out an account's credits from the grants the owner
