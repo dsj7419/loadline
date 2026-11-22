@@ -255,10 +255,6 @@ func TestRunHook_InvalidJSONExitsZero(t *testing.T) {
 		"an array":   `["s1"]`,
 		"a string":   `"s1"`,
 		"no session": `{"hook_event_name":"Stop","prompt":"` + canary + `"}`,
-		// Each field fits, but together they are more than an envelope
-		// may carry.
-		"oversized fields": `{"session_id":"s1","hook_event_name":"Stop","cwd":"` + strings.Repeat("d", 40<<10) +
-			`","agent_type":"` + strings.Repeat("a", 40<<10) + `"}`,
 	}
 	for name, input := range inputs {
 		t.Run(name, func(t *testing.T) {
@@ -279,24 +275,63 @@ func TestRunHook_InvalidJSONExitsZero(t *testing.T) {
 	}
 }
 
-// A field larger than an envelope may carry is no field Loadline forwards;
-// the rest of the event still goes.
-func TestRunHook_DropsAFieldTooLargeToForward(t *testing.T) {
+// A field too long to forward, over 4 KiB, is left out; the rest of the
+// event still goes, and never makes an envelope the server, or a spool,
+// would refuse.
+func TestRunHook_DropsFieldsTooLargeToForward(t *testing.T) {
+	for name, tt := range map[string]struct {
+		input   string
+		dropped []string
+	}{
+		"a member too long to keep": {
+			input:   `{"session_id":"s1","hook_event_name":"Stop","cwd":"` + strings.Repeat("d", 70<<10) + `","tool_name":"Bash"}`,
+			dropped: []string{"cwd"},
+		},
+		"fields that would overflow the payload together": {
+			input: `{"session_id":"s1","hook_event_name":"Stop","tool_name":"Bash","cwd":"` + strings.Repeat("d", 40<<10) +
+				`","agent_type":"` + strings.Repeat("a", 40<<10) + `"}`,
+			dropped: []string{"cwd", "agent_type"},
+		},
+		"a field just over 4 KiB": {
+			input:   `{"session_id":"s1","hook_event_name":"Stop","tool_name":"Bash","cwd":"` + strings.Repeat("d", 4<<10+1) + `"}`,
+			dropped: []string{"cwd"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			srv := f.serve()
+
+			if code := f.hook(strings.NewReader(tt.input)); code != 0 {
+				t.Errorf("exit code = %d, want 0", code)
+			}
+
+			posts := srv.received()
+			if len(posts) != 1 || len(srv.sink.applied()) != 1 {
+				t.Fatalf("server received %d posts and applied %d events, want 1 and 1", len(posts), len(srv.sink.applied()))
+			}
+			fields := payloadFields(t, posts[0].envelope)
+			for _, name := range tt.dropped {
+				if _, ok := fields[name]; ok {
+					t.Errorf("payload carries the oversized %s", name)
+				}
+			}
+			if string(fields["tool_name"]) != `"Bash"` || string(fields["session_id"]) != `"s1"` {
+				t.Errorf("payload = %.300s, want the rest of the event", posts[0].envelope.Payload)
+			}
+		})
+	}
+}
+
+func TestRunHook_KeepsAFieldOf4KiB(t *testing.T) {
 	f := newFixture(t)
 	srv := f.serve()
-	input := `{"session_id":"s1","hook_event_name":"Stop","cwd":"` + strings.Repeat("d", 70<<10) + `","tool_name":"Bash"}`
+	cwd := strings.Repeat("d", 4<<10)
 
-	if code := f.hook(strings.NewReader(input)); code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
+	f.hook(strings.NewReader(`{"session_id":"s1","hook_event_name":"Stop","cwd":"` + cwd + `"}`))
 
 	posts := srv.received()
-	if len(posts) != 1 {
-		t.Fatalf("server received %d posts, want 1", len(posts))
-	}
-	fields := payloadFields(t, posts[0].envelope)
-	if _, ok := fields["cwd"]; ok || string(fields["tool_name"]) != `"Bash"` || string(fields["session_id"]) != `"s1"` {
-		t.Errorf("payload = %s, want the event without its oversized cwd", posts[0].envelope.Payload)
+	if len(posts) != 1 || string(payloadFields(t, posts[0].envelope)["cwd"]) != `"`+cwd+`"` {
+		t.Errorf("server received %d posts, want one with the 4 KiB cwd", len(posts))
 	}
 }
 

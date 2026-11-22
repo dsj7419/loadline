@@ -5,44 +5,106 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math/rand/v2"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
+	"testing/iotest"
 
 	"github.com/dsj7419/loadline/internal/protocol"
 )
 
-// maxMember is the longest member key or value ReadHookInput keeps.
-const maxMember = protocol.MaxPayloadBytes
+const (
+	// maxMember is the longest member key or value ReadHookInput keeps.
+	maxMember = protocol.MaxPayloadBytes
+	// maxField is the longest a field may be as a payload encodes it.
+	maxField = 4 << 10
+)
 
-// stdlibHookInput decodes input as encoding/json does, the reference that
-// ReadHookInput must agree with on every input whose members all fit.
-func stdlibHookInput(input string) (protocol.HookInput, error) {
-	var in *protocol.HookInput
-	err := json.NewDecoder(strings.NewReader(input)).Decode(&in)
-	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok && typeErr.Field != "" {
-		err = nil
+// bu is a backslash and a u: the start of a \u escape, spelled out so that
+// no tool on the way to this file reads it as one.
+var bu = string([]byte{'\\', 'u'})
+
+// oracle decodes the first JSON value of input as encoding/json does, with
+// ReadHookInput's limits applied by hand: a member whose key is longer than
+// maxMember is dropped, one whose value is longer reads as "", and a field
+// that encodes to more than maxField bytes is emptied. ok is false when
+// encoding/json refuses the first value or it is not an object.
+func oracle(input []byte) (in protocol.HookInput, ok bool) {
+	var raw json.RawMessage
+	if err := json.NewDecoder(bytes.NewReader(input)).Decode(&raw); err != nil || raw[0] != '{' {
+		return protocol.HookInput{}, false
 	}
-	if err != nil {
-		return protocol.HookInput{}, err
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil {
+		panic(err)
 	}
-	if in == nil {
-		return protocol.HookInput{}, errors.New("null")
+	var model []string
+	from := dec.InputOffset()
+	for dec.More() {
+		if _, err := dec.Token(); err != nil {
+			panic(err)
+		}
+		key := bytes.Trim(raw[from:dec.InputOffset()], " \t\r\n,")
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			panic(err)
+		}
+		from = dec.InputOffset()
+		switch {
+		case len(key) > maxMember:
+		case len(value) > maxMember:
+			model = append(model, string(key)+`:""`)
+		default:
+			model = append(model, string(key)+":"+string(value))
+		}
 	}
-	return *in, nil
+	err := json.Unmarshal([]byte("{"+strings.Join(model, ",")+"}"), &in)
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); err != nil && (!ok || typeErr.Field == "") {
+		panic(err)
+	}
+	fields := reflect.ValueOf(&in).Elem()
+	for i := range fields.NumField() {
+		encoded, err := json.Marshal(fields.Field(i).String())
+		if err != nil {
+			panic(err)
+		}
+		if len(encoded)-2 > maxField {
+			fields.Field(i).SetString("")
+		}
+	}
+	return in, true
 }
 
-// assertMatchesStdlib checks ReadHookInput against encoding/json on input:
-// both fail, or both give the same fields.
-func assertMatchesStdlib(t *testing.T, input string) {
+// assertAgrees checks ReadHookInput, reading input through r, against the
+// oracle: input the oracle refuses is an error with no fields, and any
+// other input gives the oracle's fields.
+func assertAgrees(t *testing.T, input []byte, r io.Reader) {
 	t.Helper()
-	want, wantErr := stdlibHookInput(input)
-	got, gotErr := protocol.ReadHookInput(strings.NewReader(input))
-	if (wantErr == nil) != (gotErr == nil) || got != want {
-		t.Fatalf("ReadHookInput(%.300q) = %+v, %v; encoding/json gives %+v, %v", input, got, gotErr, want, wantErr)
+	got, err := protocol.ReadHookInput(r)
+	assertOracleResult(t, input, got, err)
+}
+
+// assertOracleResult checks what ReadHookInput gave for input against the
+// oracle.
+func assertOracleResult(t *testing.T, input []byte, got protocol.HookInput, err error) {
+	t.Helper()
+	want, ok := oracle(input)
+	switch {
+	case ok && (err != nil || got != want):
+		t.Fatalf("valid input %.200q (%d bytes): got %+v, %v; want %+v", input, len(input), got, err, want)
+	case !ok && (err == nil || got != protocol.HookInput{}):
+		t.Fatalf("invalid input %.200q (%d bytes): got %+v, %v; want an error and no fields", input, len(input), got, err)
 	}
+}
+
+// readers are the ways a test feeds an input: whole, a byte at a time, in
+// halves, and with the end of input reported alongside the last bytes.
+var readers = map[string]func([]byte) io.Reader{
+	"whole":     func(b []byte) io.Reader { return bytes.NewReader(b) },
+	"one byte":  func(b []byte) io.Reader { return iotest.OneByteReader(bytes.NewReader(b)) },
+	"halves":    func(b []byte) io.Reader { return iotest.HalfReader(bytes.NewReader(b)) },
+	"eof early": func(b []byte) io.Reader { return iotest.DataErrReader(bytes.NewReader(b)) },
 }
 
 // hookSeeds are payloads whose members all fit, valid and not.
@@ -55,9 +117,9 @@ var hookSeeds = []string{
 	`{"tool_input":{"a":["}","{",{"b":"]\"["}]},"session_id":"s1"}`,
 	`{"n":-1.5e+3,"t":true,"f":false,"z":null,"e":[0,-0,1E9,0.5e-2],"session_id":"s1"}`,
 	`{"session_id":1,"hook_event_name":["x"],"cwd":{"a":1}}`,
-	`{"session_id":"\u00e9\ud83d\ude00","source":"startup","x":"\/\b\f\n\r\t"}`,
+	`{"session_id":"` + bu + `00e9` + bu + `d83d` + bu + `de00","source":"startup","x":"\/\b\f\n\r\t"}`,
 	`{"session_id":"s1","session_id":"s2"}`,
-	`{"session_id":"s1","SESSION_ID":"s2","tool\u005fname":"t","cwd":null}`,
+	`{"session_id":"s1","SESSION_ID":"s2","tool` + bu + `005fname":"t","cwd":null}`,
 	`{"session_id":"s1"} trailing`,
 	"{\"session_id\":\"s1\"}\n{\"session_id\":\"s2\"}",
 	`{"session_id":"s1",}`,
@@ -67,8 +129,8 @@ var hookSeeds = []string{
 	`{"session_id":tru}`,
 	`{"session_id":truex}`,
 	`{"x":01}`, `{"x":-}`, `{"x":1.}`, `{"x":.5}`, `{"x":+1}`, `{"x":1e}`, `{"x":1e+}`, `{"x":-01}`,
-	`{"x":[1,]}`, `{"x":[,1]}`, `{"x":[1 2]}`, `{"x":{"a":1,}}`, `{"x":{"a"}}`, `{"x":{1:2}}`,
-	`{"x":[}`, `{"x":{]}`, `{"x":"\q"}`, `{"x":"\u12"}`, `{"x":"\u12g4"}`,
+	`{"x":[1,]}`, `{"x":[,1]}`, `{"x":[1 2]}`, `{"x":{"a":1,}}`, `{"x":{"a"}}`, `{"x":{1:2}}`, `{"x":{"a":,"b":1}}`,
+	`{"x":[}`, `{"x":{]}`, `{"x":"\q"}`, `{"x":"` + bu + `12"}`, `{"x":"` + bu + `12g4"}`, `{"x":"` + bu + `123"}`,
 	`{session_id:"s1"}`,
 	`{"session_id":"s1"`,
 	`{"session_id":"s1`,
@@ -84,11 +146,15 @@ var hookSeeds = []string{
 	`{"a":` + strings.Repeat("[", 9998) + strings.Repeat("]", 9998) + `,"session_id":"s1"}`,
 	`{"a":` + strings.Repeat("[", 9999) + strings.Repeat("]", 9999) + `,"session_id":"s1"}`,
 	`{"a":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `,"session_id":"s1"}`,
+	`{"session_id":"` + strings.Repeat("s", maxField) + `"}`,
+	`{"session_id":"` + strings.Repeat("s", maxField+1) + `"}`,
 }
 
 func TestReadHookInput_MatchesEncodingJSONOnShortMembers(t *testing.T) {
 	for _, input := range hookSeeds {
-		assertMatchesStdlib(t, input)
+		for name, reader := range readers {
+			t.Run(name, func(t *testing.T) { assertAgrees(t, []byte(input), reader([]byte(input))) })
+		}
 	}
 }
 
@@ -97,39 +163,130 @@ func FuzzReadHookInputMatchesEncodingJSON(f *testing.F) {
 		f.Add(input)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		if len(input) > maxMember {
-			t.Skip("a member may be too long to keep, where the two differ by design")
-		}
-		assertMatchesStdlib(t, input)
+		assertAgrees(t, []byte(input), strings.NewReader(input))
 	})
+}
+
+// longMemberCases are inputs with a member too long to keep, so that only
+// ReadHookInput's own checks judge it: nothing re-reads it afterwards.
+func longMemberCases() map[string]string {
+	pad := strings.Repeat("a", maxMember+100)
+	ones := strings.Repeat("1,", maxMember)
+	nulls := strings.Repeat("null,", maxMember/4)
+	return map[string]string{
+		"nested key without colon":    `{"x":{"` + pad + `"}},"session_id":"leak"}`,
+		"nested key colon no value":   `{"x":{"` + pad + `":}},"session_id":"leak"}`,
+		"comma for a nested value":    `{"x":{"a":,"b":"` + pad + `"},"session_id":"leak"}`,
+		"long number cut at dot":      `{"x":1` + strings.Repeat("0", maxMember) + `.,"session_id":"leak"}`,
+		"long leading zeros":          `{"x":0` + strings.Repeat("0", maxMember) + `,"session_id":"leak"}`,
+		"long letters":                `{"x":` + strings.Repeat("t", maxMember+10) + `,"session_id":"leak"}`,
+		"bad scalar":                  `{"x":` + pad + `"q,"session_id":"leak"}`,
+		"bad literal deep in array":   `{"x":[` + nulls + `nulll],"session_id":"leak"}`,
+		"three hex digits":            `{"x":"` + pad + bu + `123","session_id":"leak"}`,
+		"two hex digits":              `{"x":"` + pad + bu + `00","session_id":"leak"}`,
+		"raw newline after cap":       `{"x":"` + pad + "\n" + `","session_id":"leak"}`,
+		"control char":                `{"x":"` + pad + "\x01" + `","session_id":"leak"}`,
+		"bad escape":                  `{"x":"` + pad + `\q","session_id":"leak"}`,
+		"uppercase escape":            `{"x":"` + pad + `\N","session_id":"leak"}`,
+		"extra close after long":      `{"x":["` + pad + `"]],"session_id":"leak"}`,
+		"mismatched":                  `{"x":["` + pad + `"},"session_id":"leak"}`,
+		"object closed by ]":          `{"x":{"a":"` + pad + `"],"session_id":"leak"}`,
+		"trailing comma top":          `{"x":"` + pad + `",}`,
+		"trailing comma nested":       `{"x":["` + pad + `",],"session_id":"leak"}`,
+		"long key missing colon":      `{"` + pad + `" "v","session_id":"leak"}`,
+		"long key bad escape":         `{"` + pad + `\x":1,"session_id":"leak"}`,
+		"unterminated long array":     `{"x":[` + ones + `1`,
+		"unclosed container":          `{"x":[["` + pad + `"]`,
+		"unterminated string":         `{"x":"` + pad,
+		"formfeed in long array":      `{"x":[` + ones + "1\f" + `],"session_id":"leak"}`,
+		"vertical tab in long array":  `{"x":[` + ones + "1\v" + `],"session_id":"leak"}`,
+		"NUL in long array":           `{"x":[` + ones + "\x00" + `],"session_id":"leak"}`,
+		"nested missing value":        `{"x":{"a":"` + pad + `","b"},"session_id":"leak"}`,
+		"missing comma nested":        `{"x":[1 "` + pad + `"],"session_id":"leak"}`,
+		"array swallows next member":  `{"x":[` + ones + `1,"session_id":"leak"}`,
+		"objects closed by brace":     `{"x":[{}` + strings.Repeat(`,{}`, maxMember/3) + `}],"session_id":"leak"}`,
+		"backslash at EOF":            `{"x":"` + pad + `\`,
+		"lone minus":                  `{"x":[` + ones + `-],"session_id":"leak"}`,
+		"exponent without digits":     `{"x":[` + ones + `1e],"session_id":"leak"}`,
+		"exponent sign alone":         `{"x":[` + ones + `1e+],"session_id":"leak"}`,
+		"leading dot":                 `{"x":[` + ones + `.5],"session_id":"leak"}`,
+		"trailing dot":                `{"x":[` + ones + `1.],"session_id":"leak"}`,
+		"leading plus":                `{"x":[` + ones + `+1],"session_id":"leak"}`,
+		"leading zero":                `{"x":[` + ones + `-01],"session_id":"leak"}`,
+		"two exponents":               `{"x":[` + ones + `1e5e5],"session_id":"leak"}`,
+		"NaN":                         `{"x":[` + ones + `NaN],"session_id":"leak"}`,
+		"hex number":                  `{"x":[` + ones + `0x10],"session_id":"leak"}`,
+		"literal run on":              `{"x":["` + pad + `",truex],"session_id":"leak"}`,
+		"literal run into string":     `{"x":[` + nulls + `null"a"],"session_id":"leak"}`,
+		"colon after long value":      `{"x":"` + pad + `":1,"session_id":"leak"}`,
+		"missing comma top":           `{"x" : "` + pad + `" "session_id":"leak"}`,
+		"EOF after long value":        `{"x":"` + pad + `"`,
+		"array in key position":       `{"x":{["` + pad + `"]:1},"session_id":"leak"}`,
+		"nested comma comma":          `{"x":[` + ones + `,1],"session_id":"leak"}`,
+		"colon in an array":           `{"x":["` + pad + `":1],"session_id":"leak"}`,
+		"nested object colon comma":   `{"x":{"a":"` + pad + `":1},"session_id":"leak"}`,
+		"comma after a key":           `{"x":{"a","` + pad + `":1},"session_id":"leak"}`,
+		"double colon":                `{"x":{"a"::"` + pad + `"},"session_id":"leak"}`,
+		"string in comma slot":        `{"x":{"a":1 "b":"` + pad + `"},"session_id":"leak"}`,
+		"close bracket on empty obj":  `{"x":[` + ones + `{]],"session_id":"leak"}`,
+		"depth 10 001 arrays":         `{"x":` + strings.Repeat("[", 10000) + `"` + pad + `"` + strings.Repeat("]", 10000) + `,"session_id":"leak"}`,
+		"depth 10 001 objects":        `{"x":` + strings.Repeat(`{"a":`, 10000) + `"` + pad + `"` + strings.Repeat("}", 10000) + `,"session_id":"leak"}`,
+		"depth 40 001 arrays":         `{"x":` + strings.Repeat("[", 40000) + strings.Repeat("]", 40000) + `,"session_id":"leak"}`,
+		"depth 10 000 arrays":         `{"x":` + strings.Repeat("[", 9999) + `"` + pad + `"` + strings.Repeat("]", 9999) + `,"session_id":"s"}`,
+		"depth 10 000 objects":        `{"x":` + strings.Repeat(`{"a":`, 9999) + `"` + pad + `"` + strings.Repeat("}", 9999) + `,"session_id":"s"}`,
+		"tab in long string":          `{"x":"` + pad + "\t" + `","session_id":"leak"}`,
+		"DEL and 0xff in long string": `{"x":"` + pad + "\x7f\xff\xfe" + `","session_id":"s"}`,
+		"lone surrogate long string":  `{"x":"` + pad + bu + `d800","session_id":"s"}`,
+		"garbage after object":        `{"x":"` + pad + `","session_id":"s"}garbage{[`,
+		"escaped key dup long last":   `{"session_id":"s1","session_` + bu + `0069d":"` + pad + `"}`,
+		"long s folded dup long last": `{"session_id":"s1","` + "\xc5\xbf" + `ession_id":"` + pad + `"}`,
+		"kelvin folded dup":           `{"hook_event_name":"a","hoo` + "\xe2\x84\xaa" + `_event_name":"` + pad + `"}`,
+		"long first short last":       `{"SESSION_ID":"` + pad + `","session_id":"s2"}`,
+		"exactly cap value":           `{"session_id":"` + strings.Repeat("b", maxMember-2) + `","cwd":"c"}`,
+		"cap plus one value":          `{"session_id":"` + strings.Repeat("b", maxMember-1) + `","cwd":"c"}`,
+		"exactly cap key":             `{"` + strings.Repeat("k", maxMember-2) + `":1,"cwd":"c"}`,
+		"cap plus one key":            `{"` + strings.Repeat("k", maxMember-1) + `":1,"cwd":"c"}`,
+		"many long members":           `{` + strings.Repeat(`"x":"`+pad+`",`, 60) + `"session_id":"s"}`,
+		"valid big mixed": `{"x":[` + strings.Repeat(`{"a":[true,false,null,-0.5e-3,"`+bu+`00e9\\\""],"b":{}},`, 2000) +
+			`[]],"session_id":"s"}`,
+		"BOM in long string":           `{"x":"` + pad + "\xef\xbb\xbf" + `","session_id":"s"}`,
+		"escapes after cap":            `{"x":"` + pad + `\/\b\f\n\r\t\"\\","session_id":"s"}`,
+		"hex after cap":                `{"x":"` + pad + bu + `ABCD` + bu + `abcd","session_id":"s"}`,
+		"top value then nothing":       `{"x":[` + ones + `1]`,
+		"number then EOF":              `{"x":1` + strings.Repeat("0", maxMember+5),
+		"empty key long value":         `{"":"` + pad + `","session_id":"s"}`,
+		"whitespace-only after member": `{"x":"` + pad + `"   ` + "\r\n\t" + `}`,
+	}
+}
+
+// The re-reviewer's cases and a few more, each read whole, a byte at a
+// time, in halves and with an early end of input.
+func TestReadHookInput_AgreesWithEncodingJSONOnLongMembers(t *testing.T) {
+	for name, input := range longMemberCases() {
+		for readerName, reader := range readers {
+			t.Run(name+"/"+readerName, func(t *testing.T) { assertAgrees(t, []byte(input), reader([]byte(input))) })
+		}
+	}
 }
 
 // A member too long to keep is malformed or not exactly as encoding/json
 // would find it: malformed input is an error, never a source of fields.
+// These are the grammar's edges, which a member short enough to keep would
+// have checked again by encoding/json.
 func TestReadHookInput_MalformedLongMemberIsAnError(t *testing.T) {
 	pad := strings.Repeat("a", maxMember+100)
+	ones := strings.Repeat("1,", maxMember)
 	for name, input := range map[string]string{
-		"bad scalar":         `{"x":` + pad + `"q,"session_id":"leak"}`,
-		"letters":            `{"x":` + pad + `,"session_id":"leak"}`,
-		"mismatched":         `{"x":["` + pad + `"},"session_id":"leak"}`,
-		"deep nesting":       `{"x":` + strings.Repeat("[", 40000) + strings.Repeat("]", 40000) + `,"session_id":"leak"}`,
-		"control char":       `{"x":"` + pad + "\x01" + `","session_id":"leak"}`,
-		"bad escape":         `{"x":"` + pad + `\q","session_id":"leak"}`,
-		"short unicode":      `{"x":"` + pad + `\u12","session_id":"leak"}`,
-		"missing comma":      `{"x":[1 "` + pad + `"],"session_id":"leak"}`,
-		"trailing comma":     `{"x":["` + pad + `",],"session_id":"leak"}`,
-		"bad number":         `{"x":[01,"` + pad + `"],"session_id":"leak"}`,
-		"non-string key":     `{"x":{1:"` + pad + `"},"session_id":"leak"}`,
-		"missing colon":      `{"x":{"a" "` + pad + `"},"session_id":"leak"}`,
-		"unterminated":       `{"x":"` + pad,
-		"unclosed container": `{"x":[["` + pad + `"]`,
-		"object closed by ]": `{"x":{"a":"` + pad + `"],"session_id":"leak"}`,
-		"colon in an array":  `{"x":["` + pad + `":1],"session_id":"leak"}`,
-		"comma after a key":  `{"x":{"a","` + pad + `":1},"session_id":"leak"}`,
-		"bad literal":        `{"x":["` + pad + `",nul],"session_id":"leak"}`,
-		"literal run on":     `{"x":["` + pad + `",truex],"session_id":"leak"}`,
-		"double colon":       `{"x":{"a"::"` + pad + `"},"session_id":"leak"}`,
-		"exponent cut short": `{"x":["` + pad + `",1e+],"session_id":"leak"}`,
+		"10 001 levels":          `{"x":` + strings.Repeat("[", 10000) + `"` + pad + `"` + strings.Repeat("]", 10000) + `,"session_id":"leak"}`,
+		"a lone -":               `{"x":[` + ones + `-],"session_id":"leak"}`,
+		"a trailing .":           `{"x":[` + ones + `1.],"session_id":"leak"}`,
+		"a 3-digit escape":       `{"x":"` + pad + bu + `123","session_id":"leak"}`,
+		"a comma for a value":    `{"x":{"a":,"b":"` + pad + `"},"session_id":"leak"}`,
+		"a bad scalar":           `{"x":` + pad + `"q,"session_id":"leak"}`,
+		"a mismatched bracket":   `{"x":["` + pad + `"},"session_id":"leak"}`,
+		"an object closed by ]":  `{"x":{"a":"` + pad + `"],"session_id":"leak"}`,
+		"a missing colon":        `{"x":{"a" "` + pad + `"},"session_id":"leak"}`,
+		"an unterminated string": `{"x":"` + pad,
 	} {
 		t.Run(name, func(t *testing.T) {
 			in, err := protocol.ReadHookInput(strings.NewReader(input))
@@ -138,6 +295,10 @@ func TestReadHookInput_MalformedLongMemberIsAnError(t *testing.T) {
 				t.Errorf("got %+v, %v; want an error and no fields", in, err)
 			}
 		})
+	}
+	deepest := `{"x":` + strings.Repeat("[", 9999) + `"` + pad + `"` + strings.Repeat("]", 9999) + `,"session_id":"s"}`
+	if in, err := protocol.ReadHookInput(strings.NewReader(deepest)); err != nil || in.SessionID != "s" {
+		t.Errorf("10 000 levels: got %+v, %v; want them read", in, err)
 	}
 }
 
@@ -166,18 +327,6 @@ func TestReadHookInput_SkipsLongMembers(t *testing.T) {
 	}
 }
 
-// An allowlisted field too long to forward reads as empty, so the rest of
-// the event still goes.
-func TestReadHookInput_FieldTooLongToForwardIsEmpty(t *testing.T) {
-	input := `{"session_id":"s1","cwd":"` + strings.Repeat("d", maxMember) + `","tool_name":"Bash"}`
-
-	got, err := protocol.ReadHookInput(strings.NewReader(input))
-
-	if err != nil || got != (protocol.HookInput{SessionID: "s1", ToolName: "Bash"}) {
-		t.Errorf("got %+v, %v; want s1's Bash call without its cwd", got, err)
-	}
-}
-
 // As in encoding/json, the last occurrence of a key wins, in any letter
 // case; when that one is too long to keep, the field is left empty.
 func TestReadHookInput_LongLastDuplicateEmptiesTheField(t *testing.T) {
@@ -198,6 +347,83 @@ func TestReadHookInput_LongLastDuplicateEmptiesTheField(t *testing.T) {
 	got, err := protocol.ReadHookInput(strings.NewReader(`{"session_id":"` + pad + `","session_id":"s2"}`))
 	if err != nil || got.SessionID != "s2" {
 		t.Errorf("a short last duplicate: got %+v, %v; want s2", got, err)
+	}
+}
+
+// everyField returns a hook payload with every HookInput field set to value.
+func everyField(t *testing.T, value string) string {
+	t.Helper()
+	var in protocol.HookInput
+	fields := reflect.ValueOf(&in).Elem()
+	for i := range fields.NumField() {
+		fields.Field(i).SetString(value)
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
+}
+
+// A field longer than 4 KiB, as a payload encodes it, reads as empty, like
+// a member too long to keep, so that every HookInput fits in a payload.
+func TestReadHookInput_EmptiesFieldsTooLongForAPayload(t *testing.T) {
+	tests := []struct {
+		name, value string
+		kept        bool
+	}{
+		{name: "4 KiB", value: strings.Repeat("v", maxField), kept: true},
+		{name: "4 KiB and a byte", value: strings.Repeat("v", maxField+1)},
+		// json.Marshal writes < as six bytes, a \u escape.
+		{name: "4 KiB encoded", value: strings.Repeat("<", maxField/6) + strings.Repeat("v", maxField%6), kept: true},
+		{name: "4 KiB and a byte encoded", value: strings.Repeat("<", maxField/6) + strings.Repeat("v", maxField%6+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in, err := protocol.ReadHookInput(strings.NewReader(everyField(t, tt.value)))
+			if err != nil {
+				t.Fatalf("ReadHookInput: %v", err)
+			}
+
+			fields := reflect.ValueOf(in)
+			for i := range fields.NumField() {
+				got, name := fields.Field(i).String(), fields.Type().Field(i).Name
+				if tt.kept && got != tt.value {
+					t.Errorf("%s = %d bytes, want the %d byte value kept", name, len(got), len(tt.value))
+				}
+				if !tt.kept && got != "" {
+					t.Errorf("%s = %d bytes, want it emptied", name, len(got))
+				}
+			}
+		})
+	}
+}
+
+// Whatever ReadHookInput gives, encoded again, fits in an envelope's
+// payload, however its fields were escaped.
+func TestReadHookInput_PayloadAlwaysFits(t *testing.T) {
+	for name, value := range map[string]string{
+		"plain":             strings.Repeat("v", maxField),
+		"escaped as html":   strings.Repeat("<", maxField/6),
+		"control bytes":     strings.Repeat("\x01", maxField/6),
+		"invalid utf-8":     strings.Repeat("\xff", maxField/6),
+		"escaped backslash": strings.Repeat(`\`, maxField/2),
+	} {
+		t.Run(name, func(t *testing.T) {
+			in, err := protocol.ReadHookInput(strings.NewReader(everyField(t, value)))
+			if err != nil {
+				t.Fatalf("ReadHookInput: %v", err)
+			}
+
+			payload, err := json.Marshal(in)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if in.SessionID == "" || len(payload) > protocol.MaxPayloadBytes {
+				t.Errorf("every field at the limit encodes to %d bytes, want them kept and at most %d",
+					len(payload), protocol.MaxPayloadBytes)
+			}
+		})
 	}
 }
 
@@ -270,135 +496,12 @@ func (r *cycleReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// genJSON builds random valid JSON, strings rich in escapes and brackets.
-type genJSON struct{ r *rand.Rand }
-
-var genStringParts = []string{
-	"a", "b", " ", "{", "}", "[", "]", ",", ":", `\\`, `\"`, `\n`, `\u00e9`, `\/`, "A", "é", "日", "😀",
-}
-
-func (g genJSON) str(n int) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for b.Len() < n {
-		b.WriteString(genStringParts[g.r.IntN(len(genStringParts))])
-	}
-	switch g.r.IntN(4) {
-	case 0:
-		b.WriteString(strings.Repeat(`\\`, g.r.IntN(5)))
-	case 1:
-		b.WriteString(`\"`)
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-func (g genJSON) ws() string { return []string{"", "", " ", "\n", "\t", "\r\n "}[g.r.IntN(6)] }
-
-func (g genJSON) value(depth, size int) string {
-	kind := g.r.IntN(7)
-	if depth > 4 {
-		kind = g.r.IntN(3)
-	}
-	switch kind {
-	case 0:
-		return g.str(size)
-	case 1:
-		return []string{"true", "false", "null", "0", "-0", "-1.5e+3", "12345678901234567890", "0.25E-2"}[g.r.IntN(8)]
-	case 2:
-		return g.str(g.r.IntN(20))
-	case 3, 4:
-		parts := make([]string, g.r.IntN(4))
-		for i := range parts {
-			parts[i] = g.ws() + g.value(depth+1, size/(len(parts)+1)) + g.ws()
-		}
-		return "[" + strings.Join(parts, ",") + "]"
-	default:
-		parts := make([]string, g.r.IntN(4))
-		for i := range parts {
-			parts[i] = g.ws() + g.str(g.r.IntN(10)) + g.ws() + ":" + g.ws() + g.value(depth+1, size/(len(parts)+1)) + g.ws()
-		}
-		return "{" + strings.Join(parts, ",") + "}"
-	}
-}
-
-var genKeys = []string{
-	`"session_id"`, `"session_id"`, `"Session_ID"`, `"hook_event_name"`, `"cwd"`, `"tool_name"`,
-	`"tool_response"`, `"x"`,
-}
-
-// On valid JSON with members on both sides of the cap, ReadHookInput gives
-// what encoding/json gives once each long member's value is "": a long key
-// names no field and goes, and a long value leaves its field empty, which
-// for an omitempty string field is the field absent.
-func TestReadHookInput_MatchesEncodingJSONAcrossTheCap(t *testing.T) {
-	g := genJSON{rand.New(rand.NewPCG(1, 2))} //nolint:gosec // G404: a fixed seed, for inputs that repeat from run to run
-	for range 400 {
-		var full, model []string
-		for range g.r.IntN(6) + 1 {
-			key := genKeys[g.r.IntN(len(genKeys))]
-			if g.r.IntN(30) == 0 {
-				key = g.str(maxMember - 50 + g.r.IntN(100))
-			}
-			size := g.r.IntN(64)
-			if g.r.IntN(3) == 0 {
-				size = maxMember - 300 + g.r.IntN(600)
-			}
-			value := g.value(0, size)
-			full = append(full, g.ws()+key+g.ws()+":"+g.ws()+value+g.ws())
-			switch {
-			case len(key) > maxMember:
-			case len(value) > maxMember:
-				model = append(model, key+`:""`)
-			default:
-				model = append(model, key+":"+value)
-			}
-		}
-		input := g.ws() + "{" + strings.Join(full, ",") + "}" + g.ws()
-		if !json.Valid([]byte(input)) {
-			t.Fatalf("generated invalid JSON %.300q", input)
-		}
-
-		want, wantErr := stdlibHookInput("{" + strings.Join(model, ",") + "}")
-		got, gotErr := protocol.ReadHookInput(strings.NewReader(input))
-
-		if (wantErr == nil) != (gotErr == nil) || got != want {
-			t.Fatalf("ReadHookInput(%.400q) = %+v, %v; want %+v, %v", input, got, gotErr, want, wantErr)
-		}
-	}
-}
-
-func TestReadHookInput_MutatedInputNeitherPanicsNorHangs(t *testing.T) {
-	g := genJSON{rand.New(rand.NewPCG(3, 4))} //nolint:gosec // G404: a fixed seed, for inputs that repeat from run to run
-	const alphabet = `"\{}[],: a0`
-	for range 300 {
-		input := []byte(`{"session_id":"s1","tool_response":` + g.value(0, maxMember-200+g.r.IntN(400)) + `,"cwd":"x"}`)
-		for range g.r.IntN(8) {
-			input[g.r.IntN(len(input))] = alphabet[g.r.IntN(len(alphabet))]
-		}
-		if g.r.IntN(4) == 0 {
-			input = input[:g.r.IntN(len(input))]
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_, _ = protocol.ReadHookInput(bytes.NewReader(input))
-		}()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("ReadHookInput hung on %.300q", input)
-		}
-	}
-}
-
 // A long string is read in slices of the read buffer's size. An escape split
 // across two of them still decides whether the quote after it closes the
 // string. The lengths tried put the end of the escape on every side of the
 // first slice boundary, wherever in the buffer the string starts.
 func TestReadHookInput_EscapesAcrossReadBoundaries(t *testing.T) {
-	unicodeEscape := `\` + `u00e9`
-	tails := []string{`\"`, `\\`, `\\\"`, `\\\\`, `\"\\`, unicodeEscape, unicodeEscape + `\"`}
+	tails := []string{`\"`, `\\`, `\\\"`, `\\\\`, `\"\\`, bu + `00e9`, bu + `00E9\"`}
 	const prefix = `{"tool_response":"`
 	for _, tail := range tails {
 		for length := protocol.HookReadBuffer - 40; length <= protocol.HookReadBuffer+40; length++ {

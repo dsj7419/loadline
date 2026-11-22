@@ -35,13 +35,16 @@ type HookInput struct {
 // holds a 16 KiB read buffer, the nesting of the value being read, at most
 // 10 000 levels, and the members it keeps, at most MaxPayloadBytes each and
 // 1 MiB in all. A longer member is checked and passed over unkept; as it
-// could not be forwarded anyway, its field reads as empty. As in
-// encoding/json, the last occurrence of a key, in any letter case, wins.
+// could not be forwarded anyway, its field reads as empty. So does a field
+// that a payload would encode in more than 4 KiB, which keeps every payload
+// encoded from a HookInput within MaxPayloadBytes. As in encoding/json, the
+// last occurrence of a key, in any letter case, wins.
 //
 // Every field is optional, and one holding a value of the wrong type is
 // left empty. Input that encoding/json would refuse, in a kept member or a
-// passed-over one, is an error, and then nothing is returned. Reading stops
-// at the object's closing brace.
+// passed-over one, is an error, and then nothing is returned. Decoding stops
+// at the object's closing brace, though up to 16 KiB past it may have been
+// read from r into the buffer.
 func ReadHookInput(r io.Reader) (HookInput, error) {
 	kept, err := shortMembers(bufio.NewReaderSize(r, hookReadBuffer))
 	if err != nil {
@@ -51,7 +54,38 @@ func ReadHookInput(r io.Reader) (HookInput, error) {
 	if err := ignoreFieldTypeError(json.Unmarshal(kept, &in)); err != nil {
 		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
+	in.emptyLongFields()
 	return in, nil
+}
+
+// maxHookField is the longest a HookInput field may be as a payload encodes
+// it, quotes aside. All ten fields that long, with their names, come to
+// about 40 KiB, so no hook event is refused, or spooled for good, for its
+// size.
+const maxHookField = 4 << 10
+
+// emptyLongFields empties each field longer than maxHookField as a payload
+// encodes it, as if it were a member too long to keep.
+func (in *HookInput) emptyLongFields() {
+	for _, field := range []*string{
+		&in.SessionID, &in.HookEventName, &in.Source, &in.Reason, &in.NotificationType,
+		&in.ToolName, &in.AgentID, &in.AgentType, &in.PermissionMode, &in.Cwd,
+	} {
+		if !fitsInAField(*field) {
+			*field = ""
+		}
+	}
+}
+
+// fitsInAField reports whether json.Marshal writes s in at most maxHookField
+// bytes, quotes aside. Escaping writes a byte as six at most, so a short
+// string needs no encoding to tell.
+func fitsInAField(s string) bool {
+	if 6*len(s) <= maxHookField {
+		return true
+	}
+	encoded, err := json.Marshal(s)
+	return err == nil && len(encoded)-2 <= maxHookField
 }
 
 // HookEvent maps a hook payload to the domain event, stamped with the

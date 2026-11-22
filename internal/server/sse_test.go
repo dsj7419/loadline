@@ -637,7 +637,7 @@ func TestSSE_LogsAFailedWrite(t *testing.T) {
 
 // A writer without deadlines streams, but a client that stops reading could
 // then hold its stream forever, so the process says so, once, however many
-// servers it runs and streams they serve.
+// servers it runs: here three, one stream each, logging to two loggers.
 func TestSSE_WarnsOncePerProcessWhenStreamWritesHaveNoDeadline(t *testing.T) {
 	server.ResetNoDeadlineWarning()
 	t.Cleanup(server.ResetNoDeadlineWarning)
@@ -658,6 +658,6 @@ func TestSSE_WarnsOncePerProcessWhenStreamWritesHaveNoDeadline(t *testing.T) {
 
 	warnings := len(first.find(slog.LevelWarn, "")) + len(second.find(slog.LevelWarn, ""))
 	if warnings != 1 {
-		t.Errorf("%d warnings from two servers streaming without write deadlines, want exactly one", warnings)
+		t.Errorf("%d warnings from three servers streaming without write deadlines, want exactly one", warnings)
 	}
 }
