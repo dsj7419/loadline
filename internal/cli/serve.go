@@ -252,7 +252,6 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		Clock:     clock,
 		AfterFunc: after,
 	}
-	s.dirs.hasLive, s.dirs.dropped = s.tracker.HasLiveIn, s.prober.Forget
 	for _, dir := range startDirs {
 		s.prober.Observe(dir)
 	}
@@ -313,8 +312,14 @@ func (s *instance) noteDir(dir domain.ConfigDir) {
 
 func (s *instance) listSessions(client claudecli.Client) func(context.Context, domain.ConfigDir, time.Time) ([]domain.Poll, error) {
 	return func(ctx context.Context, dir domain.ConfigDir, at time.Time) ([]domain.Poll, error) {
-		if !s.dirs.present(dir) {
-			// What claude would list there, once it had created the dir.
+		if !s.dirs.exists(dir) {
+			// claude would list no session there, once it had created the
+			// dir. With none of its sessions live, the dir is neither polled
+			// nor probed again until an event names it.
+			if !s.tracker.HasLiveIn(dir) {
+				s.dirs.drop(dir)
+				s.prober.Forget(dir)
+			}
 			return nil, nil
 		}
 		polls, err := client.Agents(ctx, dir, at)
@@ -327,7 +332,7 @@ func (s *instance) listSessions(client claudecli.Client) func(context.Context, d
 
 func (s *instance) probeAccount(client claudecli.Client) func(context.Context, domain.ConfigDir) (claudecli.AuthStatus, error) {
 	return func(ctx context.Context, dir domain.ConfigDir) (claudecli.AuthStatus, error) {
-		if !s.dirs.present(dir) {
+		if !s.dirs.exists(dir) {
 			return claudecli.AuthStatus{}, errConfigDirMissing
 		}
 		status, err := client.AuthStatus(ctx, dir)

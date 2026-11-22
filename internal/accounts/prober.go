@@ -82,8 +82,10 @@ func (p *Prober) Observe(dir domain.ConfigDir) {
 // once. A probe of it already running finishes, and schedules nothing.
 func (p *Prober) Forget(dir domain.ConfigDir) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.dirs, dir)
+	p.mu.Unlock()
+	// The wait for dir's next probe may be the one Run is in.
+	p.signal()
 }
 
 // Run probes each observed dir when it is due, until ctx ends, and returns

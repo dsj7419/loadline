@@ -921,8 +921,9 @@ func TestServe_StartupDrainAsksForNoExtraPoll(t *testing.T) {
 
 // claude, pointed at a config dir that is not there, creates it, and
 // Loadline only observes. So claude never runs for a dir that is missing: a
-// default dir Claude Code never made, a mistyped account in the config, or a
-// dir an event named that has since been deleted. Each is logged once.
+// default dir Claude Code never made, a mistyped account in the config, a
+// dir an event named that has since been deleted, or a path that is a file.
+// Each is logged once.
 func TestServe_NeverRunsClaudeForAMissingConfigDir(t *testing.T) {
 	f := newServeFixture(t)
 	if err := os.Remove(string(f.defaultDir())); err != nil {
@@ -932,12 +933,20 @@ func TestServe_NeverRunsClaudeForAMissingConfigDir(t *testing.T) {
 	f.mkdirs(existing)
 	typo := f.dir(".cluade-work")
 	gone := f.dir(filepath.Join("throwaway", ".claude"))
-	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"},{"configDir":"~/.cluade-work","label":"Work"}]}`)
+	file := f.dir(".claude-file")
+	if err := os.WriteFile(string(file), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"},{"configDir":"~/.cluade-work","label":"Work"},` +
+		`{"configDir":"~/.claude-file","label":"File"}]}`)
 	r := f.start()
 
 	waitFor(t, "the existing account polled and probed", func() bool {
 		return f.claude.callsFor(existing, agentsCommand) > 0 && f.claude.callsFor(existing, authCommand) > 0
 	})
+	// No probe of a missing dir is tried again: the next is the existing
+	// account's, six hours on.
+	f.waitArmed(accounts.DefaultEvery)
 	f.waitArmed(30 * time.Second)
 	f.hook(gone, "s-gone", "SessionEnd")
 	for range 2 {
@@ -949,9 +958,9 @@ func TestServe_NeverRunsClaudeForAMissingConfigDir(t *testing.T) {
 	r.stop(t)
 
 	log := f.logText()
-	for _, missing := range []domain.ConfigDir{f.defaultDir(), typo, gone} {
-		if _, err := os.Stat(string(missing)); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("%s: %v; the test needs it missing", missing, err)
+	for _, missing := range []domain.ConfigDir{f.defaultDir(), typo, gone, file} {
+		if info, err := os.Stat(string(missing)); !errors.Is(err, fs.ErrNotExist) && (err != nil || info.IsDir()) {
+			t.Fatalf("%s: %v; the test needs it missing or a file", missing, err)
 		}
 		for _, call := range f.claude.history() {
 			if call.dir == missing {

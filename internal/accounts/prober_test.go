@@ -452,3 +452,31 @@ func TestProber_ForgetDuringAProbeSchedulesNothing(t *testing.T) {
 	}
 	h.prober.Forget(dirB) // a dir never observed
 }
+
+// Forgetting the dir whose probe is due next leaves Run waiting for the next
+// of the others.
+func TestProber_ForgetReschedulesTheWait(t *testing.T) {
+	h := newHarness()
+	h.auth.queue(dirB, answer{err: errors.New("auth status: exit status 1")})
+	h.run(t)
+	h.prober.Observe(dirA)
+	h.prober.Observe(dirB)
+	h.auth.waitProbes(t, 2)
+	waitPending(t, h.clock, []time.Duration{5 * time.Minute})
+
+	h.prober.Forget(dirB)
+
+	waitPending(t, h.clock, []time.Duration{every})
+}
+
+// waitPending waits until the timers pending on clock are want.
+func waitPending(t *testing.T, clock *clocktest.Clock, want []time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Equal(clock.Pending(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timers %v, want %v", clock.Pending(), want)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
