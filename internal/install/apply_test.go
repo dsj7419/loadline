@@ -317,3 +317,153 @@ func TestApply_RemovesItsOwnOldLeftovers(t *testing.T) {
 		t.Errorf("dir holds %q, want %q", got, want)
 	}
 }
+
+// Every backup holds the token the settings held, so Apply keeps only the
+// newest three of those it made of a file. It knows its own by their names,
+// and leaves every other file alone, however alike its name.
+func TestApply_KeepsOnlyTheNewestThreeBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := readFile(t, "testdata/settings_owner.in.json")
+	writeFile(t, path, original)
+	older := []string{
+		"settings.json.loadline-20251231-235959.bak",
+		"settings.json.loadline-20261120-080000.bak",
+		"settings.json.loadline-20261121-093004.bak",
+		"settings.json.loadline-20261121-093004-2.bak",
+		"settings.json.loadline-20261121-093004-10.bak",
+	}
+	others := []string{
+		"settings.json.bak",
+		"settings.json.loadline-mine.bak",
+		"settings.json.loadline-20261121-0930.bak",
+		"settings.json.loadline-20261399-000000.bak",
+		"settings.json.loadline-20261121-093003-1.bak",
+		"settings.json.loadline-20261121-093003-02.bak",
+		"settings.json.loadline-20261121-093003-101.bak",
+		"settings.json.loadline-20261121-093003.bak.old",
+		"other.json.loadline-20200101-000000.bak",
+		"Xsettings.json.loadline-20200101-000000.bak",
+	}
+	for _, name := range append(slices.Clone(older), others...) {
+		writeFile(t, filepath.Join(dir, name), []byte("x-loadline-token=secret"))
+	}
+	if err := os.Mkdir(filepath.Join(dir, "settings.json.loadline-20200101-000000.bak"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := install.Apply(path, original, readFile(t, "testdata/settings_owner.out.json"), applyTime)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := append([]string{
+		"settings.json",
+		filepath.Base(backup),
+		"settings.json.loadline-20200101-000000.bak",
+		"settings.json.loadline-20261121-093004-10.bak",
+		"settings.json.loadline-20261121-093004-2.bak",
+	}, others...)
+	slices.Sort(want)
+	if got := dirEntries(t, dir); !slices.Equal(got, want) {
+		t.Errorf("dir holds %q, want %q", got, want)
+	}
+}
+
+func TestApply_CreatingTheFileKeepsOnlyTheNewestThreeBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	for _, name := range []string{
+		"settings.json.loadline-20261101-000000.bak",
+		"settings.json.loadline-20261102-000000.bak",
+		"settings.json.loadline-20261103-000000.bak",
+		"settings.json.loadline-20261104-000000.bak",
+	} {
+		writeFile(t, filepath.Join(dir, name), []byte("x-loadline-token=secret"))
+	}
+
+	if _, err := install.Apply(path, nil, []byte(`{}`), applyTime); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := []string{
+		"settings.json",
+		"settings.json.loadline-20261102-000000.bak",
+		"settings.json.loadline-20261103-000000.bak",
+		"settings.json.loadline-20261104-000000.bak",
+	}
+	if got := dirEntries(t, dir); !slices.Equal(got, want) {
+		t.Errorf("dir holds %q, want %q", got, want)
+	}
+}
+
+func TestApply_ARefusedWriteRemovesNoBackup(t *testing.T) {
+	backups := []string{
+		"settings.json.loadline-20261101-000000.bak",
+		"settings.json.loadline-20261102-000000.bak",
+		"settings.json.loadline-20261103-000000.bak",
+		"settings.json.loadline-20261104-000000.bak",
+	}
+	original := []byte(`{"model": "opus"}`)
+	edited := []byte(`{"model": "sonnet"}`)
+	tests := map[string]func(t *testing.T, path string){
+		"changed before Apply": func(t *testing.T, path string) {
+			t.Helper()
+			writeFile(t, path, edited)
+		},
+		"changed just before the rename": func(t *testing.T, path string) {
+			t.Helper()
+			writeFile(t, path, original)
+			install.SetBeforeRecheck(t, func() { writeFile(t, path, edited) })
+		},
+	}
+	for name, change := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "settings.json")
+			for _, backup := range backups {
+				writeFile(t, filepath.Join(dir, backup), []byte("x-loadline-token=secret"))
+			}
+			change(t, path)
+
+			if _, err := install.Apply(path, original, []byte(`{}`), applyTime); !errors.Is(err, install.ErrChangedSincePlan) {
+				t.Fatalf("Apply = %v, want ErrChangedSincePlan", err)
+			}
+
+			if got, want := dirEntries(t, dir), append([]string{"settings.json"}, backups...); !slices.Equal(got, want) {
+				t.Errorf("dir holds %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A clock that was set back leaves backups that look newer than the one
+// Apply makes now, which it reports and so must keep.
+func TestApply_KeepsTheBackupItJustMade(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := readFile(t, "testdata/settings_owner.in.json")
+	writeFile(t, path, original)
+	for _, name := range []string{
+		"settings.json.loadline-20991231-235957.bak",
+		"settings.json.loadline-20991231-235958.bak",
+		"settings.json.loadline-20991231-235959.bak",
+	} {
+		writeFile(t, filepath.Join(dir, name), []byte("x-loadline-token=secret"))
+	}
+
+	backup, err := install.Apply(path, original, readFile(t, "testdata/settings_owner.out.json"), applyTime)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := []string{
+		"settings.json",
+		filepath.Base(backup),
+		"settings.json.loadline-20991231-235958.bak",
+		"settings.json.loadline-20991231-235959.bak",
+	}
+	if got := dirEntries(t, dir); !slices.Equal(got, want) {
+		t.Errorf("dir holds %q, want %q", got, want)
+	}
+}

@@ -2,11 +2,14 @@ package install
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,6 +26,10 @@ const (
 	backupTimeLayout = "20060102-150405"
 	// maxBackupsPerSecond bounds the search for a free backup name.
 	maxBackupsPerSecond = 100
+	// keptBackups is how many of its backups of a settings file Apply keeps.
+	// Each holds the ingest token the file held, so they are not kept for
+	// ever.
+	keptBackups = 3
 	// leftoverAge is how old one of Apply's temporary files must be before
 	// another Apply takes it for the leftover of one that crashed. A younger
 	// one may belong to an Apply that is still writing.
@@ -45,7 +52,9 @@ var testHookBeforeRecheck func()
 // a symlink stays one: the file it points to is replaced. The file and its
 // backup keep the owner's permissions, but group and others lose theirs, as
 // both may hold the ingest token. Temporary files that an earlier, crashed
-// Apply left beside the file are removed once they are an hour old.
+// Apply left beside the file are removed once they are an hour old, and once
+// the file is written, only the newest three of the backups Apply made of it
+// are kept, the one it has just made among them.
 func Apply(path string, original, out []byte, now time.Time) (string, error) {
 	current, err := os.ReadFile(filepath.Clean(path))
 	switch {
@@ -53,7 +62,11 @@ func Apply(path string, original, out []byte, now time.Time) (string, error) {
 		if len(original) != 0 {
 			return "", fmt.Errorf("%s: %w", path, ErrChangedSincePlan)
 		}
-		return "", writeAtomically(path, out, newFileMode, now, func() error { return unchanged(path, nil) })
+		if err := writeAtomically(path, out, newFileMode, now, func() error { return unchanged(path, nil) }); err != nil {
+			return "", err
+		}
+		pruneBackups(path, "")
+		return "", nil
 	case err != nil:
 		return "", fmt.Errorf("read %s: %w", path, err)
 	case !bytes.Equal(current, original):
@@ -82,6 +95,7 @@ func Apply(path string, original, out []byte, now time.Time) (string, error) {
 		}
 		return backup, err
 	}
+	pruneBackups(path, backup)
 	return backup, nil
 }
 
@@ -133,6 +147,74 @@ func writeBackup(path string, data []byte, mode fs.FileMode, now time.Time) (str
 		return name, nil
 	}
 	return "", fmt.Errorf("create backup of %s: %d backups from this second already exist", path, maxBackupsPerSecond)
+}
+
+// pruneBackups removes, as well as it can, all but keptBackups of the
+// backups writeBackup made of the file at path: made, the one just made,
+// which is "" when there is none, and the newest of the others. Their names
+// say how new they are, and a clock that was set back can leave older ones
+// that look newer than made. It knows them by the names writeBackup gives
+// them, so it never removes any other file.
+func pruneBackups(path, made string) {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	keep := keptBackups
+	var backups []backupName
+	for _, entry := range entries {
+		b, ok := parseBackupName(base, entry.Name())
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+		if made != "" && entry.Name() == filepath.Base(made) {
+			keep--
+			continue
+		}
+		backups = append(backups, b)
+	}
+	slices.SortFunc(backups, func(a, b backupName) int {
+		return cmp.Or(strings.Compare(b.stamp, a.stamp), cmp.Compare(b.n, a.n))
+	})
+	for _, b := range backups[min(keep, len(backups)):] {
+		_ = os.Remove(filepath.Join(dir, b.name))
+	}
+}
+
+// backupName is the name of a backup writeBackup made: its time stamp, and
+// which backup of that second it is, counting from 1.
+type backupName struct {
+	name  string
+	stamp string
+	n     int
+}
+
+// parseBackupName reads name as writeBackup names a backup of the file
+// called base, <base>.loadline-<stamp>.bak or <base>.loadline-<stamp>-<n>.bak
+// with n from 2 to maxBackupsPerSecond, and reports whether it is one.
+func parseBackupName(base, name string) (backupName, bool) {
+	rest, ok := strings.CutPrefix(name, base+".loadline-")
+	if !ok {
+		return backupName{}, false
+	}
+	rest, ok = strings.CutSuffix(rest, ".bak")
+	if !ok || len(rest) < len(backupTimeLayout) {
+		return backupName{}, false
+	}
+	stamp, suffix := rest[:len(backupTimeLayout)], rest[len(backupTimeLayout):]
+	if _, err := time.Parse(backupTimeLayout, stamp); err != nil {
+		return backupName{}, false
+	}
+	if suffix == "" {
+		return backupName{name: name, stamp: stamp, n: 1}, true
+	}
+	digits, ok := strings.CutPrefix(suffix, "-")
+	n, err := strconv.Atoi(digits)
+	if !ok || err != nil || n < 2 || n > maxBackupsPerSecond || strconv.Itoa(n) != digits {
+		return backupName{}, false
+	}
+	return backupName{name: name, stamp: stamp, n: n}, true
 }
 
 // writeAtomically replaces the file at path with data by renaming a
