@@ -20,10 +20,17 @@ The first release, to be tagged 0.1.0.
   reports, when they reset, the burn rate, and whether the account is on pace to run out first.
   Accounts that pay per token show their spend, estimated at list price, against an optional daily
   budget.
+- A pace for each limit window, such as `×1.4`: how fast the window is being used, as a multiple
+  of the rate that would reach 100% just as it resets, coloured by how it compares with that rate.
+- Usage credits for subscription accounts that keep working past a plan limit: an ON CREDITS badge
+  while the account is on them, and a credits row with what it has spent since, estimated at list
+  price, against the credits recorded in `config.json`. A spend limit that the status line reports
+  replaces the estimate.
 - Token and cost totals by model, for today and the last 7 days.
 - Alerts for a session waiting on you, an account past its weekly threshold or on pace to reach a
-  limit before it resets, a spent daily budget, and a nearly full context window, as a banner, a
-  count in the page title and a favicon dot, with opt-in browser notifications.
+  limit before it resets, an account that starts using usage credits or has spent 80% of them, a
+  spent daily budget, and a nearly full context window, as a banner, a count in the page title and
+  a favicon dot, with opt-in browser notifications.
 - `loadline install` and `loadline uninstall`, which edit Claude Code's `settings.json` in place,
   show the diff first and keep a backup; uninstall restores what was there before.
 - `loadline doctor`, which checks the setup, the server and each feed.
