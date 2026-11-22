@@ -17,6 +17,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
@@ -252,5 +253,100 @@ func TestCheck_RefusesAFileWhoseAccessListItCannotRead(t *testing.T) {
 
 	if got, err := datadir.Check(home, top); err == nil || !strings.Contains(err.Error(), log) {
 		t.Errorf("Check = %q, %v; want it to fail, naming %s", got, err, log)
+	}
+}
+
+// A list of fewer entries than the data directory passes down, each still
+// marked inherited, holds nothing explicit and is not protected, yet it is
+// not what the data directory passes down: without the user's entry, the
+// user is locked out of a file of their own, and a folder whose entries pass
+// nothing on gives what is created in it nothing. Secure puts back what the
+// data directory passes down.
+func TestSecure_RestoresWhatTheDataDirectoryPassesDown(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	want := map[bool]string{
+		false: "(A;ID;FA;;;" + user + ")(A;ID;FA;;;SY)(A;ID;FA;;;BA)",
+		true:  "(A;OICIID;FA;;;" + user + ")(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)",
+	}
+	read := func(path string) error { _, err := os.ReadFile(path); return err }
+	spool := func(path string) error { return forward.Spool{Dir: path}.Put(hookEvent(t)) }
+	for name, tt := range map[string]struct {
+		path, list string
+		folder     bool
+		usable     func(path string) error
+	}{
+		"the token, without the user's entry": {path: "token", list: "D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)", usable: read},
+		"the binary, for SYSTEM alone":        {path: filepath.Join("bin", "loadline.exe"), list: "D:AI(A;ID;FA;;;SY)", usable: read},
+		"the spool, for SYSTEM alone":         {path: "spool", list: "D:AI(A;OICIID;FA;;;SY)", folder: true, usable: spool},
+		"the spool, passing nothing on": {
+			path: "spool", list: "D:AI(A;ID;FA;;;" + user + ")(A;ID;FA;;;SY)(A;ID;FA;;;BA)", folder: true, usable: spool,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, tt.path)
+			fspermtest.SetAccessListAsIs(t, path, tt.list)
+			// So that the temporary folder can be removed whatever Secure did.
+			t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+
+			if err := datadir.Secure(home, top); err != nil {
+				t.Fatalf("Secure: %v", err)
+			}
+
+			if got := entriesOf(fspermtest.AccessList(t, path)); got != want[tt.folder] {
+				t.Errorf("after Secure, %s, given %s, holds %s; want what the data directory passes down, %s", path, tt.list, got, want[tt.folder])
+			}
+			if err := tt.usable(path); err != nil {
+				t.Errorf("after Secure, the user still cannot use %s: %v", path, err)
+			}
+		})
+	}
+}
+
+// A protected list that is the private one entry for entry but for the
+// kind of one of them, or their order, or with one entry more, is not the
+// private list.
+func TestSecure_ReplacesAProtectedListThatIsNotExactlyThePrivateOne(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	private := "(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	inherited := "(A;OICIID;FA;;;" + user + ")(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)"
+	for name, list := range map[string]string{
+		"in another order":                    "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;BA)",
+		"with a read entry for others":        "D:P" + private + "(A;OICI;FR;;;AU)",
+		"for others in Administrators' place": "D:P(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;AU)",
+	} {
+		for _, where := range []string{"spool", "the data directory"} {
+			t.Run(name+", on "+where, func(t *testing.T) {
+				home, top := loadlineHome(t)
+				path := home
+				if where == "spool" {
+					path = filepath.Join(home, "spool")
+				}
+				fspermtest.SetAccessList(t, path, list)
+
+				if err := datadir.Secure(home, top); err != nil {
+					t.Fatalf("Secure: %v", err)
+				}
+
+				if got := entriesOf(fspermtest.AccessList(t, path)); got != private && (where != "spool" || got != inherited) {
+					t.Errorf("after Secure, %s, given %s, holds %s; want the private list", path, list, got)
+				}
+			})
+		}
+	}
+}
+
+// A folder of Loadline's whose list keeps the user out is reported, since
+// what it holds cannot be judged, and install puts it right.
+func TestCheck_ReportsAFolderOfLoadlinesThatKeepsTheUserOut(t *testing.T) {
+	home, top := loadlineHome(t)
+	spool := filepath.Join(home, "spool")
+	fspermtest.SetAccessListAsIs(t, spool, "D:AI(A;OICIID;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+
+	got, err := datadir.Check(home, top)
+
+	if want := spool + " keeps you from seeing what it holds; run loadline install"; err != nil || got != want {
+		t.Errorf("Check = %q, %v; want %q", got, err, want)
 	}
 }

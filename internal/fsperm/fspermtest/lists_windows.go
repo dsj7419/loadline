@@ -57,6 +57,32 @@ func SetAccessList(tb testing.TB, path, sddl string) {
 	}
 }
 
+// SetAccessListAsIs stores the access list sddl describes on path, a file or
+// directory the test created, exactly as written, each entry's inherited
+// flag included, as SetFileSecurity and backup tools do: Windows works out
+// nothing from the folder above.
+func SetAccessListAsIs(tb testing.TB, path, sddl string) {
+	tb.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		tb.Fatalf("parse %s: %v", sddl, err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.WRITE_DAC|windows.READ_CONTROL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		tb.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	if err := windows.SetKernelObjectSecurity(handle, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
+		tb.Fatalf("store %s on %s: %v", sddl, path, err)
+	}
+}
+
 // Entry is one allow entry for every signed-in user, of any kind.
 type Entry struct {
 	// Kind is the entry's type: 0 for a plain one, or one of the kinds

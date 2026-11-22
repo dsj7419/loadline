@@ -60,17 +60,24 @@ func Make(dir string) error {
 	if err := fsperm.Private(dir); err != nil {
 		return err
 	}
-	paths, link, err := ownPaths(dir)
+	// Each path is cleaned before the walk looks into it, so that a folder
+	// whose list kept the user from listing it is listed once it is the
+	// user's again, and what it holds, judged as the rest was.
+	found, err := ownPaths(dir, func(path string) error {
+		problem, err := ownerProblem(path)
+		if err != nil {
+			return err
+		}
+		if problem != "" {
+			return errors.New(problem)
+		}
+		return clearOwnEntries(path)
+	})
 	if err != nil {
 		return err
 	}
-	if link != "" {
-		return errors.New(linkProblem(link))
-	}
-	for _, path := range paths {
-		if err := clearOwnEntries(path); err != nil {
-			return err
-		}
+	if found.link != "" {
+		return errors.New(linkProblem(found.link))
 	}
 	return nil
 }
@@ -127,11 +134,14 @@ func Check(dir, top string) (string, error) {
 	if problem, err := exposed(dir, fsperm.Exposure); err != nil || problem != "" {
 		return problem, err
 	}
-	paths, _, err := ownPaths(dir)
+	found, err := ownPaths(dir, nil)
 	if err != nil {
 		return "", err
 	}
-	for _, path := range paths {
+	if found.locked != "" {
+		return found.locked + " keeps you from seeing what it holds; run loadline install", nil
+	}
+	for _, path := range found.paths {
 		if problem, err := entryProblem(path); err != nil || problem != "" {
 			return problem, err
 		}
@@ -175,14 +185,16 @@ func contentProblem(dir string) (string, error) {
 	if foreign != "" {
 		return foreignProblem(dir, foreign), nil
 	}
-	paths, link, err := ownPaths(dir)
+	// A folder the user may not list is no refusal: Make puts its list back
+	// to what the data directory passes down, and judges what it holds then.
+	found, err := ownPaths(dir, nil)
 	if err != nil {
 		return "", err
 	}
-	if link != "" {
-		return linkProblem(link), nil
+	if found.link != "" {
+		return linkProblem(found.link), nil
 	}
-	for _, path := range paths {
+	for _, path := range found.paths {
 		if problem, err := ownerProblem(path); err != nil || problem != "" {
 			return problem, err
 		}

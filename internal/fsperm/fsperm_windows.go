@@ -105,31 +105,40 @@ func isList(sd *windows.SECURITY_DESCRIPTOR, want *windows.ACL) (bool, error) {
 const fileAllAccess windows.ACCESS_MASK = 0x1f01ff
 
 // EntryPrivate reports whether path, a file or folder in a private folder,
-// holds nothing of its own in its access list: either every entry in it is
-// one its folder passed down, giving full control to the user, SYSTEM or
-// Administrators, or it is the private list itself, protected, as each
-// folder Loadline makes has. Any other list is not: one with an entry given
-// to path explicitly, a denial among them, one protected from what the
-// folder passes down, or one that brought its entries from somewhere else.
+// has exactly what that folder passes down: the three entries giving full
+// control to the user, SYSTEM and Administrators, each inherited, and for a
+// folder, each passed on to what it holds. A folder may instead have the
+// private list itself, protected, as each folder Loadline makes has. Any
+// other list is not private: one with an entry given to path explicitly, a
+// denial among them, one protected from what the folder passes down, one
+// that brought its entries from somewhere else, or one that lacks an entry,
+// which keeps the user out of a file of their own.
 func EntryPrivate(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return false, fmt.Errorf("read the access list of %s: %w", path, err)
 	}
 	defer runtime.KeepAlive(sd)
-	private, err := isPrivate(sd)
+	private, err := isPrivate(sd, info.IsDir())
 	if err != nil {
 		return false, fmt.Errorf("read the access list of %s: %w", path, err)
 	}
 	return private, nil
 }
 
-func isPrivate(sd *windows.SECURITY_DESCRIPTOR) (bool, error) {
+func isPrivate(sd *windows.SECURITY_DESCRIPTOR, folder bool) (bool, error) {
 	control, _, err := sd.Control()
 	if err != nil {
 		return false, err
 	}
 	if control&windows.SE_DACL_PROTECTED != 0 {
+		if !folder {
+			return false, nil
+		}
 		private, err := privateDescriptor()
 		if err != nil {
 			return false, err
@@ -152,15 +161,29 @@ func isPrivate(sd *windows.SECURITY_DESCRIPTOR) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if int(dacl.AceCount) != len(trusted) {
+		return false, nil
+	}
+	flags := uint8(windows.INHERITED_ACE)
+	if folder {
+		flags |= windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+	}
+	seen := make([]bool, len(trusted))
 	for i := range uint32(dacl.AceCount) {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
 			return false, err
 		}
-		if ace.Header.AceFlags&windows.INHERITED_ACE == 0 || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE ||
-			ace.Mask != fileAllAccess || !slices.ContainsFunc(trusted, entrySID(ace).Equals) {
+		if ace.Header.AceFlags != flags || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Mask != fileAllAccess {
 			return false, nil
 		}
+		// Each of the three once: with as many entries as there are of
+		// them, none is then missing.
+		k := slices.IndexFunc(trusted, entrySID(ace).Equals)
+		if k < 0 || seen[k] {
+			return false, nil
+		}
+		seen[k] = true
 	}
 	return true, nil
 }

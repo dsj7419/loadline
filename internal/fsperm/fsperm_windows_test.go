@@ -407,6 +407,23 @@ func broughtIn(t *testing.T, root, sddl string) string {
 	return moved
 }
 
+// storedAsIs makes a file, or a folder, at path and stores the access list
+// sddl describes on it exactly as written.
+func storedAsIs(t *testing.T, path string, folder bool, sddl string) string {
+	t.Helper()
+	if folder {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		write(t, path)
+	}
+	fspermtest.SetAccessListAsIs(t, path, sddl)
+	// So that the temporary folder can be removed whatever the list.
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+	return path
+}
+
 // A file or folder in a private folder holds nothing of its own when all it
 // has is what that folder passes down, full control for the user, SYSTEM
 // and Administrators, or when it is a folder with the private list itself.
@@ -471,6 +488,33 @@ func TestEntryPrivate_TakesOnlyWhatAPrivateFolderGives(t *testing.T) {
 			t.Helper()
 			return broughtIn(t, root, "D:P(A;OICI;FA;;;AU)(A;OICI;FA;;;"+user+")"+trusted)
 		}, false},
+		// Entries stored as they are, as SetFileSecurity and backup tools
+		// store them, each marked inherited, which are not what the folder
+		// passes down.
+		"a file without the user's entry": {func(t *testing.T, root string) string {
+			t.Helper()
+			return storedAsIs(t, filepath.Join(root, "token"), false, "D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)")
+		}, false},
+		"a file with the user's entry twice for Administrators'": {func(t *testing.T, root string) string {
+			t.Helper()
+			return storedAsIs(t, filepath.Join(root, "token"), false, "D:AI(A;ID;FA;;;"+user+")(A;ID;FA;;;SY)(A;ID;FA;;;"+user+")")
+		}, false},
+		"a file with entries it would pass on": {func(t *testing.T, root string) string {
+			t.Helper()
+			return storedAsIs(t, filepath.Join(root, "token"), false, "D:AI(A;OICIID;FA;;;"+user+")(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)")
+		}, false},
+		"a folder whose entries pass nothing on": {func(t *testing.T, root string) string {
+			t.Helper()
+			return storedAsIs(t, filepath.Join(root, "spool"), true, "D:AI(A;ID;FA;;;"+user+")(A;ID;FA;;;SY)(A;ID;FA;;;BA)")
+		}, false},
+		"a folder made in it": {func(t *testing.T, root string) string {
+			t.Helper()
+			path := filepath.Join(root, "spool")
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "loadline")

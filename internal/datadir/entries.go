@@ -129,47 +129,62 @@ func linkProblem(path string) string {
 // not elevated, or not root, cannot give a file another owner.
 var foreignOwner = fsperm.ForeignOwner
 
-// ownPaths returns what Loadline keeps in dir: each entry it owns, and
+// tree is what a walk of Loadline's paths in the data directory found.
+type tree struct {
+	// paths are Loadline's files and folders, each folder before what it
+	// holds.
+	paths []string
+	// link is the first link among them, where the walk stopped, or "".
+	link string
+	// locked is the first folder among them that the user may not list, or
+	// "": what it holds is not in paths.
+	locked string
+}
+
+// ownPaths walks what Loadline keeps in dir: each entry it owns, and
 // everything below the folders among them, except the regular files that
 // are still being written (Temporary). It follows no link: it stops at the
-// first and returns it. A dir that does not exist holds nothing, and an
-// entry that goes while it looks, as a spooled event does once drained, is
-// left out.
-func ownPaths(dir string) (paths []string, link string, err error) {
+// first. A dir that does not exist holds nothing, and an entry that goes
+// while it looks, as a spooled event does once drained, is left out.
+//
+// visit, when it is set, runs on each path before the walk looks into it,
+// and may change it: Make takes off a folder's own entries there, which may
+// be what keeps the user from listing it. Without visit, a folder the user
+// may not list is noted in locked, not an error.
+func ownPaths(dir string, visit func(path string) error) (tree, error) {
+	var found tree
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, "", nil
+		return found, nil
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("read the data directory: %w", err)
+		return found, fmt.Errorf("read the data directory: %w", err)
 	}
 	for _, entry := range entries {
 		if !Owns(entry.Name()) {
 			continue
 		}
-		found, link, err := walk(filepath.Join(dir, entry.Name()), entry.Type())
-		paths = append(paths, found...)
-		if err != nil || link != "" {
-			return paths, link, err
+		if err := found.walk(filepath.Join(dir, entry.Name()), entry.Type(), visit); err != nil || found.link != "" {
+			return found, err
 		}
 	}
-	return paths, "", nil
+	return found, nil
 }
 
-// walk returns path, whose type its folder's listing gave as typ, and when
-// it is a folder, everything below it, stopping at the first link and
-// passing over the regular files that are still being written.
-func walk(path string, typ fs.FileMode) (paths []string, link string, err error) {
+// walk adds path, whose type its folder's listing gave as typ, and when it
+// is a folder, everything below it, stopping at the first link and passing
+// over the regular files that are still being written.
+func (t *tree) walk(path string, typ fs.FileMode, visit func(path string) error) error {
 	if Temporary(filepath.Base(path)) && typ.IsRegular() {
 		// Not even looked at: it is its writer's, and on Windows, looking
 		// at one a moment after its writer deleted it fails while the
 		// deletion is pending. The listing, which opens nothing, tells a
 		// file from a link, which no writer makes and which is refused.
-		return nil, "", nil
+		return nil
 	}
 	var isLink bool
 	var info fs.FileInfo
-	err = settle(func() (err error) {
+	err := settle(func() (err error) {
 		if isLink, err = fsperm.IsLink(path); err != nil || isLink {
 			return err
 		}
@@ -180,29 +195,38 @@ func walk(path string, typ fs.FileMode) (paths []string, link string, err error)
 	})
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return nil, "", nil
+		return nil
 	case err != nil:
-		return nil, "", err
+		return err
 	case isLink:
-		return nil, path, nil
+		t.link = path
+		return nil
 	}
-	paths = []string{path}
-	if !info.IsDir() {
-		return paths, "", nil
-	}
-	entries, err := os.ReadDir(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return paths, "", nil
-	}
-	if err != nil {
-		return paths, "", fmt.Errorf("read %s: %w", path, err)
-	}
-	for _, entry := range entries {
-		found, link, err := walk(filepath.Join(path, entry.Name()), entry.Type())
-		paths = append(paths, found...)
-		if err != nil || link != "" {
-			return paths, link, err
+	t.paths = append(t.paths, path)
+	if visit != nil {
+		if err := visit(path); err != nil {
+			return err
 		}
 	}
-	return paths, "", nil
+	if !info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case errors.Is(err, fs.ErrPermission) && visit == nil:
+		if t.locked == "" {
+			t.locked = path
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	for _, entry := range entries {
+		if err := t.walk(filepath.Join(path, entry.Name()), entry.Type(), visit); err != nil || t.link != "" {
+			return err
+		}
+	}
+	return nil
 }
