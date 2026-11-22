@@ -319,11 +319,12 @@ func isAPIRequest(rec logRecord, attrs attributes) bool {
 }
 
 // eventTime returns when the call happened: the event.timestamp attribute
-// (RFC 3339), or else the record's timeUnixNano. A time that fails
-// storable counts as missing.
+// (RFC 3339), or else the record's timeUnixNano. A time that is no valid
+// event time counts as missing; that also rules out the 0 an exporter writes
+// for an unset timestamp.
 func eventTime(rec logRecord, attrs attributes) (time.Time, bool) {
 	if text, ok := attrs.find(attrEventTime).text(); ok {
-		if at, err := time.Parse(time.RFC3339Nano, text); err == nil && storable(at.UTC()) {
+		if at, err := time.Parse(time.RFC3339Nano, text); err == nil && domain.ValidEventTime(at) {
 			return at.UTC(), true
 		}
 	}
@@ -337,14 +338,7 @@ func eventTime(rec logRecord, attrs attributes) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	at := time.Unix(0, nanos).UTC()
-	return at, storable(at)
-}
-
-// storable reports whether a time, in UTC, is after the Unix epoch and before
-// year 10000, which is as far as a time.Time marshals to JSON. It also rules
-// out the zero time and the 0 an exporter writes for an unset timestamp.
-func storable(at time.Time) bool {
-	return at.After(time.Unix(0, 0)) && at.Year() < 10000
+	return at, domain.ValidEventTime(at)
 }
 
 // cost returns the call's cost in US dollars, from cost_usd or else from

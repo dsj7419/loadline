@@ -49,6 +49,26 @@ func TestEnvelopeValidate(t *testing.T) {
 		{name: "no kind", mutate: func(e *protocol.Envelope) { e.Kind = "" }, wantErr: "kind"},
 		{name: "unknown kind", mutate: func(e *protocol.Envelope) { e.Kind = "poll" }, wantErr: "kind"},
 		{name: "zero time", mutate: func(e *protocol.Envelope) { e.At = time.Time{} }, wantErr: "time"},
+		{name: "time at the epoch", mutate: func(e *protocol.Envelope) { e.At = time.Unix(0, 0) }, wantErr: "time"},
+		{name: "first instant after the epoch", mutate: func(e *protocol.Envelope) { e.At = time.Unix(0, 1) }},
+		{
+			name:   "last instant of year 9999",
+			mutate: func(e *protocol.Envelope) { e.At = time.Date(9999, time.December, 31, 23, 59, 59, 999999999, time.UTC) },
+		},
+		{
+			// Year 9999 where it was written, year 10000 in UTC: no view
+			// holding it could be encoded.
+			name: "time past year 9999 in UTC",
+			mutate: func(e *protocol.Envelope) {
+				e.At = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.FixedZone("", -3600))
+			},
+			wantErr: "time",
+		},
+		{
+			name:    "time before year 0 in UTC",
+			mutate:  func(e *protocol.Envelope) { e.At = time.Date(0, time.January, 1, 0, 0, 0, 0, time.FixedZone("", 3600)) },
+			wantErr: "time",
+		},
 		{name: "no config dir", mutate: func(e *protocol.Envelope) { e.ConfigDir = "" }, wantErr: "config dir"},
 		{name: "relative config dir", mutate: func(e *protocol.Envelope) { e.ConfigDir = "claude/config" }, wantErr: "config dir"},
 		{name: "negative pid", mutate: func(e *protocol.Envelope) { e.PID = -1 }, wantErr: "pid"},

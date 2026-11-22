@@ -240,6 +240,18 @@ func TestIngest_RejectsMalformedEnvelope(t *testing.T) {
 		},
 		{name: "no time", body: envelopeWith(t, protocol.KindHook, hookPayload, remove("at")), reason: invalidEnvelope},
 		{
+			name: "time past year 9999 in UTC", reason: invalidEnvelope,
+			body: envelopeWith(t, protocol.KindHook, hookPayload, set("at", `"9999-12-31T23:59:59-01:00"`)),
+		},
+		{
+			name: "status time past year 9999 in UTC", route: statusRequest, reason: invalidEnvelope,
+			body: envelopeWith(t, protocol.KindStatus, statusPayload, set("at", `"9999-12-31T23:59:59-01:00"`)),
+		},
+		{
+			name: "time before the epoch", reason: invalidEnvelope,
+			body: envelopeWith(t, protocol.KindHook, hookPayload, set("at", `"1969-12-31T23:59:59Z"`)),
+		},
+		{
 			name: "unknown kind", reason: invalidEnvelope,
 			body: envelopeWith(t, protocol.KindHook, hookPayload, set("kind", `"poll"`)),
 		},

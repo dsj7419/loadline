@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
+
+	"github.com/dsj7419/loadline/internal/domain"
 )
 
 const (
@@ -75,6 +77,9 @@ func (e Envelope) Validate() error {
 	}
 	if e.At.IsZero() {
 		return fmt.Errorf("envelope has no event time")
+	}
+	if !domain.ValidEventTime(e.At) {
+		return fmt.Errorf("event time %s is not after 1970 and before year 10000 in UTC", e.At.Format(time.RFC3339Nano))
 	}
 	if !filepath.IsAbs(e.ConfigDir) {
 		return fmt.Errorf("config dir %q is not an absolute path", e.ConfigDir)

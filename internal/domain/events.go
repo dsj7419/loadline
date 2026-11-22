@@ -56,6 +56,15 @@ type Status struct {
 	Limits  Limits
 }
 
+// ValidEventTime reports whether t can date an event: in UTC, after the Unix
+// epoch and before year 10000. Every event Loadline takes in was stamped by a
+// clock on this machine, so a time outside that span is a broken clock or a
+// forged message, and one past year 9999 could not even be encoded as JSON.
+func ValidEventTime(t time.Time) bool {
+	t = t.UTC()
+	return t.After(time.Unix(0, 0)) && t.Year() < 10000
+}
+
 func (Hook) isEvent()   {}
 func (Poll) isEvent()   {}
 func (Absent) isEvent() {}
