@@ -25,6 +25,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  // Spies on shared prototypes, such as HTMLElement's focus, must not outlive
+  // their test, even one that fails.
+  vi.restoreAllMocks();
   document.title = '';
   localStorage.clear();
 });
@@ -271,7 +274,6 @@ describe('App', () => {
     send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1', state: 'needs_you' }), sessionOf({ id: 's2', name: 's2' })] }));
     expect(document.activeElement).toBe(screen.getByRole('button', { name: / s1 / }));
     expect(focus.mock.calls).toEqual([[{ preventScroll: true }]]);
-    focus.mockRestore();
   });
 
   it('moves focus to the Sessions heading, without scrolling, when the focused session leaves the view', () => {
@@ -284,7 +286,6 @@ describe('App', () => {
     send(viewOf({ sessions: [sessionOf({ id: 's2', name: 's2' })] }));
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Sessions' }));
     expect(focus.mock.calls).toEqual([[{ preventScroll: true }]]);
-    focus.mockRestore();
   });
 
   it('leaves focus alone once the user has moved it off the rows', () => {

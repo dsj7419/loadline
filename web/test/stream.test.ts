@@ -298,6 +298,40 @@ describe('createStream', () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores an answer from an earlier run that lands while a later run is reconnecting', async () => {
+    const answers: ((status: number) => void)[] = [];
+    const probe = vi.fn(async () => new Promise<number>((resolve) => answers.push(resolve)));
+    const stream = startStream(probe);
+    stream.latest().fail();
+    waitForReconnect();
+    stream.latest().send(JSON.stringify(view));
+    stream.latest().fail();
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    // The first run's question, asked before the view, comes back last.
+    answers[0]?.(401);
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting', 'live', 'reconnecting']);
+  });
+
+  it('does not let a refusal from an earlier run make a later run ask twice', async () => {
+    const refusals: ((error: Error) => void)[] = [];
+    const probe = vi.fn(async () => new Promise<number>((_, reject) => refusals.push(reject)));
+    const stream = startStream(probe);
+    stream.latest().fail();
+    waitForReconnect();
+    stream.latest().send(JSON.stringify(view));
+    stream.latest().fail();
+
+    // The first run's question is refused while the second run's is still out.
+    refusals[0]?.(new TypeError('Failed to fetch'));
+    await settled();
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it('reports signed out when the server refuses the page, and keeps trying until it lets it in', async () => {
     const stream = startStream(async () => 401);
     stream.latest().fail();

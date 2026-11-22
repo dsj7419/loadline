@@ -41,8 +41,10 @@ export async function startScriptedServer(first: View): Promise<ScriptedServer> 
   const frame = (view: View): string => `event: view\ndata: ${JSON.stringify(view)}\n\n`;
 
   const server = createServer((request, response) => {
-    // A page left open reconnects and probes on its own schedule; once the
-    // test is done with the server, those requests must not keep it alive.
+    // A backstop: close() already cuts every connection with
+    // closeAllConnections, but a request that still reaches the server once
+    // closing has begun is turned away rather than given a stream that would
+    // hold the server open.
     if (closing) {
       response.writeHead(503, { connection: 'close' }).end();
       return;
