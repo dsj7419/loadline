@@ -89,12 +89,21 @@ export function formatPace(n: number): string {
   if (!Number.isFinite(n) || n < 0) {
     return dash;
   }
-  const tenths = Math.round(n * 10) / 10;
-  if (tenths < 10) {
-    return tenths.toFixed(1);
+  const shown = roundPace(n);
+  if (shown < 10) {
+    return shown.toFixed(1);
   }
-  const whole = Math.round(n);
-  return whole > 99 ? '99+' : String(whole);
+  return shown > 99 ? '99+' : String(shown);
+}
+
+/**
+ * A pace rounded as formatPace shows it: to tenths below 10, else to a whole
+ * number. Anything judged by the figure on the page uses this, so equal
+ * figures are always judged alike.
+ */
+export function roundPace(n: number): number {
+  const tenths = Math.round(n * 10) / 10;
+  return tenths < 10 ? tenths : Math.round(n);
 }
 
 /** An elapsed time in its two largest units: 45s, 1m 12s, 2h 14m or 3d 4h. */

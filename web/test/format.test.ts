@@ -9,6 +9,7 @@ import {
   formatUSD,
   formatUSDBrief,
   formatWhen,
+  roundPace,
 } from '../src/model/format';
 
 const notNumbers = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
@@ -124,8 +125,12 @@ describe('formatPace', () => {
   it.each<[number, string]>([
     [0, '0.0'],
     [0.04, '0.0'],
+    [0.849, '0.8'],
+    [0.851, '0.9'],
     [0.86, '0.9'],
     [1, '1.0'],
+    [1.249, '1.2'],
+    [1.25, '1.3'],
     [1.44, '1.4'],
     [9.94, '9.9'],
     [9.96, '10'],
@@ -143,6 +148,20 @@ describe('formatPace', () => {
 
   it.each([...notNumbers, -0.5])('shows %s as a dash', (n) => {
     expect(formatPace(n)).toBe('—');
+  });
+});
+
+describe('roundPace', () => {
+  it.each<[number, number]>([
+    [0.849, 0.8],
+    [0.851, 0.9],
+    [1.25, 1.3],
+    [9.94, 9.9],
+    [9.96, 10],
+    [12.5, 13],
+    [1680, 1680],
+  ])('rounds %s to %s, the figure formatPace shows', (n, want) => {
+    expect(roundPace(n)).toBe(want);
   });
 });
 

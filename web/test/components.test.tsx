@@ -652,11 +652,21 @@ describe('AccountCard', () => {
     expect(spoken).not.toContain('×');
   });
 
+  // The colour follows the figure shown, so equal figures always get equal
+  // colours. The inputs sit either side of a rounding edge without resting on
+  // a binary tie, except 1.25, which binary holds exactly.
   it.each<[number, string, Tone]>([
-    [0.89, '×0.9', 'ok'],
+    [0.84, '×0.8', 'ok'],
+    [0.849, '×0.8', 'ok'],
+    [0.851, '×0.9', 'warn'],
+    [0.89, '×0.9', 'warn'],
     [0.9, '×0.9', 'warn'],
     [1.2, '×1.2', 'warn'],
-    [1.21, '×1.2', 'bad'],
+    [1.21, '×1.2', 'warn'],
+    [1.24, '×1.2', 'warn'],
+    [1.249, '×1.2', 'warn'],
+    [1.25, '×1.3', 'bad'],
+    [1680, '×99+', 'bad'],
   ])('colours a pace of %s, shown as %s, as %s', (pace, shown, tone) => {
     render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
 

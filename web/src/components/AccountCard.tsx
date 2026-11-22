@@ -2,7 +2,7 @@ import type { ReadonlySignal } from '@preact/signals';
 import { useId } from 'preact/hooks';
 import type { AccountView, CreditsView, WindowView } from '../api/types';
 import { isCurrent, windowNote } from '../model/describe';
-import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen } from '../model/format';
+import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen, roundPace } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
 import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
@@ -135,7 +135,7 @@ function Pace({ pace }: { readonly pace: number }) {
   return (
     <>
       <span
-        class={`pace num tone-${paceTone(pace)}`}
+        class={`pace num tone-${paceTone(roundPace(pace))}`}
         aria-hidden="true"
         title={`Burning ${shown}× faster than the pace that reaches 100% at reset.`}
       >
@@ -147,12 +147,13 @@ function Pace({ pace }: { readonly pace: number }) {
 }
 
 // A pace of 1 uses the window up just as it resets. Near it is worth
-// watching; well past it, the limit comes first.
-function paceTone(pace: number): Tone {
-  if (pace > 1.2) {
+// watching; well past it, the limit comes first. It is judged as shown, so
+// two equal figures never differ in colour.
+function paceTone(shown: number): Tone {
+  if (shown > 1.2) {
     return 'bad';
   }
-  return pace >= 0.9 ? 'warn' : 'ok';
+  return shown >= 0.9 ? 'warn' : 'ok';
 }
 
 function usageTone(pct: number): Tone {
