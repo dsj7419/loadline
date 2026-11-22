@@ -416,6 +416,23 @@ describe('App', () => {
     expect(items.map((item) => item.querySelector('.alert-kind')?.textContent)).toEqual(['On credits', 'Credits low']);
   });
 
+  // A runs_out alert either forecasts a limit or says one has been reached,
+  // and its label fits both.
+  it('labels the limit alerts', () => {
+    const { send } = renderApp();
+    send(
+      viewOf({
+        alerts: [
+          alertOf({ kind: 'runs_out', session: '', message: 'Main is on pace to run out of its weekly limit before it resets' }),
+          alertOf({ kind: 'runs_out', session: '', dir: 'C:/Users/example/.claude-b', message: 'B has reached its 5-hour limit, resets 14:00' }),
+        ],
+      }),
+    );
+
+    const items = within(screen.getByRole('region', { name: /alerts/i })).getAllByRole('listitem');
+    expect(items.map((item) => item.querySelector('.alert-kind')?.textContent)).toEqual(['Limit', 'Limit']);
+  });
+
   it('says whether it is live', () => {
     const { send, lose } = renderApp();
     expect(screen.getByRole('status').textContent).toMatch(/connecting/i);
