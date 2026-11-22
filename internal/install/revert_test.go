@@ -184,6 +184,9 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		{"PowerShell quoting of an older form", `& "C:/x/loadline.exe" tap --run 'echo'`, skipped, ""},
 		{"padded base64", `& "C:/x/loadline.exe" tap --run-b64 '` + base64.URLEncoding.EncodeToString([]byte("ab")) + `'`, skipped, ""},
 		{"base64 of invalid UTF-8", `& "C:/x/loadline.exe" tap --run-b64 '` + base64.RawURLEncoding.EncodeToString([]byte{0xff}) + `'`, skipped, ""},
+		// Both decode, but neither is the encoding install writes.
+		{"base64 broken across lines", `& "C:/x/loadline.exe" tap --run-b64 'ZXhp` + "\n" + `dCAz'`, skipped, ""},
+		{"base64 with stray trailing bits", `& "C:/x/loadline.exe" tap --run-b64 'YR'`, skipped, ""},
 		{"print with more after it", `"C:/x/loadline.exe" tap --print --wide`, skipped, ""},
 		{"unquoted loadline", `loadline tap | foo`, skipped, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},
