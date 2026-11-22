@@ -63,26 +63,71 @@ func Make(dir string) error {
 	if err := fsperm.Private(dir); err != nil {
 		return err
 	}
-	// Each path is cleaned before the walk looks into it, so that a folder
-	// whose list kept the user from listing it is listed once it is the
-	// user's again, and what it holds, judged as the rest was.
-	found, err := ownPaths(dir, func(path string) error {
-		problem, err := ownerProblem(path)
-		if err != nil {
+	// A file is cleaned as the walk comes to it. A folder that is not
+	// private gets the private list first, which Windows passes down to
+	// nothing it holds, so that the user may list it and the walk judge what
+	// it holds before anything is done to that: a file there may have a
+	// name elsewhere too. Once that is through, the folder is cleaned.
+	unlocked := map[string]bool{}
+	found, err := ownPaths(dir, &repair{
+		before: func(path string, folder bool) error {
+			problem, err := ownerProblem(path)
+			if err != nil {
+				return err
+			}
+			if problem != "" {
+				return errors.New(problem)
+			}
+			if !folder {
+				return clearOwnEntries(path)
+			}
+			unlocked[path], err = makePrivateHere(path)
 			return err
-		}
-		if problem != "" {
-			return errors.New(problem)
-		}
-		return clearOwnEntries(path)
+		},
+		after: func(path string) error {
+			if !unlocked[path] {
+				return nil
+			}
+			return clearExplicit(path)
+		},
 	})
 	if err != nil {
 		return err
 	}
-	if found.link != "" {
-		return errors.New(linkProblem(found.link))
+	if problem := found.linkProblem(); problem != "" {
+		return errors.New(problem)
 	}
 	return nil
+}
+
+// makePrivateHere gives path, one of Loadline's folders, the private list
+// when it is not private, passing it down to nothing it holds
+// (fsperm.PrivateHere), and reports whether it did.
+func makePrivateHere(path string) (bool, error) {
+	changed := false
+	err := settle(func() error {
+		private, err := fsperm.EntryPrivate(path)
+		if err != nil || private {
+			return err
+		}
+		changed = true
+		return fsperm.PrivateHere(path)
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return changed, err
+}
+
+// clearExplicit takes off path whatever its access list holds of its own,
+// so that only what the data directory passes down applies. A path that is
+// being deleted is waited for (settle), and once gone, left out.
+func clearExplicit(path string) error {
+	err := settle(func() error { return fsperm.ClearExplicit(path) })
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // clearOwnEntries takes off path, one of Loadline's files or folders in the
@@ -199,8 +244,8 @@ func contentProblem(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if found.link != "" {
-		return linkProblem(found.link), nil
+	if problem := found.linkProblem(); problem != "" {
+		return problem, nil
 	}
 	for _, path := range found.paths {
 		if problem, err := ownerProblem(path); err != nil || problem != "" {

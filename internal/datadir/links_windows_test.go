@@ -322,3 +322,48 @@ func TestSecure_RefusesALinkedDataDirectoryThatLeadsNowhere(t *testing.T) {
 		t.Errorf("%s was made where the link leads (%v)", target, err)
 	}
 }
+
+// A file of Loadline's with a second name, a hard link to a file elsewhere,
+// is that file: making it private would take it from those who share it
+// there. It is refused like a link, whether the folder it is in can be
+// listed at first or only once Secure has put that folder's list right.
+func TestSecure_LeavesAFileOutsideTheDataDirectoryAsItIs(t *testing.T) {
+	for _, locked := range []bool{false, true} {
+		name := "in a spool that can be listed"
+		if locked {
+			name = "in a locked spool"
+		}
+		t.Run(name, func(t *testing.T) {
+			home, top := loadlineHome(t)
+			_, doc := elsewhere(t, top)
+			spool := filepath.Join(home, "spool")
+			event := filepath.Join(spool, "1-0000000b.json")
+			if err := os.Link(doc, event); err != nil {
+				t.Skipf("cannot make a hard link here: %v", err)
+			}
+			if locked {
+				// Stored as it is: SetNamedSecurityInfo would pass the new
+				// list down to the event, and so change the file elsewhere
+				// before Secure ever ran.
+				fspermtest.SetAccessListAsIs(t, spool, "D:P(A;OICI;FA;;;SY)")
+				t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+				if _, err := os.ReadDir(spool); err == nil {
+					t.Fatalf("%s can still be listed, so the test proves nothing", spool)
+				}
+			}
+			before := fspermtest.AccessList(t, doc)
+
+			err := datadir.Secure(home, top)
+
+			if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("Secure = %v, want it refused, starting %q", err, want)
+			}
+			if after := fspermtest.AccessList(t, doc); after != before {
+				t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
+			}
+			if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, event+" has another name") {
+				t.Errorf("Check = %q, %v; want it to report %s", got, err, event)
+			}
+		})
+	}
+}

@@ -786,3 +786,48 @@ func TestIsLink_TellsAJunctionFromAFolder(t *testing.T) {
 		t.Errorf("IsLink of a missing path = %v, want an error that matches fs.ErrNotExist", err)
 	}
 }
+
+// A file's names are counted from what its folder's listing lets the user
+// read, so even one whose own list keeps the user out is counted.
+func TestLinks_CountsTheNamesOfAFileEvenOneThatKeepsTheUserOut(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "loadline")
+	if err := fsperm.MkdirAll(root); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "token")
+	write(t, file)
+	if names, err := fsperm.Links(file); err != nil || names != 1 {
+		t.Errorf("Links of a new file = %d, %v; want 1", names, err)
+	}
+	if err := os.Link(file, filepath.Join(root, "elsewhere")); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	fspermtest.SetAccessListAsIs(t, file, "D:P(A;;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(file) })
+	if _, err := os.ReadFile(file); err == nil {
+		t.Fatalf("%s can still be read, so the test proves nothing", file)
+	}
+
+	if names, err := fsperm.Links(file); err != nil || names != 2 {
+		t.Errorf("Links of a file with a second name that keeps the user out = %d, %v; want 2", names, err)
+	}
+}
+
+// PrivateHere makes the folder private and changes nothing it holds.
+func TestPrivateHere_PassesNothingDownToWhatTheFolderHolds(t *testing.T) {
+	root := sharedRoot(t)
+	file := filepath.Join(root, "token")
+	write(t, file)
+	before := fspermtest.AccessList(t, file)
+
+	if err := fsperm.PrivateHere(root); err != nil {
+		t.Fatalf("PrivateHere: %v", err)
+	}
+
+	if others := fspermtest.Others(t, root, fspermtest.Any); len(others) > 0 || !fspermtest.Protected(t, root) {
+		t.Errorf("%s admits %v (protected: %t), want the private list", root, others, fspermtest.Protected(t, root))
+	}
+	if after := fspermtest.AccessList(t, file); after != before {
+		t.Errorf("PrivateHere changed the access list of %s, which %s holds, from %s to %s", file, root, before, after)
+	}
+}

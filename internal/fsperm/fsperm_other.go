@@ -133,6 +133,23 @@ func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
+// PrivateHere is Private here: a mode passes nothing down.
+func PrivateHere(dir string) error { return Private(dir) }
+
+// Links returns how many names the file at path has: more than one when it
+// was hard linked, and is then also wherever its other names are.
+func Links(path string) (uint64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("read %s: the system gives no count of its names", path)
+	}
+	return uint64(stat.Nlink), nil //nolint:unconvert,nolintlint // Nlink is uint16 on macOS and uint64 on Linux
+}
+
 // ClearExplicit does nothing here: a file carries only its mode, and the
 // 0700 folder that holds it keeps everyone else out whatever that is.
 func ClearExplicit(string) error { return nil }

@@ -96,3 +96,25 @@ func TestSecure_RefusesADataDirectoryThatIsASymlink(t *testing.T) {
 		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 	}
 }
+
+// A file of Loadline's with a second name elsewhere is refused like a link.
+func TestSecure_RefusesAFileOfLoadlinesWithAnotherName(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	if err := os.MkdirAll(filepath.Join(home, "spool"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "shared.txt")
+	if err := os.WriteFile(elsewhere, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	event := filepath.Join(home, "spool", "1-0000000b.json")
+	if err := os.Link(elsewhere, event); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(home, filepath.Dir(home))
+
+	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
+	}
+}

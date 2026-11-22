@@ -181,3 +181,18 @@ func TestIsLink_TellsASymlinkFromAFile(t *testing.T) {
 		}
 	}
 }
+
+func TestLinks_CountsTheNamesOfAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "token")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, filepath.Join(dir, "elsewhere")); err != nil {
+		t.Fatal(err)
+	}
+
+	if names, err := fsperm.Links(file); err != nil || names != 2 {
+		t.Errorf("Links = %d, %v; want 2", names, err)
+	}
+}

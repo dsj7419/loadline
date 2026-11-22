@@ -289,6 +289,84 @@ func IsLink(path string) (bool, error) {
 	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0, nil
 }
 
+// Links returns how many names the file at path has: more than one when it
+// was hard linked, and is then also wherever its other names are.
+func Links(path string) (uint64, error) {
+	// Its attributes alone, which the folder that holds it lets its lister
+	// read, so that a file whose own list keeps the user out is read too.
+	handle, err := openItself(path, windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+	return uint64(info.NumberOfLinks), nil
+}
+
+// PrivateHere gives dir the access list of privateDescriptor, as Private
+// does, but passes it down to nothing dir holds: each of those keeps what it
+// has until it is judged on its own. A folder whose list keeps the user out
+// can be listed then, and what it holds looked at before anything is done
+// to it.
+func PrivateHere(dir string) error {
+	sd, err := privateDescriptor()
+	if err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	// What its owner may always do, whatever its list says.
+	handle, err := openItself(dir, windows.READ_CONTROL|windows.WRITE_DAC)
+	if err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	if err := windows.SetKernelObjectSecurity(handle, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	return nil
+}
+
+// openItself opens path itself, a link not followed, asking for access and
+// nothing else. CreateFile asks for SYNCHRONIZE besides, which only a
+// file's own list can grant.
+func openItself(path string, access uint32) (windows.Handle, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return 0, err
+	}
+	name, err := windows.NewNTUnicodeString(ntPath(abs))
+	if err != nil {
+		return 0, err
+	}
+	attrs := windows.OBJECT_ATTRIBUTES{ObjectName: name, Attributes: windows.OBJ_CASE_INSENSITIVE}
+	attrs.Length = uint32(unsafe.Sizeof(attrs))
+	var handle windows.Handle
+	var io windows.IO_STATUS_BLOCK
+	err = windows.NtCreateFile(&handle, access, &attrs, &io, nil, 0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN,
+		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT, 0, 0)
+	var status windows.NTStatus
+	if errors.As(err, &status) {
+		// As the Win32 error it stands for, which says "access denied"
+		// for a file being deleted and "not found" for one gone.
+		return 0, status.Errno()
+	}
+	return handle, err
+}
+
+// ntPath is the name the native API takes for abs, an absolute path.
+func ntPath(abs string) string {
+	switch {
+	case strings.HasPrefix(abs, `\\?\`):
+		return `\??\` + abs[len(`\\?\`):]
+	case strings.HasPrefix(abs, `\\`):
+		return `\??\UNC\` + abs[len(`\\`):]
+	}
+	return `\??\` + abs
+}
+
 // Transient reports whether err may be a refusal that passes in a moment.
 // Windows refuses to open a file whose deletion is pending, until the last
 // handle on it closes, with the same "access denied" as a file the user may
