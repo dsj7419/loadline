@@ -1,10 +1,10 @@
 // Package demo is the made-up machine that `loadline serve --demo` shows:
 // three accounts and five sessions that between them cover every state,
-// limit, projection and alert the dashboard draws. The scenario is made of
-// the observations the real feeds produce, in their shape: hooks, polls,
-// status lines that name a model by display name and ID, and model calls
-// that name it by ID. The real tracker turns them into the view. Every name,
-// address and path in it is invented.
+// limit, projection, use of credits and alert the dashboard draws. The
+// scenario is made of the observations the real feeds produce, in their
+// shape: hooks, polls, status lines that name a model by display name and
+// ID, and model calls that name it by ID. The real tracker turns them into
+// the view. Every name, address and path in it is invented.
 package demo
 
 import (
@@ -45,14 +45,21 @@ func Budgets() map[domain.ConfigDir]float64 {
 	return map[domain.ConfigDir]float64{dirAPI: 25}
 }
 
+// Credits returns the usage credits recorded for each scenario account that
+// has some, as of now: Main's $20, added two days before.
+func Credits(now time.Time) map[domain.ConfigDir][]domain.CreditGrant {
+	return map[domain.ConfigDir][]domain.CreditGrant{dirMain: {{USD: 20, AddedAt: now.AddDate(0, 0, -2)}}}
+}
+
 // Scenario returns the scenario's accounts, session events and model calls as
 // of now, each list in time order. It is deterministic: the same now gives the
 // same scenario. Seed a tracker with SetAccount for each account, then Apply
 // each event, then RecordAPI each call.
 //
-// Main is an Ultra subscription at 93% of its weekly limit and on pace to run
-// out before the week resets; B is a subscription with a 5-hour window as
-// well, comfortably on pace; API is billed per token, under its daily budget
+// Main is an Ultra subscription that reached its weekly limit 18 minutes ago,
+// well before the week resets, and has worked on its usage credits since:
+// about $6.20 of its $20. B is a subscription with a 5-hour window as well,
+// comfortably on pace; API is billed per token, under its daily budget
 // with spend spread over the past fortnight. The sessions are one waiting on
 // a permission prompt, one working with two subagents, one compacting, one
 // idle and one parked background session.
@@ -108,6 +115,15 @@ func (s *script) today(d time.Duration) time.Time {
 		return at
 	}
 	return s.midnight
+}
+
+// afterMidnight is d before now, or just after the start of today when that
+// is earlier: after every call that today dates at the start of the day.
+func (s *script) afterMidnight(d time.Duration) time.Time {
+	if at := s.ago(d); at.After(s.midnight) {
+		return at
+	}
+	return s.midnight.Add(time.Nanosecond)
 }
 
 func (s *script) add(at time.Time, e domain.Event) {
@@ -239,7 +255,7 @@ func (s *script) copperLantern() {
 }
 
 // harborAPI is working with two subagents, and its status lines carry Main's
-// weekly usage, climbing about 2% an hour.
+// weekly usage, which climbed about 2% an hour to its limit.
 func (s *script) harborAPI() {
 	x := session{
 		id: "a3e94b70-0c5d-4f18-b6a2-8d0e7f3c5b12", dir: dirMain, pid: 20412, name: "harbor-api", email: "dev@example.com",
@@ -253,17 +269,19 @@ func (s *script) harborAPI() {
 	s.prompt(x, 110*time.Minute)
 	resetsAt := s.now.Add(50 * time.Hour).Truncate(time.Hour)
 	for _, sample := range []struct {
-		ago  time.Duration
+		at   time.Time
 		used float64
 	}{
-		{100 * time.Minute, 89.5},
-		{80 * time.Minute, 90.2},
-		{60 * time.Minute, 90.9},
-		{40 * time.Minute, 91.6},
-		{20 * time.Minute, 92.3},
-		{2 * time.Minute, 93},
+		{s.ago(100 * time.Minute), 97.2},
+		{s.ago(80 * time.Minute), 97.9},
+		{s.ago(60 * time.Minute), 98.6},
+		{s.ago(40 * time.Minute), 99.3},
+		// Every call since the window filled was paid for with credits,
+		// and none of those dated at the start of the day were.
+		{s.afterMidnight(18 * time.Minute), 100},
+		{s.afterMidnight(2 * time.Minute), 100},
 	} {
-		s.status(x, sample.ago, cost, &domain.Limits{SevenDay: &domain.Window{UsedPct: sample.used, ResetsAt: resetsAt}})
+		s.status(x, s.now.Sub(sample.at), cost, &domain.Limits{SevenDay: &domain.Window{UsedPct: sample.used, ResetsAt: resetsAt}})
 	}
 	s.stop(x, 41*time.Minute)
 	s.prompt(x, 39*time.Minute)

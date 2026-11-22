@@ -74,6 +74,12 @@ export function formatUSD(n: number): string {
   return size >= compactFrom ? usdCompact.format(n) : usd.format(n);
 }
 
+/** An amount as formatUSD shows it, without the cents of a whole amount: $20, but $13.60. */
+export function formatUSDBrief(n: number): string {
+  const full = formatUSD(n);
+  return full.endsWith('.00') ? full.slice(0, -'.00'.length) : full;
+}
+
 /** An elapsed time in its two largest units: 45s, 1m 12s, 2h 14m or 3d 4h. */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) {

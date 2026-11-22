@@ -1,8 +1,8 @@
 import type { ReadonlySignal } from '@preact/signals';
 import { useId } from 'preact/hooks';
-import type { AccountView, WindowView } from '../api/types';
+import type { AccountView, CreditsView, WindowView } from '../api/types';
 import { isCurrent, windowNote } from '../model/describe';
-import { formatPct, formatUSD } from '../model/format';
+import { formatPct, formatUSD, formatUSDBrief, formatWhen } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
 import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
@@ -16,8 +16,9 @@ type AccountCardProps = {
 
 /**
  * One account: who it is, and either its rate-limit windows or, for an
- * account billed per token, its spend. The windows count down against the
- * page's clock and drop out as soon as they reset.
+ * account billed per token, its spend, then its usage credits when it has
+ * any. The windows count down against the page's clock and drop out as soon
+ * as they reset.
  */
 export function AccountCard({ account, now, range }: AccountCardProps) {
   const titleId = useId();
@@ -36,6 +37,7 @@ export function AccountCard({ account, now, range }: AccountCardProps) {
       ) : (
         <Windows account={account} ownerId={titleId} now={now.value} />
       )}
+      {account.credits !== null && <Credits credits={account.credits} now={now.value} />}
       <div class="account-foot">
         <ModelSplit
           models={range === 'today' ? account.models : account.modelsWeek}
@@ -127,6 +129,39 @@ function usageTone(pct: number): Tone {
     return 'bad';
   }
   return pct >= 75 ? 'warn' : 'ok';
+}
+
+type CreditsProps = {
+  readonly credits: CreditsView;
+  readonly now: Date;
+};
+
+// What the account's usage credits come to. Worked-out figures are marked as
+// estimates; a reported spend limit's are shown as they are.
+function Credits({ credits, now }: CreditsProps) {
+  const estimate = credits.source === 'estimate' ? '≈ ' : '';
+  return (
+    <div class="credits">
+      <p class="credits-figures">
+        Credits {estimate}
+        <Amount usd={credits.spentUSD} /> of <Amount usd={credits.balanceUSD} /> used ·{' '}
+        <Amount usd={credits.remainingUSD} /> left
+      </p>
+      {credits.active && (
+        <p class="credits-state">
+          <span class="badge badge-bad">
+            <WarningIcon />
+            On credits
+          </span>
+          {credits.onCreditsSince !== null && ` since ${formatWhen(credits.onCreditsSince, now)}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Amount({ usd }: { readonly usd: number }) {
+  return <span class="num">{formatUSDBrief(usd)}</span>;
 }
 
 type SpendProps = {

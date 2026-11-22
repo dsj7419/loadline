@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/config"
 )
@@ -106,7 +107,8 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		"claudePath": "C:/tools/claude.exe",
 		"alerts": {"weeklyPct": 75.5, "contextPct": 60, "needsYouSeconds": 45},
 		"accounts": [
-			{"configDir": `+q(t, abs(".claude"))+`, "label": "Main"},
+			{"configDir": `+q(t, abs(".claude"))+`, "label": "Main",
+				"credits": [{"usd": 20, "addedAt": "2026-11-21T12:00:00-08:00"}, {"usd": 7.5, "addedAt": "2026-11-22T09:30:00Z"}]},
 			{"configDir": `+q(t, abs(".claude-b"))+`, "label": "B", "dailyBudgetUSD": 25.5}
 		]
 	}`)
@@ -121,9 +123,23 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		ClaudePath:      "C:/tools/claude.exe",
 		Alerts:          config.AlertSettings{WeeklyPct: 75.5, ContextPct: 60, NeedsYouSeconds: 45},
 		Accounts: []config.AccountSetting{
-			{ConfigDir: abs(".claude"), Label: "Main"},
+			{ConfigDir: abs(".claude"), Label: "Main", Credits: []config.CreditGrant{
+				{USD: 20, AddedAt: time.Date(2026, 11, 21, 20, 0, 0, 0, time.UTC)},
+				{USD: 7.5, AddedAt: time.Date(2026, 11, 22, 9, 30, 0, 0, time.UTC)},
+			}},
 			{ConfigDir: abs(".claude-b"), Label: "B", DailyBudgetUSD: 25.5},
 		},
+	}
+	if len(got.Accounts) != 2 || len(got.Accounts[0].Credits) != 2 {
+		t.Fatalf("Load = %+v, want two accounts, the first with two grants", got)
+	}
+	// A time read from JSON keeps the offset it was written with, which
+	// DeepEqual would compare; the moment is what matters.
+	for i, g := range got.Accounts[0].Credits {
+		if !g.AddedAt.Equal(want.Accounts[0].Credits[i].AddedAt) {
+			t.Errorf("credits[%d].addedAt = %v, want %v", i, g.AddedAt, want.Accounts[0].Credits[i].AddedAt)
+		}
+		got.Accounts[0].Credits[i].AddedAt = want.Accounts[0].Credits[i].AddedAt
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v, want %+v", got, want)
@@ -185,6 +201,7 @@ func TestLoad_RejectsUnknownKey(t *testing.T) {
 		"top level":       {`{"porrt":8289}`, "porrt"},
 		"inside alerts":   {`{"alerts":{"weekly":90}}`, "weekly"},
 		"inside accounts": {`{"accounts":[{"configDir":"/x","lable":"X"}]}`, "lable"},
+		"inside credits":  {`{"accounts":[{"configDir":"/x","credits":[{"usd":5,"added":"2026-11-21T12:00:00Z"}]}]}`, "added"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := config.Load(writeConfig(t, tc.contents), home)
@@ -225,6 +242,50 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantMessage) {
 				t.Errorf("error %q does not contain %q", err, tc.wantMessage)
 			}
+		})
+	}
+}
+
+func TestLoad_CreditGrantValidation(t *testing.T) {
+	account := func(credits string) string {
+		return `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `},{"configDir":` + q(t, abs(".claude-b")) +
+			`,"credits":` + credits + `}]}`
+	}
+	for name, tc := range map[string]struct{ credits, wantMessage string }{
+		"zero dollars": {
+			`[{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"},{"usd":0,"addedAt":"2026-11-21T12:00:00-08:00"}]`,
+			"accounts[1].credits[1].usd 0 is not above 0",
+		},
+		"negative dollars": {`[{"usd":-5,"addedAt":"2026-11-21T12:00:00Z"}]`, "accounts[1].credits[0].usd -5 is not above 0"},
+		"no amount":        {`[{"addedAt":"2026-11-21T12:00:00Z"}]`, "accounts[1].credits[0].usd 0 is not above 0"},
+		"no date":          {`[{"usd":20}]`, "accounts[1].credits[0].addedAt must be set"},
+		"a null date":      {`[{"usd":20,"addedAt":null}]`, "accounts[1].credits[0].addedAt must be set"},
+		"a date with no offset": {
+			`[{"usd":20,"addedAt":"2026-11-21T12:00:00"}]`,
+			`credit addedAt "2026-11-21T12:00:00" is not a time with its offset, such as "2026-11-21T12:00:00-08:00"`,
+		},
+		"a date alone":     {`[{"usd":20,"addedAt":"2026-11-21"}]`, `credit addedAt "2026-11-21" is not a time`},
+		"a number of days": {`[{"usd":20,"addedAt":3}]`, "credit addedAt 3 is not a time"},
+		"text for dollars": {`[{"usd":"20","addedAt":"2026-11-21T12:00:00Z"}]`, "usd"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Load(writeConfig(t, account(tc.credits)), home)
+			if err == nil {
+				t.Fatal("Load accepted an invalid credit grant")
+			}
+			if !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Errorf("error %q does not contain %q", err, tc.wantMessage)
+			}
+		})
+	}
+
+	for name, credits := range map[string]string{
+		"no grants":     `[]`,
+		"a cent":        `[{"usd":0.01,"addedAt":"2026-11-21T12:00:00Z"}]`,
+		"several dates": `[{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"},{"usd":5,"addedAt":"2026-10-01T00:00:00+02:00"}]`,
+	} {
+		t.Run("accepts "+name, func(t *testing.T) {
+			mustLoad(t, account(credits))
 		})
 	}
 }

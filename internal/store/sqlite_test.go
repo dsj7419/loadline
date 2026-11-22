@@ -190,9 +190,12 @@ func TestSQLite_RoundTripRestored(t *testing.T) {
 	if ids := got.Sessions[0].SubagentIDs(); !reflect.DeepEqual(ids, session.SubagentIDs()) {
 		t.Errorf("subagent IDs %+v, want %+v", ids, session.SubagentIDs())
 	}
-	wantSamples := map[domain.ConfigDir]tracker.WindowSamples{dirA: {
-		FiveHour: []domain.Sample{{At: at(-30), UsedPct: 12.5}},
-		SevenDay: []domain.Sample{{At: at(-30), UsedPct: 61.25}, {At: at(30), UsedPct: 62}},
+	wantSamples := map[domain.ConfigDir]domain.WindowSamples{dirA: {
+		FiveHour: []domain.Sample{{At: at(-30), UsedPct: 12.5, ResetsAt: at(3 * 3600)}},
+		SevenDay: []domain.Sample{
+			{At: at(-30), UsedPct: 61.25, ResetsAt: at(4 * 86400)},
+			{At: at(30), UsedPct: 62, ResetsAt: at(4 * 86400)},
+		},
 	}}
 	if !reflect.DeepEqual(got.Samples, wantSamples) {
 		t.Errorf("samples\n got %+v\nwant %+v", got.Samples, wantSamples)

@@ -341,7 +341,7 @@ const (
 		WHERE s.state != ? OR s.last_seen_at >= ?
 	) WHERE newness <= ? ORDER BY session, id`
 
-	loadSamplesSQL = `SELECT dir, window, at, used_pct FROM limit_samples WHERE at >= ? ORDER BY dir, at, rowid`
+	loadSamplesSQL = `SELECT dir, window, at, used_pct, resets_at FROM limit_samples WHERE at >= ? ORDER BY dir, at, rowid`
 
 	loadUsageSQL = `SELECT minute, dir, session, model, input, output, cache_read, cache_write, cost_usd, requests
 	FROM usage_minutes WHERE minute >= ? ORDER BY rowid`
@@ -497,17 +497,18 @@ func (l *loader) timelines(ctx context.Context, ended string, cut int64) (map[do
 	return timelines, err
 }
 
-func (l *loader) samples(ctx context.Context, cut int64) (map[domain.ConfigDir]tracker.WindowSamples, error) {
-	samples := make(map[domain.ConfigDir]tracker.WindowSamples)
+func (l *loader) samples(ctx context.Context, cut int64) (map[domain.ConfigDir]domain.WindowSamples, error) {
+	samples := make(map[domain.ConfigDir]domain.WindowSamples)
 	err := l.each(ctx, "limit samples", loadSamplesSQL, func(rows *sql.Rows) error {
 		var dir domain.ConfigDir
 		var window string
 		var at int64
 		var usedPct float64
-		if err := rows.Scan(&dir, &window, &at, &usedPct); err != nil {
+		var resetsAt sql.NullInt64
+		if err := rows.Scan(&dir, &window, &at, &usedPct, &resetsAt); err != nil {
 			return err
 		}
-		sample := domain.Sample{At: instant(at), UsedPct: usedPct}
+		sample := domain.Sample{At: instant(at), UsedPct: usedPct, ResetsAt: fromMillis(resetsAt)}
 		windows := samples[dir]
 		switch window {
 		case fiveHourWindow:

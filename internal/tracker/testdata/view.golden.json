@@ -8,7 +8,7 @@
       "plan": "Max 20x",
       "auth": "subscription",
       "fiveHour": {
-        "usedPct": 40,
+        "usedPct": 100,
         "resetsAt": null,
         "observedAt": "2026-11-21T18:00:00Z",
         "projection": null
@@ -28,6 +28,14 @@
       "spendWeekUSD": 4.75,
       "spendMonthUSD": 4.75,
       "budgetUSD": 0,
+      "credits": {
+        "balanceUSD": 5,
+        "spentUSD": 4,
+        "remainingUSD": 1,
+        "onCreditsSince": "2026-11-21T17:35:00Z",
+        "active": true,
+        "source": "estimate"
+      },
       "models": [
         {
           "model": "Opus 5.5",
@@ -96,6 +104,14 @@
       "spendWeekUSD": 6,
       "spendMonthUSD": 6,
       "budgetUSD": 5,
+      "credits": {
+        "balanceUSD": 50,
+        "spentUSD": 12.5,
+        "remainingUSD": 37.5,
+        "onCreditsSince": null,
+        "active": false,
+        "source": "reported"
+      },
       "models": [
         {
           "model": "Sonnet 5.5",
@@ -120,6 +136,38 @@
       ]
     },
     {
+      "dir": "/home/dev/.claude-cloud",
+      "label": ".claude-cloud",
+      "email": "",
+      "plan": "Bedrock",
+      "auth": "third_party",
+      "fiveHour": null,
+      "sevenDay": null,
+      "spendTodayUSD": 0,
+      "spendWeekUSD": 0,
+      "spendMonthUSD": 0,
+      "budgetUSD": 0,
+      "credits": null,
+      "models": [],
+      "modelsWeek": []
+    },
+    {
+      "dir": "/home/dev/.claude-new",
+      "label": ".claude-new",
+      "email": "",
+      "plan": "",
+      "auth": "unknown",
+      "fiveHour": null,
+      "sevenDay": null,
+      "spendTodayUSD": 0,
+      "spendWeekUSD": 0,
+      "spendMonthUSD": 0,
+      "budgetUSD": 0,
+      "credits": null,
+      "models": [],
+      "modelsWeek": []
+    },
+    {
       "dir": "/home/dev/.claude-work",
       "label": ".claude-work",
       "email": "",
@@ -131,6 +179,7 @@
       "spendWeekUSD": 0,
       "spendMonthUSD": 1.5,
       "budgetUSD": 0,
+      "credits": null,
       "models": [],
       "modelsWeek": []
     }
@@ -644,6 +693,20 @@
       "session": "",
       "since": "2026-11-21T18:00:00Z",
       "message": "Main is on pace to run out of its weekly limit before it resets"
+    },
+    {
+      "kind": "credits_active",
+      "dir": "/home/dev/.claude",
+      "session": "",
+      "since": "2026-11-21T17:35:00Z",
+      "message": "Main is using usage credits"
+    },
+    {
+      "kind": "credits_low",
+      "dir": "/home/dev/.claude",
+      "session": "",
+      "since": "2026-11-21T18:00:00Z",
+      "message": "Main has used about $4.00 of its $5.00 in usage credits"
     },
     {
       "kind": "budget",

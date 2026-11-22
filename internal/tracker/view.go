@@ -43,9 +43,26 @@ type AccountView struct {
 	SpendWeekUSD  float64 `json:"spendWeekUSD"`
 	SpendMonthUSD float64 `json:"spendMonthUSD"`
 	// BudgetUSD is the daily budget, or 0 for none.
-	BudgetUSD  float64      `json:"budgetUSD"`
+	BudgetUSD float64 `json:"budgetUSD"`
+	// Credits is null unless the owner recorded usage credits for the
+	// account or a status line reported its spend limit.
+	Credits    *CreditsView `json:"credits"`
 	Models     []ModelTotal `json:"models"`
 	ModelsWeek []ModelTotal `json:"modelsWeek"`
+}
+
+// CreditsView is where an account's usage credits stand, in US dollars.
+type CreditsView struct {
+	BalanceUSD   float64 `json:"balanceUSD"`
+	SpentUSD     float64 `json:"spentUSD"`
+	RemainingUSD float64 `json:"remainingUSD"`
+	// OnCreditsSince is when the account went on credits; null unless Active.
+	OnCreditsSince Timestamp `json:"onCreditsSince"`
+	// Active says the account is at a plan limit and working on credits.
+	Active bool `json:"active"`
+	// Source is "estimate" for figures worked out from the cost of calls, or
+	// "reported" for a spend limit's own figures.
+	Source domain.CreditSource `json:"source"`
 }
 
 // WindowView is one rate-limit window.
@@ -211,6 +228,7 @@ func (t *Tracker) buildView(now time.Time) View {
 		Projections: make(map[domain.ConfigDir]domain.WindowProjections, len(dirs)),
 		SpendToday:  make(map[domain.ConfigDir]float64, len(dirs)),
 		Budgets:     t.cfg.Budgets,
+		Credits:     make(map[domain.ConfigDir]domain.CreditEstimate, len(dirs)),
 	}
 	for _, dir := range dirs {
 		entry := t.accounts[dir]
@@ -219,12 +237,18 @@ func (t *Tracker) buildView(now time.Time) View {
 		account.Limits = entry.currentLimits(now)
 		projections := entry.projections(account.Limits, now)
 		spend := usage.account(dir)
+		credits, showCredits := entry.creditEstimate(t.cfg.Credits[dir], now)
 
 		labels[dir] = account.Label
-		accounts = append(accounts, t.accountView(account, projections, spend))
+		view := t.accountView(account, projections, spend)
+		if showCredits {
+			view.Credits = creditsView(credits)
+		}
+		accounts = append(accounts, view)
 		alerting.Accounts = append(alerting.Accounts, account)
 		alerting.Projections[dir] = projections
 		alerting.SpendToday[dir] = spend.spendTodayUSD
+		alerting.Credits[dir] = credits
 	}
 
 	shares := domain.Shares(t.usage.spend, now, t.cfg.ShareWindow)
@@ -306,6 +330,17 @@ func windowView(w *domain.Window, observedAt time.Time, p domain.Projection) *Wi
 		}
 	}
 	return view
+}
+
+func creditsView(e domain.CreditEstimate) *CreditsView {
+	return &CreditsView{
+		BalanceUSD:     e.BalanceUSD,
+		SpentUSD:       e.SpentUSD,
+		RemainingUSD:   e.RemainingUSD,
+		OnCreditsSince: Timestamp(e.OnCreditsSince),
+		Active:         e.Active,
+		Source:         e.Source,
+	}
 }
 
 func sessionView(e *sessionEntry, account string, share float64, models []ModelTotal) SessionView {

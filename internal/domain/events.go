@@ -54,6 +54,8 @@ type Status struct {
 
 	Metrics Metrics
 	Limits  Limits
+	// SpendLimit is the account's spend limit, when the line reports one.
+	SpendLimit *SpendLimit
 }
 
 // ValidEventTime reports whether t can date an event: in UTC, after the Unix

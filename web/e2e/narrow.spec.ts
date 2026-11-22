@@ -23,7 +23,16 @@ test.describe('long text and large amounts', () => {
     server = await startScriptedServer(
       viewOf({
         accounts: [
-          accountOf(),
+          accountOf({
+            credits: {
+              balanceUSD: 1e21,
+              spentUSD: 1e300,
+              remainingUSD: 0,
+              onCreditsSince: '2026-11-21T17:40:00Z',
+              active: true,
+              source: 'estimate',
+            },
+          }),
           accountOf({
             dir: 'C:/Users/example/.claude-work',
             label: 'API',

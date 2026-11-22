@@ -9,7 +9,10 @@ test('dashboard renders demo state', async ({ dashboard: page }) => {
   const sessions = page.getByRole('region', { name: 'Sessions' });
   await expect(sessions.getByRole('listitem')).toHaveCount(5);
   await expect(sessions.getByRole('heading', { level: 3 }).first()).toHaveText('Needs you');
-  await expect(page.getByRole('article', { name: 'Main', exact: true })).toContainText('93%');
+  const main = page.getByRole('article', { name: 'Main', exact: true });
+  await expect(main).toContainText('100%');
+  await expect(main).toContainText(/Credits ≈ \$\d+\.\d\d of \$20 used/);
+  await expect(main.getByText('On credits')).toBeVisible();
 });
 
 test('keyboard can open and close detail', async ({ dashboard: page }) => {

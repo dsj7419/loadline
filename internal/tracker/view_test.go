@@ -18,6 +18,13 @@ var update = flag.Bool("update", false, "rewrite testdata/view.golden.json from 
 
 const goldenPath = "testdata/view.golden.json"
 
+// The golden scenario's accounts beyond the three every test uses: one on a
+// cloud provider, and one whose sign-in is not known yet.
+const (
+	dirCloud domain.ConfigDir = "/home/dev/.claude-cloud"
+	dirNew   domain.ConfigDir = "/home/dev/.claude-new"
+)
+
 // The golden scenario's sessions.
 const (
 	needsYouID   domain.SessionID = "3f1c7a52-0d4e-4b8e-9a51-6c2f0e7d9b10"
@@ -34,9 +41,10 @@ const (
 )
 
 // goldenScenario is a tracker in a state that fills every field of the view:
-// three accounts, a session in each state, a /clear pair, usage today, earlier
-// this week and earlier this month, and an alert of each kind. Every time in
-// it is in testZone, so the view must convert them to UTC.
+// an account of each sign-in, a session in each state, a /clear pair, usage
+// today, earlier this week and earlier this month, credits both estimated
+// and reported, and an alert of each kind. Every time in it is in testZone,
+// so the view must convert them to UTC.
 func goldenScenario(t *testing.T) *tracker.Tracker {
 	t.Helper()
 	now := time.Date(2026, 11, 21, 10, 0, 0, 0, testZone)
@@ -45,6 +53,7 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 	tr := tracker.New(func() time.Time { return now }, tracker.Config{
 		Labels:   map[domain.ConfigDir]string{dirA: "Main"},
 		Budgets:  map[domain.ConfigDir]float64{dirB: 5},
+		Credits:  map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 5, AddedAt: now.AddDate(0, 0, -3)}}},
 		Alerts:   defaultAlerts,
 		Location: testZone,
 		Ticker:   ticker,
@@ -52,8 +61,11 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 	t.Cleanup(tr.Close)
 
 	tr.Restore(tracker.Restored{
-		Samples: map[domain.ConfigDir]tracker.WindowSamples{
-			dirA: {SevenDay: []domain.Sample{
+		Accounts: []domain.Account{{Dir: dirNew}},
+		Samples: map[domain.ConfigDir]domain.WindowSamples{
+			// The main account's five-hour window has been at its limit
+			// for 25 minutes, so it is on credits.
+			dirA: {FiveHour: []domain.Sample{{At: minutes(-25), UsedPct: 100}}, SevenDay: []domain.Sample{
 				{At: minutes(-60), UsedPct: 88},
 				{At: minutes(-45), UsedPct: 89},
 				{At: minutes(-30), UsedPct: 90},
@@ -80,6 +92,7 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 	tr.SetAccount(domain.Account{Dir: dirA, Email: "dev@example.com", Plan: "Max 20x", Org: "Example", Auth: domain.AuthSubscription, ProbedAt: probedAt})
 	tr.SetAccount(domain.Account{Dir: dirB, Email: "other@example.com", Plan: "Pro", Auth: domain.AuthSubscription, ProbedAt: probedAt})
 	tr.SetAccount(domain.Account{Dir: dirC, Auth: domain.AuthAPIKey, ProbedAt: probedAt})
+	tr.SetAccount(domain.Account{Dir: dirCloud, Plan: "Bedrock", Auth: domain.AuthThirdParty, ProbedAt: probedAt})
 
 	hookAt := func(when time.Time, dir domain.ConfigDir, id domain.SessionID, pid int, name string) domain.Hook {
 		return domain.Hook{At: when, Dir: dir, Session: id, PID: pid, Name: name}
@@ -110,7 +123,9 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 
 	// Working with two subagents and a nearly full context. Its status line
 	// carries the main account's limits: a seven-day window on pace to run
-	// out, and a five-hour window whose reset time is unknown.
+	// out, and a five-hour window at its limit whose reset time is unknown.
+	// The calls since that window filled spend 80% of the main account's
+	// credits.
 	harbor := opus("high", 88, 176000, 3.2, 340, 52, 0.92)
 	tr.Apply(hookAt(minutes(-40), dirA, workingID, 4102, "SessionStart"))
 	tr.Apply(statusAt(minutes(-39), dirA, workingID, "harbor-api", "/home/dev/src/harbor-api", harbor))
@@ -121,7 +136,7 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 		tr.Apply(sub)
 	}
 	withLimits := statusAt(now, dirA, workingID, "harbor-api", "/home/dev/src/harbor-api", harbor)
-	withLimits.Limits.FiveHour = &domain.Window{UsedPct: 40}
+	withLimits.Limits.FiveHour = &domain.Window{UsedPct: 100}
 	withLimits.Limits.SevenDay = &domain.Window{UsedPct: 92, ResetsAt: now.Add(48 * time.Hour)}
 	tr.Apply(withLimits)
 	tr.RecordAPI(requestAt(minutes(-20), workingID, "Opus 5.5", 5000, 2400, 180000, 6000, 2.75))
@@ -144,14 +159,16 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 	tr.Apply(hookAt(now.Add(-4*time.Second), dirA, startingID, 4103, "SessionStart"))
 
 	// Idle on the second account. Its status line carries that account's
-	// limits: a flat seven-day window, and a five-hour window with too few
-	// samples to project.
+	// limits: a flat seven-day window, a five-hour window with too few
+	// samples to project, and the spend limit of the gateway it signs in
+	// through.
 	tr.Apply(hookAt(minutes(-45), dirB, idleID, 5203, "SessionStart"))
 	tr.Apply(hookAt(minutes(-10), dirB, idleID, 5203, "UserPromptSubmit"))
 	tr.Apply(hookAt(minutes(-4), dirB, idleID, 5203, "Stop"))
 	ledger := statusAt(now, dirB, idleID, "quiet-ledger", "/home/dev/notes", sonnet)
 	ledger.Limits.FiveHour = &domain.Window{UsedPct: 10, ResetsAt: now.Add(3 * time.Hour)}
 	ledger.Limits.SevenDay = &domain.Window{UsedPct: 4, ResetsAt: now.Add(5 * 24 * time.Hour)}
+	ledger.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
 	tr.Apply(ledger)
 	tr.RecordAPI(requestAt(minutes(-9), idleID, "Sonnet 5.5", 28000, 3500, 110000, 7000, 3))
 
@@ -225,7 +242,10 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 	for _, a := range v.Alerts {
 		kinds = append(kinds, a.Kind)
 	}
-	allKinds := []domain.AlertKind{domain.AlertNeedsYou, domain.AlertRunsOut, domain.AlertBudget, domain.AlertWeeklyThreshold, domain.AlertContextHigh}
+	allKinds := []domain.AlertKind{
+		domain.AlertNeedsYou, domain.AlertRunsOut, domain.AlertCreditsActive, domain.AlertCreditsLow,
+		domain.AlertBudget, domain.AlertWeeklyThreshold, domain.AlertContextHigh,
+	}
 	if !slices.Equal(kinds, allKinds) {
 		t.Errorf("alerts %v, want one of each kind %v", kinds, allKinds)
 	}
@@ -269,13 +289,21 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 			lost, subagents, share, waitReason, backgroundWithoutProcess)
 	}
 	var budget, weekBelowMonth bool
+	var auths []domain.AuthKind
 	for _, a := range v.Accounts {
 		budget = budget || a.BudgetUSD > 0
 		weekBelowMonth = weekBelowMonth || a.SpendWeekUSD != a.SpendMonthUSD
+		auths = append(auths, a.Auth)
 	}
 	if !budget || !weekBelowMonth {
 		t.Errorf("accounts: with a budget %v, with week and month spend differing %v; want both", budget, weekBelowMonth)
 	}
+	for _, auth := range []domain.AuthKind{domain.AuthUnknown, domain.AuthSubscription, domain.AuthAPIKey, domain.AuthThirdParty} {
+		if !slices.Contains(auths, auth) {
+			t.Errorf("no account signs in with %v", auth)
+		}
+	}
+	assertCreditsCoverage(t, v)
 
 	successor, _ := findSession(v, successorID)
 	if successor.Replaces != clearedID {
@@ -286,6 +314,27 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 	}
 	if len(v.Models) == 0 || slices.Equal(v.Models, v.ModelsWeek) {
 		t.Errorf("models today %v and this week %v, want both, differing", v.Models, v.ModelsWeek)
+	}
+}
+
+// assertCreditsCoverage checks that the golden view's accounts show credits
+// estimated while on them, credits reported while off them, and no credits.
+func assertCreditsCoverage(t *testing.T, v tracker.View) {
+	t.Helper()
+	var estimatedOn, reportedOff, none bool
+	for _, a := range v.Accounts {
+		c := a.Credits
+		switch {
+		case c == nil:
+			none = true
+		case c.Source == domain.CreditSourceEstimate && c.Active && !time.Time(c.OnCreditsSince).IsZero():
+			estimatedOn = true
+		case c.Source == domain.CreditSourceReported && !c.Active && time.Time(c.OnCreditsSince).IsZero():
+			reportedOff = true
+		}
+	}
+	if !estimatedOn || !reportedOff || !none {
+		t.Errorf("credits: estimated while on them %v, reported while off them %v, none %v; want all", estimatedOn, reportedOff, none)
 	}
 }
 

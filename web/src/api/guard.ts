@@ -1,10 +1,12 @@
 import {
   alertKinds,
   authKinds,
+  creditSources,
   sessionKinds,
   sessionStates,
   type AccountView,
   type AlertView,
+  type CreditsView,
   type Int,
   type ModelTotal,
   type ProjectionView,
@@ -81,6 +83,15 @@ const windowView = shape<WindowView>({
   projection: nullable(projectionView),
 });
 
+const creditsView = shape<CreditsView>({
+  balanceUSD: finite,
+  spentUSD: finite,
+  remainingUSD: finite,
+  onCreditsSince: nullable(timestamp),
+  active: flag,
+  source: oneOf(creditSources),
+});
+
 const accountView = shape<AccountView>({
   dir: text,
   label: text,
@@ -93,6 +104,7 @@ const accountView = shape<AccountView>({
   spendWeekUSD: finite,
   spendMonthUSD: finite,
   budgetUSD: finite,
+  credits: nullable(creditsView),
   models: listOf(modelTotal),
   modelsWeek: listOf(modelTotal),
 });

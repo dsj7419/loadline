@@ -43,6 +43,13 @@ function pressKey(key: string, init: KeyboardEventInit = {}): void {
   document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
 }
 
+// Matches the innermost element that reads text as a whole, though parts of
+// it sit in child elements, as amounts set in their own type do.
+function wholeText(text: string): (content: string, element: Element | null) => boolean {
+  return (_, element) =>
+    element !== null && element.textContent === text && [...element.children].every((child) => child.textContent !== text);
+}
+
 function memoryOptIn(initial = false): { store: OptInStore; saved: boolean[] } {
   let on = initial;
   const saved: boolean[] = [];
@@ -376,6 +383,21 @@ describe('App', () => {
     ]);
   });
 
+  it('labels the credit alerts', () => {
+    const { send } = renderApp();
+    send(
+      viewOf({
+        alerts: [
+          alertOf({ kind: 'credits_active', session: '', message: 'Main is using usage credits' }),
+          alertOf({ kind: 'credits_low', session: '', message: 'Main has used about $16.40 of its $20.00 in usage credits' }),
+        ],
+      }),
+    );
+
+    const items = within(screen.getByRole('region', { name: /alerts/i })).getAllByRole('listitem');
+    expect(items.map((item) => item.querySelector('.alert-kind')?.textContent)).toEqual(['On credits', 'Credits low']);
+  });
+
   it('says whether it is live', () => {
     const { send, lose } = renderApp();
     expect(screen.getByRole('status').textContent).toMatch(/connecting/i);
@@ -643,6 +665,60 @@ describe('AccountCard', () => {
     render(<AccountCard range="today" account={accountOf({ fiveHour: null, sevenDay: null })} now={signal(now)} />);
     expect(screen.getByText('No rate limits reported yet.')).toBeTruthy();
   });
+
+  const onCredits = {
+    balanceUSD: 20,
+    spentUSD: 6.4,
+    remainingUSD: 13.6,
+    onCreditsSince: '2026-11-21T17:42:00Z',
+    active: true,
+    source: 'estimate',
+  };
+
+  it('estimates the credits spent, with a badge while the account is on them', () => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: onCredits })} now={signal(now)} />);
+    const card = screen.getByRole('article', { name: 'Main' });
+
+    expect(within(card).getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+    const badge = within(card).getByText('On credits');
+    // An icon and words, never colour alone.
+    expect(badge.querySelector('svg')).not.toBeNull();
+    expect(badge.closest('p')?.textContent).toBe('On credits since 17:42');
+  });
+
+  it('shows reported credits as they are, without the estimate mark', () => {
+    const reported = { ...onCredits, spentUSD: 314.12, balanceUSD: 500, remainingUSD: 185.88, source: 'reported' };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: reported })} now={signal(now)} />);
+
+    expect(screen.getByText(wholeText('Credits $314.12 of $500 used · $185.88 left'))).toBeTruthy();
+  });
+
+  it('drops the badge while the account is off credits', () => {
+    const off = { ...onCredits, active: false, onCreditsSince: null };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: off })} now={signal(now)} />);
+
+    expect(screen.getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+    expect(screen.queryByText('On credits')).toBeNull();
+  });
+
+  it('shows no credits for an account that has none', () => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: null })} now={signal(now)} />);
+
+    expect(screen.getByRole('article', { name: 'Main' }).textContent).not.toContain('Credits');
+  });
+
+  it("shows the spend limit an API account's status line reports", () => {
+    const reported = { ...onCredits, active: false, onCreditsSince: null, source: 'reported' };
+    render(
+      <AccountCard
+        range="today"
+        account={accountOf({ label: 'API', auth: 'api_key', plan: '', email: '', credits: reported })}
+        now={signal(now)}
+      />,
+    );
+
+    expect(screen.getByText(wholeText('Credits $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+  });
 });
 
 describe('Gauge', () => {
@@ -706,8 +782,9 @@ describe('createNotifier', () => {
   const needsYou = alertOf();
   const runsOut = alertOf({ kind: 'runs_out', session: '', message: 'Main is on pace to run out' });
   const weekly = alertOf({ kind: 'weekly_threshold', session: '', message: 'Main is at 93%' });
+  const onCredits = alertOf({ kind: 'credits_active', session: '', message: 'Main is using usage credits' });
 
-  it('notifies once for each new needs-you or runs-out alert', async () => {
+  it('notifies once for each new needs-you, runs-out or credits-active alert', async () => {
     const notifications = fakeNotifications('granted');
     const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
@@ -718,12 +795,20 @@ describe('createNotifier', () => {
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, runsOut, weekly]);
+    notifier.update([needsYou, runsOut, onCredits, weekly]);
+    notifier.update([needsYou, runsOut, onCredits, weekly]);
     notifier.update([]);
     notifier.update([alertOf({ since: '2026-11-21T18:05:00Z' })]);
     // Answered and asked again between two views: a new wait, so a new alert.
     notifier.update([alertOf({ since: '2026-11-21T18:09:00Z' })]);
 
-    expect(notifications.shown).toEqual([needsYou.message, runsOut.message, needsYou.message, needsYou.message]);
+    expect(notifications.shown).toEqual([
+      needsYou.message,
+      runsOut.message,
+      onCredits.message,
+      needsYou.message,
+      needsYou.message,
+    ]);
     expect(notifications.requestPermission).not.toHaveBeenCalled();
   });
 
@@ -741,7 +826,7 @@ describe('createNotifier', () => {
     expect(notifications.shown).toEqual([]);
   });
 
-  it('never notifies of context, weekly limit or budget alerts', async () => {
+  it('never notifies of context, weekly limit, budget or credits-low alerts', async () => {
     const notifications = fakeNotifications('granted');
     const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
@@ -751,6 +836,7 @@ describe('createNotifier', () => {
       alertOf({ kind: 'context_high', message: 'harbor-api is at 87% of its context window' }),
       alertOf({ kind: 'weekly_threshold', session: '', message: 'Main is at 93% of its weekly limit' }),
       alertOf({ kind: 'budget', session: '', message: 'API has spent its daily budget' }),
+      alertOf({ kind: 'credits_low', session: '', message: 'Main has used about $16.40 of its $20.00 in usage credits' }),
     ]);
     expect(notifications.shown).toEqual([]);
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { isView, viewSchema, type Schema } from '../src/api/guard';
+import { alertKinds, authKinds, creditSources } from '../src/api/types';
 
 // TestView_GoldenJSON in internal/tracker holds this file to the JSON of a
 // View that fills every field, so it is the API exactly as the server sends it.
@@ -73,6 +74,26 @@ function undescribed(schema: Schema, value: unknown, path: Path = []): Path[] {
   }
 }
 
+// The value lists of every enum in schema.
+function* enumsIn(schema: Schema): Generator<readonly string[]> {
+  switch (schema.kind) {
+    case 'enum':
+      yield schema.values;
+      return;
+    case 'nullable':
+    case 'array':
+      yield* enumsIn(schema.of);
+      return;
+    case 'object':
+      for (const field of Object.values(schema.fields)) {
+        yield* enumsIn(field);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 // A value of another JSON type than the one given.
 function wrongTypeFor(value: unknown): unknown {
   return typeof value === 'string' ? 0 : 'wrong';
@@ -102,6 +123,47 @@ describe('the View contract', () => {
     expect(everyField.map(({ path }) => show(path))).toContain(deepest);
   });
 
+  it('holds every value of every enum, so the sweeps below try them all', () => {
+    const seen = new Map<readonly string[], Set<string>>();
+    const collect = (schema: Schema, value: unknown): void => {
+      switch (schema.kind) {
+        case 'enum':
+          if (typeof value === 'string') {
+            seen.set(schema.values, (seen.get(schema.values) ?? new Set<string>()).add(value));
+          }
+          return;
+        case 'nullable':
+          if (value !== null) {
+            collect(schema.of, value);
+          }
+          return;
+        case 'array':
+          if (Array.isArray(value)) {
+            value.forEach((item: unknown) => {
+              collect(schema.of, item);
+            });
+          }
+          return;
+        case 'object':
+          if (isObject(value)) {
+            Object.entries(schema.fields).forEach(([key, field]) => {
+              collect(field, value[key]);
+            });
+          }
+          return;
+        default:
+          return;
+      }
+    };
+    collect(viewSchema, golden);
+
+    const enums = [...enumsIn(viewSchema)];
+    expect(enums).toEqual(expect.arrayContaining([authKinds, alertKinds, creditSources]));
+    for (const values of enums) {
+      expect([...(seen.get(values) ?? [])].sort()).toEqual([...values].sort());
+    }
+  });
+
   it('rejects the payload when any one value has the wrong type', () => {
     const accepted = everyValue
       .filter(({ path, value }) => isView(edit(golden, path, wrongTypeFor(value))))
@@ -121,6 +183,7 @@ describe('the View contract', () => {
     ['an unknown session kind', ['sessions', 0, 'kind'], 'batch'],
     ['an unknown auth kind', ['accounts', 0, 'auth'], 'oauth'],
     ['an unknown alert kind', ['alerts', 0, 'kind'], 'urgent'],
+    ['an unknown credit source', ['accounts', 0, 'credits', 'source'], 'guessed'],
     ['a timestamp that is not RFC 3339', ['generatedAt'], '21 Nov 2026 18:00'],
     ['an impossible timestamp', ['sessions', 0, 'startedAt'], '2026-13-45T18:00:00Z'],
     ['a nullable timestamp that is not RFC 3339', ['accounts', 0, 'sevenDay', 'resetsAt'], 'soon'],
@@ -137,6 +200,8 @@ describe('the View contract', () => {
 
   it.each<[string, Path, unknown]>([
     ['a missing rate-limit window', ['accounts', 0, 'sevenDay'], null],
+    ['an account without credits', ['accounts', 0, 'credits'], null],
+    ['credits not in use', ['accounts', 0, 'credits', 'onCreditsSince'], null],
     ['an unknown observation time', ['accounts', 0, 'fiveHour', 'observedAt'], null],
     ['a timestamp with a fraction and an offset', ['generatedAt'], '2026-11-21T19:00:00.123456789+01:00'],
     ['empty lists', ['sessions'], []],

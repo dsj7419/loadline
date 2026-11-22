@@ -56,6 +56,7 @@ const accountDefaults = {
   spendWeekUSD: 0,
   spendMonthUSD: 0,
   budgetUSD: 0,
+  credits: null,
   models: [],
   modelsWeek: [],
 };

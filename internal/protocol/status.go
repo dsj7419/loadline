@@ -131,16 +131,47 @@ func (w *StatusWindow) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// StatusSpendLimit is the spend limit behind a Claude apps gateway. Loadline
-// decodes it but does not use it yet.
+// StatusSpendLimit is the spend limit behind a Claude apps gateway. The
+// amounts are pointers so that one the line leaves out is told apart from
+// $0.
 type StatusSpendLimit struct {
 	UsedPercentage float64 `json:"used_percentage,omitempty"`
 	// ResetsAt is in Unix seconds.
-	ResetsAt int64   `json:"resets_at,omitempty"`
-	UsedUSD  float64 `json:"used_usd,omitempty"`
-	LimitUSD float64 `json:"limit_usd,omitempty"`
+	ResetsAt int64    `json:"resets_at,omitempty"`
+	UsedUSD  *float64 `json:"used_usd,omitempty"`
+	LimitUSD *float64 `json:"limit_usd,omitempty"`
 	// Period is daily, weekly or monthly.
 	Period string `json:"period,omitempty"`
+}
+
+// UnmarshalJSON reads a spend limit leniently, as StatusWindow's does: an
+// amount that is absent, null or not a number leaves its pointer nil, any
+// other field of the wrong type is left at its zero value, and a spend limit
+// that is not an object stays empty.
+func (s *StatusSpendLimit) UnmarshalJSON(b []byte) error {
+	var fields struct {
+		UsedPercentage json.RawMessage `json:"used_percentage"`
+		ResetsAt       json.RawMessage `json:"resets_at"`
+		UsedUSD        json.RawMessage `json:"used_usd"`
+		LimitUSD       json.RawMessage `json:"limit_usd"`
+		Period         json.RawMessage `json:"period"`
+	}
+	_ = json.Unmarshal(b, &fields) // the mismatches this reports are the leniency above
+
+	_ = json.Unmarshal(fields.UsedPercentage, &s.UsedPercentage)
+	_ = json.Unmarshal(fields.ResetsAt, &s.ResetsAt)
+	_ = json.Unmarshal(fields.Period, &s.Period)
+	s.UsedUSD, s.LimitUSD = optionalNumber(fields.UsedUSD), optionalNumber(fields.LimitUSD)
+	return nil
+}
+
+// optionalNumber is the number raw holds, or nil when it holds none.
+func optionalNumber(raw json.RawMessage) *float64 {
+	var n *float64
+	if json.Unmarshal(raw, &n) != nil {
+		return nil
+	}
+	return n
 }
 
 // DecodeStatus decodes a status-line payload, which must be a JSON object.
@@ -197,7 +228,22 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 			SevenDay:   window(rateLimits.SevenDay),
 			ObservedAt: env.At,
 		},
+		SpendLimit: spendLimit(rateLimits.SpendLimit),
 	}, nil
+}
+
+// spendLimit maps a reported spend limit. One that lacks either amount, or
+// whose amounts are negative or not finite, is nil: an amount nobody
+// reported must not pass for $0.
+func spendLimit(s *StatusSpendLimit) *domain.SpendLimit {
+	if s == nil || !usableAmount(s.UsedUSD) || !usableAmount(s.LimitUSD) {
+		return nil
+	}
+	return &domain.SpendLimit{UsedUSD: *s.UsedUSD, LimitUSD: *s.LimitUSD}
+}
+
+func usableAmount(usd *float64) bool {
+	return usd != nil && !math.IsNaN(*usd) && !math.IsInf(*usd, 0) && *usd >= 0
 }
 
 // window maps a reported window. One that is absent, or whose usage is

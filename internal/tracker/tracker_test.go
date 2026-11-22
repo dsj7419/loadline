@@ -1224,7 +1224,7 @@ func TestTracker_RestoreRebuildsUsageSamplesAndTimelines(t *testing.T) {
 			Limits: domain.Limits{SevenDay: window(78, resets), ObservedAt: at(-600)},
 		}},
 		Sessions: []domain.Session{restoredSession(s1, domain.StateIdle, at(-60))},
-		Samples: map[domain.ConfigDir]tracker.WindowSamples{dirA: {SevenDay: []domain.Sample{
+		Samples: map[domain.ConfigDir]domain.WindowSamples{dirA: {SevenDay: []domain.Sample{
 			{At: at(-1800), UsedPct: 74}, {At: at(-1200), UsedPct: 76}, {At: at(-600), UsedPct: 78},
 		}}},
 		Usage: []tracker.UsageRow{

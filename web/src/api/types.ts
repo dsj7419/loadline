@@ -19,8 +19,20 @@ export type SessionKind = (typeof sessionKinds)[number];
 export const authKinds = ['unknown', 'subscription', 'api_key', 'third_party'] as const;
 export type AuthKind = (typeof authKinds)[number];
 
-export const alertKinds = ['needs_you', 'runs_out', 'budget', 'weekly_threshold', 'context_high'] as const;
+export const alertKinds = [
+  'needs_you',
+  'runs_out',
+  'credits_active',
+  'credits_low',
+  'budget',
+  'weekly_threshold',
+  'context_high',
+] as const;
 export type AlertKind = (typeof alertKinds)[number];
+
+/** Where an account's credit figures come from: worked out, or reported by its spend limit. */
+export const creditSources = ['estimate', 'reported'] as const;
+export type CreditSource = (typeof creditSources)[number];
 
 declare const brand: unique symbol;
 
@@ -61,8 +73,22 @@ export type AccountView = {
   readonly spendMonthUSD: number;
   /** The daily budget, or 0 for none. */
   readonly budgetUSD: number;
+  /** Null unless usage credits were recorded for the account or its spend limit was reported. */
+  readonly credits: CreditsView | null;
   readonly models: readonly ModelTotal[];
   readonly modelsWeek: readonly ModelTotal[];
+};
+
+/** Where an account's usage credits stand, in US dollars. */
+export type CreditsView = {
+  readonly balanceUSD: number;
+  readonly spentUSD: number;
+  readonly remainingUSD: number;
+  /** When the account went on credits; null unless active. */
+  readonly onCreditsSince: Timestamp | null;
+  /** The account is at a plan limit and working on credits. */
+  readonly active: boolean;
+  readonly source: CreditSource;
 };
 
 /** One rate-limit window. */

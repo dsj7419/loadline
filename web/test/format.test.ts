@@ -6,6 +6,7 @@ import {
   formatReset,
   formatTokens,
   formatUSD,
+  formatUSDBrief,
   formatWhen,
 } from '../src/model/format';
 
@@ -94,6 +95,27 @@ describe('formatUSD', () => {
 
   it.each(notNumbers)('shows %s as a dash', (n) => {
     expect(formatUSD(n)).toBe('—');
+  });
+});
+
+describe('formatUSDBrief', () => {
+  it.each<[number, string]>([
+    [20, '$20'],
+    [0, '$0'],
+    [13.6, '$13.60'],
+    [6.4, '$6.40'],
+    [19.999, '$20'],
+    [0.001, '<$0.01'],
+    [1_000, '$1,000'],
+    [-5, '-$5'],
+    [2_500_000, '$2.5M'],
+    [1e21, '>$999T'],
+  ])('shows %s as %s', (n, want) => {
+    expect(formatUSDBrief(n)).toBe(want);
+  });
+
+  it.each(notNumbers)('shows %s as a dash', (n) => {
+    expect(formatUSDBrief(n)).toBe('—');
   });
 });
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
 )
@@ -81,6 +82,16 @@ type AccountSetting struct {
 	// DailyBudgetUSD is the daily spend that is considered a full budget for
 	// an API account. Zero means no budget.
 	DailyBudgetUSD float64 `json:"dailyBudgetUSD"`
+	// Credits are the usage credits added to a subscription account, which
+	// it spends once it reaches a plan limit.
+	Credits []CreditGrant `json:"credits"`
+}
+
+// CreditGrant is one purchase of usage credits: how many US dollars, and
+// when they were added, as an RFC 3339 time with its offset.
+type CreditGrant struct {
+	USD     float64   `json:"usd"`
+	AddedAt time.Time `json:"addedAt"`
 }
 
 // Defaults returns the configuration used when no file overrides it.
@@ -242,6 +253,46 @@ func (a AccountSetting) validate(home string) error {
 	}
 	if a.DailyBudgetUSD < 0 {
 		return fmt.Errorf("dailyBudgetUSD %v is below 0", a.DailyBudgetUSD)
+	}
+	for i, grant := range a.Credits {
+		if err := grant.validate(); err != nil {
+			return fmt.Errorf("credits[%d].%w", i, err)
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON reads a grant as Config's other keys are read, refusing keys
+// it does not define, and names addedAt when its time cannot be read.
+func (g *CreditGrant) UnmarshalJSON(data []byte) error {
+	var fields struct {
+		USD     float64         `json:"usd"`
+		AddedAt json.RawMessage `json:"addedAt"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	var addedAt time.Time
+	if len(fields.AddedAt) > 0 {
+		if err := json.Unmarshal(fields.AddedAt, &addedAt); err != nil {
+			return fmt.Errorf("credit addedAt %s is not a time with its offset, such as %q", fields.AddedAt, grantTimeExample)
+		}
+	}
+	*g = CreditGrant{USD: fields.USD, AddedAt: addedAt}
+	return nil
+}
+
+// grantTimeExample shows the form a grant's addedAt takes.
+const grantTimeExample = "2026-11-21T12:00:00-08:00"
+
+func (g CreditGrant) validate() error {
+	if !(g.USD > 0) {
+		return fmt.Errorf("usd %v is not above 0", g.USD)
+	}
+	if g.AddedAt.IsZero() {
+		return errors.New("addedAt must be set")
 	}
 	return nil
 }
