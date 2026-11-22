@@ -13,12 +13,22 @@ import (
 	"github.com/dsj7419/loadline/internal/install"
 )
 
-// helperEnv makes the test binary sleep until it is killed, so a test can
-// hold a copy of it running.
-const helperEnv = "LOADLINE_INSTALL_HELPER"
+const (
+	// helperEnv makes the test binary sleep until it is killed, so a test
+	// can hold a copy of it running.
+	helperEnv = "LOADLINE_INSTALL_HELPER"
+	// helperReadyEnv names a file the sleeping helper creates once it runs,
+	// so a test knows the process has started.
+	helperReadyEnv = "LOADLINE_INSTALL_HELPER_READY"
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv(helperEnv) == "sleep" {
+		if ready := os.Getenv(helperReadyEnv); ready != "" {
+			if err := os.WriteFile(ready, nil, 0o600); err != nil { //nolint:gosec // G703: ready is a path in the parent test's temp dir
+				os.Exit(1)
+			}
+		}
 		time.Sleep(time.Hour)
 		os.Exit(0)
 	}

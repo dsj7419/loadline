@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // executableMode lets only the user run, read and replace the installed
@@ -151,8 +152,23 @@ func copyToTemp(src, dir string) (string, error) {
 	return out.Name(), nil
 }
 
+// rename is os.Rename. Tests replace it to make a file look held by another
+// process.
+var rename = os.Rename
+
+// renameBudget bounds how long replacing the binary waits out another
+// process's brief hold on it: an antivirus scan of the new copy, or the
+// loader of a hook that has just started from the old one.
+var renameBudget = 2 * time.Second
+
+// maxRenameDelay caps the pause between attempts.
+const maxRenameDelay = 100 * time.Millisecond
+
+// replaceFile renames temp over target. Windows refuses to replace a binary
+// that is running, for as long as it runs, so a refusal is not worth waiting
+// out: target is moved aside instead, and temp takes its place.
 func replaceFile(temp, target string) error {
-	err := os.Rename(temp, target)
+	err := rename(temp, target)
 	if err == nil {
 		return nil
 	}
@@ -160,13 +176,15 @@ func replaceFile(temp, target string) error {
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 
-	aside, asideErr := moveAside(target)
+	deadline := time.Now().Add(renameBudget)
+	aside, asideErr := moveAside(target, deadline)
 	if asideErr != nil {
 		return fmt.Errorf("install %s: %w", target, errors.Join(err, asideErr))
 	}
-	if err := os.Rename(temp, target); err != nil {
+	// Nothing is at target now, so a refusal can only be a brief hold.
+	if err := renameRetrying(temp, target, deadline, isHeld); err != nil {
 		// Put the previous binary back so the hooks that run it keep working.
-		_ = os.Rename(aside, target)
+		_ = renameRetrying(aside, target, time.Now().Add(renameBudget), isHeld)
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 	return nil
@@ -177,10 +195,13 @@ const maxAsideNames = 100
 
 // moveAside renames target to target.old, replacing an older one, and when
 // that older one is running too, to the first name target.old-<n> not yet
-// taken. It returns the new name.
-func moveAside(target string) (string, error) {
+// taken. It returns the new name. It waits until deadline for another
+// process to let go of target.
+func moveAside(target string, deadline time.Time) (string, error) {
 	aside := target + ".old"
-	err := os.Rename(target, aside)
+	// A running .old refuses to be replaced for good, so only a sharing or
+	// lock violation, which comes from a hold on target, is worth waiting out.
+	err := renameRetrying(target, aside, deadline, isSharingViolation)
 	if err == nil {
 		return aside, nil
 	}
@@ -189,10 +210,26 @@ func moveAside(target string) (string, error) {
 		if _, statErr := os.Lstat(candidate); !errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
-		if renameErr := os.Rename(target, candidate); renameErr != nil {
+		// Nothing holds a name that does not exist yet, so any refusal here
+		// is a brief hold on target.
+		if renameErr := renameRetrying(target, candidate, deadline, isHeld); renameErr != nil {
 			return "", errors.Join(err, renameErr)
 		}
 		return candidate, nil
 	}
 	return "", fmt.Errorf("%w; %s.old-1 to -%d are taken too", err, target, maxAsideNames)
+}
+
+// renameRetrying renames from to to, trying again after a growing pause
+// while the failure is retryable and deadline allows, and at least once.
+func renameRetrying(from, to string, deadline time.Time, retryable func(error) bool) error {
+	delay := time.Millisecond
+	for {
+		err := rename(from, to)
+		if err == nil || !retryable(err) || !time.Now().Add(delay).Before(deadline) {
+			return err
+		}
+		time.Sleep(delay)
+		delay = min(2*delay, maxRenameDelay)
+	}
 }
