@@ -115,6 +115,21 @@ func TestTracker_PollStampedBeforeTheStepIsDatedNow(t *testing.T) {
 	}
 }
 
+// So are the absences of a poll dated more than ten minutes ahead: a session
+// it misses ends as of now, not ahead of everything that follows.
+func TestTracker_PollDatedAheadDatesItsAbsencesNow(t *testing.T) {
+	h, _ := newSteppingHarness(t)
+	h.tr.Apply(statusLine(0, s1))
+
+	h.clock.Set(at(60))
+	h.tr.ApplyPoll(dirA, at(hour+60), nil)
+
+	got := h.session(s1)
+	if got.State != domain.StateEnded || !got.StateAt.Equal(at(60)) {
+		t.Errorf("session %v since %s, want ended since %s", got.State, got.StateAt, at(60))
+	}
+}
+
 func TestTracker_ClockSetBackExpiresWaitingCallsOnTime(t *testing.T) {
 	h, _ := newSteppingHarness(t)
 	h.clock.Set(at(hour))
