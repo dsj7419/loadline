@@ -20,6 +20,7 @@ import (
 	"github.com/dsj7419/loadline/internal/demo"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/launch"
 	"github.com/dsj7419/loadline/internal/logfile"
 	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
@@ -67,12 +68,17 @@ type ServeOptions struct {
 	// Clock reads the time. Nil means time.Now.
 	Clock func() time.Time
 	// Ticker schedules all the server's deferred work: polls, probes,
-	// drains, idle checks and the tracker's publishing. Nil means
-	// wall-clock timers.
+	// drains, idle checks, the wait before opening the dashboard and the
+	// tracker's publishing. Nil means wall-clock timers.
 	Ticker tracker.Ticker
 	// Ready, when set, is called with the address the server listens on
 	// once it is serving.
 	Ready func(addr string)
+	// Open opens the dashboard's URL in a browser. Nil means launch.Open.
+	Open func(url string, b launch.Browser) error
+	// BootTime returns when the machine started, which tells whether the
+	// dashboard was opened earlier this boot. Nil means launch.BootTime.
+	BootTime func() (time.Time, error)
 }
 
 // RunServe runs the server for this machine until ctx ends or no session
@@ -180,6 +186,7 @@ type instance struct {
 	after     timer.AfterFunc
 	log       *slog.Logger
 	failures  *failureLog
+	opener    dashboardOpener
 
 	tracker *tracker.Tracker
 	srv     *server.Server
@@ -207,6 +214,7 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		after:     after,
 		log:       log,
 		failures:  newFailureLog(log, clock),
+		opener:    newDashboardOpener(o, cfg),
 		spool:     forward.Spool{Dir: o.Paths.SpoolDir, MaxFiles: forward.DefaultMaxFiles},
 	}
 
@@ -380,6 +388,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 		workers.Go(func() { s.prober.Run(work) })
 		workers.Go(func() { s.drainEvery(work) })
 	}
+	workers.Go(func() { s.openDashboard(work) })
 	if s.idleAfter > 0 {
 		workers.Go(func() {
 			if waitIdle(work, s.tracker.HasLive, s.idleAfter, s.clock, s.after) {

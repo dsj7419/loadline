@@ -1,7 +1,7 @@
 // Package forward carries envelopes from loadline hook and loadline tap to
 // the server on the loopback interface, and keeps the hook events the server
-// could not take in a spool until it can. Its client also reads the server's
-// API for the commands that report on it.
+// could not take in a spool until it can. Its client also calls the server's
+// API for the commands that report on it or open its dashboard.
 package forward
 
 import (
@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/protocol"
@@ -96,7 +97,19 @@ func (c Client) Send(ctx context.Context, path string, env protocol.Envelope) er
 // Get fetches path with the token and returns the answer, which must be a
 // 200 of at most limit bytes. The context bounds the whole exchange.
 func (c Client) Get(ctx context.Context, path string, limit int64) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, http.NoBody)
+	return c.call(ctx, http.MethodGet, path, limit)
+}
+
+// Post posts to path with the token and no body, and returns the answer,
+// which must be a 200 of at most limit bytes. The context bounds the whole
+// exchange.
+func (c Client) Post(ctx context.Context, path string, limit int64) ([]byte, error) {
+	return c.call(ctx, http.MethodPost, path, limit)
+}
+
+func (c Client) call(ctx context.Context, method, path string, limit int64) ([]byte, error) {
+	request := strings.ToLower(method) + " " + path
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -104,18 +117,18 @@ func (c Client) Get(ctx context.Context, path string, limit int64) ([]byte, erro
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get %s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", request, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get %s: the server answered %s", path, resp.Status)
+		return nil, fmt.Errorf("%s: the server answered %s", request, resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("get %s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", request, err)
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("get %s: the answer is over %d bytes", path, limit)
+		return nil, fmt.Errorf("%s: the answer is over %d bytes", request, limit)
 	}
 	return body, nil
 }

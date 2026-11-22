@@ -29,6 +29,7 @@ const usage = `Usage: loadline <command>
 Commands:
   serve      Run the dashboard server for this machine's sessions
   status     Summarize accounts and sessions from the running server
+  open       Open the dashboard in the browser, starting the server if need be
   hook       Forward the Claude Code hook event on stdin; prints nothing
   tap        Pass a status line's input through and forward it
   install    Wire Loadline into Claude Code's settings
@@ -50,6 +51,8 @@ func Run(ctx context.Context, args []string, stdio IO) int {
 		return RunServe(ctx, args[1:], stdio)
 	case "status":
 		return RunStatus(ctx, stdio)
+	case "open":
+		return runOpenCommand(ctx, args[1:], stdio)
 	case "hook":
 		return runHookCommand(ctx, stdio)
 	case "tap":

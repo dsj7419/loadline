@@ -27,6 +27,7 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/launch"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
@@ -234,6 +235,10 @@ func (f *serveFixture) options() cli.ServeOptions {
 		Home:   f.home,
 		Port:   f.port,
 		NoOpen: true,
+		Open: func(string, launch.Browser) error {
+			f.t.Error("the server opened the dashboard, want --no-open to keep it from opening any")
+			return nil
+		},
 		Runner: f.claude,
 		Clock:  f.clock.Now,
 		Ticker: f.clock,

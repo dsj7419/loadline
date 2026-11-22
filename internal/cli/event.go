@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/launch"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
 
@@ -31,7 +32,7 @@ type Env struct {
 func processEnv() Env {
 	home, _ := os.UserHomeDir()
 	exe, _ := os.Executable()
-	return Env{Getenv: os.Getenv, Home: home, Now: time.Now, Exe: exe, Spawn: spawnDetached}
+	return Env{Getenv: os.Getenv, Home: home, Now: time.Now, Exe: exe, Spawn: launch.SpawnDetached}
 }
 
 // newEnvelope wraps payload for the server under a fresh event ID, stamped

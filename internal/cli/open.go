@@ -1,0 +1,149 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"time"
+
+	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/launch"
+	"github.com/dsj7419/loadline/internal/timer"
+)
+
+const (
+	loginCodePath = "/api/login-code"
+	// serverStartWait bounds the wait for a server that open started to
+	// answer, and serverPollEvery spaces the checks.
+	serverStartWait = 3 * time.Second
+	serverPollEvery = 50 * time.Millisecond
+	// loginCodeTimeout bounds the request for a login code.
+	loginCodeTimeout = 5 * time.Second
+	// maxLoginCodeAnswer is far more than the server's answer, a code of 32
+	// hex digits in a small JSON object.
+	maxLoginCodeAnswer = 1 << 10
+)
+
+// OpenOptions is what OpenDashboard needs.
+type OpenOptions struct {
+	Paths config.Paths
+	// Home is the user's home directory, which an account's configDir in
+	// the config may start from.
+	Home string
+	// Exe is this program's executable, which Spawn runs to start the
+	// server.
+	Exe string
+	// Spawn starts the server. Nil means launch.SpawnDetached.
+	Spawn func(exe string, args ...string) error
+	// Open opens the dashboard's URL in a browser. Nil means launch.Open.
+	Open func(url string, b launch.Browser) error
+	// After schedules the wait for a server that is starting. Nil means
+	// wall-clock timers.
+	After timer.AfterFunc
+}
+
+// runOpenCommand runs the open command for this process. It takes no
+// arguments.
+func runOpenCommand(ctx context.Context, args []string, stdio IO) int {
+	if code, ok := parseFlags(newFlagSet("open", stdio), args); !ok {
+		return code
+	}
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		return fail(stdio, err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fail(stdio, fmt.Errorf("find this program's executable: %w", err))
+	}
+	// Without a home directory, Load refuses only an account that names its
+	// config dir from home, and says so.
+	home, _ := os.UserHomeDir()
+	return OpenDashboard(ctx, OpenOptions{Paths: paths, Home: home, Exe: exe}, stdio)
+}
+
+// OpenDashboard opens the dashboard in the configured browser, signed in by
+// a login code the server mints for it, and returns 0, or 1 with the reason
+// on stderr. When no server answers, it starts one first, with --no-open so
+// that the server does not open a window of its own, and waits up to 3 s
+// for it to answer.
+func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
+	cfg, err := config.Load(o.Paths.ConfigFile, o.Home)
+	if err != nil {
+		return fail(stdio, err)
+	}
+	client := forward.Client{BaseURL: forward.LoopbackURL(cfg.Port)}
+	if !client.Healthy(ctx) {
+		if err := startServer(ctx, client, o, cfg.Port); err != nil {
+			return fail(stdio, err)
+		}
+	}
+	if client.Token, err = config.EnsureToken(o.Paths.TokenFile); err != nil {
+		return fail(stdio, err)
+	}
+	code, err := loginCode(ctx, client)
+	if err != nil {
+		return fail(stdio, err)
+	}
+
+	open := o.Open
+	if open == nil {
+		open = launch.Open
+	}
+	loginURL := client.BaseURL + "/login?code=" + url.QueryEscape(code)
+	if err := open(loginURL, launch.Browser{Pref: cfg.Browser, AppWindow: cfg.AppWindow}); err != nil {
+		return fail(stdio, fmt.Errorf("open the dashboard: %w", err))
+	}
+	return exitOK
+}
+
+// startServer starts the server and waits until client finds it answering,
+// for up to serverStartWait.
+func startServer(ctx context.Context, client forward.Client, o OpenOptions, port int) error {
+	spawn := o.Spawn
+	if spawn == nil {
+		spawn = launch.SpawnDetached
+	}
+	if err := spawn(o.Exe, "serve", "--no-open"); err != nil {
+		return fmt.Errorf("start the server: %w", err)
+	}
+
+	wait, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := o.After.Start(serverStartWait, cancel)
+	defer stop()
+	for !client.Healthy(wait) {
+		if o.After.Sleep(wait, serverPollEvery) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for the server: %w", err)
+		}
+		return fmt.Errorf("the server started on port %d did not answer within %v; run loadline serve to see why", port, serverStartWait)
+	}
+	return nil
+}
+
+// loginCode asks the server for a login code.
+func loginCode(ctx context.Context, client forward.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, loginCodeTimeout)
+	defer cancel()
+	body, err := client.Post(ctx, loginCodePath, maxLoginCodeAnswer)
+	if err != nil {
+		return "", fmt.Errorf("get a login code: %w", err)
+	}
+	var answer struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return "", fmt.Errorf("get a login code: read the server's answer: %w", err)
+	}
+	if answer.Code == "" {
+		return "", errors.New("get a login code: the server's answer holds none")
+	}
+	return answer.Code, nil
+}

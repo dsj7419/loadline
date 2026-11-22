@@ -345,3 +345,52 @@ func TestClient_GetDoesNotFollowRedirects(t *testing.T) {
 		t.Errorf("the redirect target saw %d requests, want none", n)
 	}
 }
+
+func TestClient_PostSendsTheTokenAndNoBodyAndReturnsTheAnswer(t *testing.T) {
+	rec := &recorder{status: http.StatusOK}
+	client := forward.Client{BaseURL: startServer(t, rec), Token: testToken}
+
+	body, err := client.Post(t.Context(), "/api/login-code", 1<<10)
+
+	if err != nil || string(body) != "{}" {
+		t.Fatalf("Post = %q, %v; want the answer", body, err)
+	}
+	seen := rec.seen()
+	if len(seen) != 1 || seen[0].method != http.MethodPost || seen[0].path != "/api/login-code" || len(seen[0].body) != 0 {
+		t.Fatalf("server saw %+v, want one POST of /api/login-code with no body", seen)
+	}
+	if got := seen[0].header.Get(tokenHeader); got != string(testToken) {
+		t.Errorf("token header = %q, want the token", got)
+	}
+}
+
+func TestClient_PostFailsUnlessTheServerAnswers200(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNoContent} {
+		client := forward.Client{BaseURL: startServer(t, &recorder{status: status}), Token: testToken}
+
+		if body, err := client.Post(t.Context(), "/api/login-code", 1<<10); err == nil || !strings.Contains(err.Error(), "post /api/login-code") {
+			t.Errorf("Post against a %d = %q, %v; want an error naming the request", status, body, err)
+		}
+	}
+}
+
+// The real server hands the client a login code: the Host header, the
+// token and the method all pass its checks.
+func TestClient_PostGetsALoginCodeFromTheServer(t *testing.T) {
+	ts, port := unstartedServer(t)
+	ts.Config.Handler = server.New(server.Deps{State: &recordingSink{}, Token: testToken, Port: port}).Handler()
+	ts.Start()
+	client := forward.Client{BaseURL: forward.LoopbackURL(port), Token: testToken}
+
+	body, err := client.Post(t.Context(), "/api/login-code", 1<<10)
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+
+	var answer struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil || len(answer.Code) != 32 {
+		t.Errorf("Post = %s, %v; want a 32-digit login code", body, err)
+	}
+}
