@@ -19,6 +19,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/deadlinetest"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
@@ -215,20 +216,21 @@ func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
 
 // The status line process does not linger on a server that does not answer:
 // the tap gives up on its post at its bound. The bound here is the test's
-// own; TestRunTap_CapsItsPostAt100ms pins the tap's.
+// own, long enough for the post to reach the server on a loaded machine;
+// TestRunTap_CapsItsPostAt100ms pins the tap's.
 func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
-	const deadline = 100 * time.Millisecond
+	const deadline = 400 * time.Millisecond
 	cli.SetTapSendTimeout(t, deadline)
 	f := newFixture(t)
 	out := newEchoPipe(t)
 	// The answer comes, but long after the tap should have given up on it.
-	srv := f.serve(func(s *ingestServer) { s.hold = 2 * gaveUpBy(deadline) })
+	srv := f.serve(func(s *ingestServer) { s.hold = 2 * deadlinetest.Limit(deadline) })
 	input := statusInput(t)
 	start := time.Now()
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	assertGaveUpAt(t, "the tap", time.Since(start), deadline)
+	deadlinetest.AssertGaveUpAt(t, "the tap", time.Since(start), deadline)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}

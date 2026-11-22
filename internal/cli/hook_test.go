@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/cli"
+	"github.com/dsj7419/loadline/internal/deadlinetest"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
@@ -165,7 +166,7 @@ func TestRunHook_FiftyMegabytesOfStdinStayWithinBoundedMemory(t *testing.T) {
 // With the server down, the hook's check and its post fail at once, or at
 // their bounds at the latest. The bounds here are the test's own.
 func TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart(t *testing.T) {
-	const check, send = 100 * time.Millisecond, 100 * time.Millisecond
+	const check, send = 300 * time.Millisecond, 300 * time.Millisecond
 	cli.SetHookSendTimeout(t, send)
 	f := newFixture(t)
 	f.healthTimeout = check
@@ -175,7 +176,7 @@ func TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart(t *testing.T) {
 
 	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 
-	if elapsed, limit := time.Since(start), gaveUpBy(check+send); elapsed >= limit {
+	if elapsed, limit := time.Since(start), deadlinetest.Limit(check, send); elapsed >= limit {
 		t.Errorf("hook took %v with the server down, want it to give up its %v check and %v send before %v", elapsed, check, send, limit)
 	}
 	if code != 0 {
@@ -215,18 +216,18 @@ func TestRunHook_OtherEventsDoNotStartTheServer(t *testing.T) {
 // TestRunHook_CapsItsPostAt300ms pins the hook's on its post, and forward's
 // TestClient_DefaultHealthTimeoutIs150ms the one on its check.
 func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
-	const check, send = 100 * time.Millisecond, 100 * time.Millisecond
+	const check, send = 300 * time.Millisecond, 300 * time.Millisecond
 	cli.SetHookSendTimeout(t, send)
 	f := newFixture(t)
 	f.healthTimeout = check
 	// The answers come, but long after the hook should have given up on them.
-	late := 2 * gaveUpBy(check+send)
+	late := 2 * deadlinetest.Limit(check, send)
 	f.serve(func(s *ingestServer) { s.slowHealth, s.hold = late, late })
 	start := time.Now()
 
 	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 
-	assertGaveUpAt(t, "the hook", time.Since(start), check+send)
+	deadlinetest.AssertGaveUpAt(t, "the hook", time.Since(start), check, send)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}

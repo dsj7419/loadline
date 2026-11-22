@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/deadlinetest"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/protocol"
@@ -153,9 +155,63 @@ func TestClient_SendFailsWhenNothingListens(t *testing.T) {
 	}
 }
 
+// deadlineRecorder is an HTTP transport that answers no request: it notes
+// how long each one had left before its deadline as it was made, and fails
+// it. In a synctest bubble, whose clock stands still while nothing waits,
+// that is exactly the bound the request was made with.
+type deadlineRecorder struct {
+	mu   sync.Mutex
+	left []time.Duration
+}
+
+// noDeadline is what deadlineRecorder notes for a request without one.
+const noDeadline time.Duration = -1
+
+var errNotSent = errors.New("not sent: the transport only notes deadlines")
+
+func (r *deadlineRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	left := noDeadline
+	if deadline, ok := req.Context().Deadline(); ok {
+		left = time.Until(deadline)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.left = append(r.left, left)
+	return nil, errNotSent
+}
+
+// assertBound fails t unless exactly one request was made, bounded by want.
+func (r *deadlineRecorder) assertBound(t *testing.T, want time.Duration) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.left) != 1 || r.left[0] != want {
+		t.Errorf("requests were made with %v left before their deadline (%v is none), want one with %v", r.left, noDeadline, want)
+	}
+}
+
+// Send bounds its post by its caller's context, and by nothing of its own.
+func TestClient_SendPostsWithTheContextsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var rec deadlineRecorder
+		client := forward.Client{BaseURL: forward.LoopbackURL(1), Token: testToken, HTTP: &http.Client{Transport: &rec}}
+		ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+		defer cancel()
+
+		if err := client.Send(ctx, forward.HookPath, envelopeAt(1, t0)); err == nil {
+			t.Error("Send = nil with nothing sent, want an error")
+		}
+
+		rec.assertBound(t, 400*time.Millisecond)
+	})
+}
+
+// Against a server that holds its post, Send returns once the context's
+// deadline has passed, and no later than a little after.
 func TestClient_SendStopsAtTheDeadline(t *testing.T) {
-	const deadline = 100 * time.Millisecond
-	client := forward.Client{BaseURL: startHungServer(t), Token: testToken}
+	const deadline = 400 * time.Millisecond
+	// The answer comes, but long after Send should have given up on it.
+	client := forward.Client{BaseURL: startHungServer(t, 2*deadlinetest.Limit(deadline)), Token: testToken}
 	// Started before the deadline is set, so that the deadline is counted
 	// in full.
 	start := time.Now()
@@ -164,7 +220,7 @@ func TestClient_SendStopsAtTheDeadline(t *testing.T) {
 
 	err := client.Send(ctx, forward.HookPath, envelopeAt(1, t0))
 
-	assertGaveUpAt(t, "Send", time.Since(start), deadline)
+	deadlinetest.AssertGaveUpAt(t, "Send", time.Since(start), deadline)
 	if err == nil {
 		t.Error("Send = nil against a hung server, want an error")
 	}
@@ -273,15 +329,38 @@ func TestClient_UnhealthyWhenNothingListens(t *testing.T) {
 	}
 }
 
-// Healthy bounds itself, so a hung server cannot hold the caller: without a
-// HealthTimeout of its own, a Client gives up at the default.
+// Healthy bounds its check by the Client's HealthTimeout, or by the default
+// without one, exactly.
+func TestClient_HealthyBoundsItsCheckByItsTimeout(t *testing.T) {
+	for name, tt := range map[string]struct{ healthTimeout, want time.Duration }{
+		"by default":                      {want: forward.DefaultHealthTimeout},
+		"with a HealthTimeout of its own": {healthTimeout: 400 * time.Millisecond, want: 400 * time.Millisecond},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var rec deadlineRecorder
+				client := forward.Client{BaseURL: forward.LoopbackURL(1), HTTP: &http.Client{Transport: &rec}, HealthTimeout: tt.healthTimeout}
+
+				if client.Healthy(t.Context()) {
+					t.Error("Healthy() = true with nothing sent, want false")
+				}
+
+				rec.assertBound(t, tt.want)
+			})
+		})
+	}
+}
+
+// Healthy bounds itself, so a hung server cannot hold the caller.
 func TestClient_HealthyGivesUpOnAHungServer(t *testing.T) {
-	client := forward.Client{BaseURL: startHungServer(t)}
+	const deadline = 400 * time.Millisecond
+	// The answer comes, but long after Healthy should have given up on it.
+	client := forward.Client{BaseURL: startHungServer(t, 2*deadlinetest.Limit(deadline)), HealthTimeout: deadline}
 	start := time.Now()
 
 	healthy := client.Healthy(context.Background())
 
-	assertGaveUpAt(t, "Healthy", time.Since(start), forward.DefaultHealthTimeout)
+	deadlinetest.AssertGaveUpAt(t, "Healthy", time.Since(start), deadline)
 	if healthy {
 		t.Error("Healthy() = true against a hung server, want false")
 	}

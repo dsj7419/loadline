@@ -27,27 +27,6 @@ var (
 	configDir = filepath.Join(os.TempDir(), "loadline-forward-test", ".claude")
 )
 
-// raceSlowdown is how much longer the race detector may make the hot path
-// take.
-const raceSlowdown = 5
-
-// assertGaveUpAt fails t unless elapsed, how long call took against a
-// server that does not answer, shows that it gave up at deadline: no
-// sooner, which no load can bring about, and before a margin past it for a
-// loaded machine to wake the caller and let it finish. The margin grows
-// with the deadline: four times it, and raceSlowdown times that with the
-// race detector, which slows the work around the deadline.
-func assertGaveUpAt(t *testing.T, call string, elapsed, deadline time.Duration) {
-	t.Helper()
-	lateness := 4 * deadline
-	if raceEnabled {
-		lateness *= raceSlowdown
-	}
-	if limit := deadline + lateness; elapsed < deadline || elapsed >= limit {
-		t.Errorf("%s returned after %v, want it to give up at its %v deadline: no sooner, and before %v", call, elapsed, deadline, limit)
-	}
-}
-
 // envelopeAt returns a valid hook envelope for session s<i>, stamped at.
 func envelopeAt(i int, at time.Time) protocol.Envelope {
 	return protocol.Envelope{
@@ -87,16 +66,19 @@ func startServer(t *testing.T, h http.Handler) string {
 	return ts.URL
 }
 
-// startHungServer serves a handler that never answers and returns its base
-// URL. A request is held until its client gives up or the test ends. The
+// startHungServer serves a handler that answers, with a 200 and no body,
+// only after hold, and returns its base URL. A request is held until then,
+// or until its client gives up or the test ends, so a client that ignores
+// its deadline returns at the hold rather than holding the test. The
 // handler reads the body first: only then does the server notice a client
 // hanging up.
-func startHungServer(t *testing.T) string {
+func startHungServer(t *testing.T, hold time.Duration) string {
 	t.Helper()
 	release := make(chan struct{})
 	url := startServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		select {
+		case <-time.After(hold):
 		case <-r.Context().Done():
 		case <-release:
 		}
