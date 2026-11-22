@@ -38,3 +38,11 @@ func TestEntryProblem_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
 		t.Errorf("entryProblem(%s), deleted meanwhile = %q, %v; want \"\", nil", path, got, err)
 	}
 }
+
+func TestOwnerProblem_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
+	path := going(t)
+
+	if got, err := ownerProblem(path); err != nil || got != "" {
+		t.Errorf("ownerProblem(%s), deleted meanwhile = %q, %v; want \"\", nil", path, got, err)
+	}
+}

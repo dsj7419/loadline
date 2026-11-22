@@ -456,13 +456,20 @@ func TestEntryPrivate_TakesOnlyWhatAPrivateFolderGives(t *testing.T) {
 			t.Helper()
 			return broughtIn(t, root, "D:P(D;OICIIO;CC;;;"+user+")(A;OICI;FA;;;"+user+")"+trusted)
 		}, false},
+		// Of the kind, rights and trustee of an entry the private folder
+		// passes down, only its kind differs.
+		"a denial of full control brought from elsewhere": {func(t *testing.T, root string) string {
+			t.Helper()
+			return broughtIn(t, root, "D:P(D;OICIIO;FA;;;SY)(A;OICI;FA;;;"+user+")"+trusted)
+		}, false},
 		"less than full control brought from elsewhere": {func(t *testing.T, root string) string {
 			t.Helper()
 			return broughtIn(t, root, "D:P(A;OICIIO;FR;;;"+user+")(A;;FA;;;"+user+")"+trusted)
 		}, false},
+		// Full control, as the private folder passes down, but for others.
 		"an entry for others brought from elsewhere": {func(t *testing.T, root string) string {
 			t.Helper()
-			return broughtIn(t, root, "D:P(A;OICI;FR;;;AU)(A;OICI;FA;;;"+user+")"+trusted)
+			return broughtIn(t, root, "D:P(A;OICI;FA;;;AU)(A;OICI;FA;;;"+user+")"+trusted)
 		}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
