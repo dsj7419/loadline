@@ -21,10 +21,17 @@ import (
 // CLAUDE_CODE_USE_* no other account uses them.
 var sessionPrefixes = []string{"ANTHROPIC_", "CLAUDE_", "CLAUDECODE", "OTEL_"}
 
+// gitBashPathVar is the one Claude Code variable Strip keeps. It holds no
+// credential, and Claude Code on Windows finds a Git Bash installed
+// somewhere unusual only through it: without it, every claude Loadline runs
+// would fail there.
+const gitBashPathVar = "CLAUDE_CODE_GIT_BASH_PATH"
+
 // Strip returns environ, in the form os.Environ gives, without the entries
-// whose names start with ANTHROPIC_, CLAUDE_, CLAUDECODE or OTEL_. Windows
-// treats variable names as case-insensitive, so there the prefixes match in
-// any case. It does not modify environ.
+// whose names start with ANTHROPIC_, CLAUDE_, CLAUDECODE or OTEL_, except
+// CLAUDE_CODE_GIT_BASH_PATH. Windows treats variable names as
+// case-insensitive, so there the names match in any case. It does not modify
+// environ.
 func Strip(environ []string) []string {
 	return strip(environ, runtime.GOOS == "windows")
 }
@@ -43,6 +50,9 @@ func strip(environ []string, foldCase bool) []string {
 func isSessionVar(name string, foldCase bool) bool {
 	if foldCase {
 		name = strings.ToUpper(name)
+	}
+	if name == gitBashPathVar {
+		return false
 	}
 	for _, prefix := range sessionPrefixes {
 		if strings.HasPrefix(name, prefix) {

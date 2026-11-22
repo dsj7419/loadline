@@ -44,10 +44,12 @@ What it defends against:
   or token you keep there. The server a hook starts, the browser the server opens and the `claude`
   it runs for each account start without the variables of that session: every name that begins
   with `ANTHROPIC_`, `CLAUDE_`, `CLAUDECODE` or `OTEL_` is removed, so one account's key never signs
-  in another account's `claude`. Each `claude` gets `CLAUDE_CONFIG_DIR` set for its own account.
-  They keep the rest of your environment, cloud-provider credentials such as `AWS_*`, `GOOGLE_*`
-  and `AZURE_*` included, which a Bedrock or Vertex account's own `claude` may need and which do
-  nothing for an account that does not choose that provider.
+  in another account's `claude`. The one exception is `CLAUDE_CODE_GIT_BASH_PATH`, which holds no
+  credential and without which Claude Code on Windows cannot find a Git Bash installed somewhere
+  unusual. Each `claude` gets `CLAUDE_CONFIG_DIR` set for its own account. They keep the rest of
+  your environment, cloud-provider credentials such as `AWS_*`, `GOOGLE_*` and `AZURE_*` included,
+  which a Bedrock or Vertex account's own `claude` may need and which do nothing for an account
+  that does not choose that provider.
 - **Malformed input.** Ingest request bodies are size-capped and decoded strictly, and ingest is
   rate-limited. The hook handler drops every field outside a short allowlist before anything leaves
   its process.

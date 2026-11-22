@@ -187,8 +187,9 @@ delete them to remove Loadline completely.
 
   It never reads transcripts, `.claude.json` or credentials. None of these programs gets the
   variables of the Claude Code session whose hook started the server: every `ANTHROPIC_*`,
-  `CLAUDE_*`, `CLAUDECODE` and `OTEL_*` is removed, so one account's API key or token never reaches
-  another account's `claude`. They keep the rest of your environment.
+  `CLAUDE_*` but `CLAUDE_CODE_GIT_BASH_PATH`, `CLAUDECODE` and `OTEL_*` is removed, so one
+  account's API key or token never reaches another account's `claude`. They keep the rest of your
+  environment.
 - **Token.** Every ingest request needs the `x-loadline-token` header, whose value is the token in
   the data directory. The token is also in the `env` of each settings file install edits, so on
   macOS and Linux install takes group and other permissions off those files and their backups.

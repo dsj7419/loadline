@@ -55,6 +55,44 @@ func TestStrip_KeepsTheRestOfTheUsersEnvironment(t *testing.T) {
 	}
 }
 
+// Claude Code on Windows finds a Git Bash installed somewhere unusual only
+// through CLAUDE_CODE_GIT_BASH_PATH, and it holds no credential, so every
+// claude Loadline runs keeps it.
+func TestStrip_KeepsTheGitBashPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     []string
+		foldCase bool
+		want     []string
+	}{
+		{
+			name:     "as Claude Code spells it",
+			base:     []string{`CLAUDE_CODE_GIT_BASH_PATH=D:\tools\git\bin\bash.exe`, "CLAUDE_CODE_OAUTH_TOKEN=oauth-canary"},
+			foldCase: false,
+			want:     []string{`CLAUDE_CODE_GIT_BASH_PATH=D:\tools\git\bin\bash.exe`},
+		},
+		{
+			name:     "in another case, where names fold",
+			base:     []string{`Claude_Code_Git_Bash_Path=D:\tools\git\bin\bash.exe`, "claude_code_oauth_token=oauth-canary"},
+			foldCase: true,
+			want:     []string{`Claude_Code_Git_Bash_Path=D:\tools\git\bin\bash.exe`},
+		},
+		{
+			name:     "a longer name that starts the same",
+			base:     []string{"CLAUDE_CODE_GIT_BASH_PATH_OLD=x"},
+			foldCase: false,
+			want:     []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strip(tt.base, tt.foldCase); !slices.Equal(got, tt.want) {
+				t.Errorf("Strip = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStrip_KeyCase(t *testing.T) {
 	base := []string{"anthropic_api_key=a", "Claude_Config_Dir=b", "ClaudeCode=1", "otel_service_name=c", "PATH=/bin"}
 

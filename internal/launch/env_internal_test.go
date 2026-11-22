@@ -25,11 +25,14 @@ var sessionVars = map[string]string{ //nolint:gosec // G101: canaries, not crede
 
 // userVars are the rest of the user's environment, which a program the
 // server starts may need: a Bedrock or Vertex account's own probe reads the
-// cloud credentials, and they do nothing without CLAUDE_CODE_USE_*.
+// cloud credentials, and they do nothing without CLAUDE_CODE_USE_*. Claude
+// Code on Windows finds a Git Bash installed somewhere unusual only through
+// CLAUDE_CODE_GIT_BASH_PATH.
 var userVars = map[string]string{ //nolint:gosec // G101: canaries, not credentials
 	"AWS_SECRET_ACCESS_KEY":          "aws-canary",
 	"GOOGLE_APPLICATION_CREDENTIALS": `C:\Users\x\gcloud.json`,
 	"AZURE_CLIENT_SECRET":            "azure-canary",
+	"CLAUDE_CODE_GIT_BASH_PATH":      `D:\tools\git\bin\bash.exe`,
 	"LOADLINE_HOME":                  `D:\loadline`,
 	"MY_CLAUDE_NOTES":                "kept",
 }

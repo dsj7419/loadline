@@ -222,9 +222,12 @@ type helperEcho struct {
 }
 
 // probedVars are the variables the echo helper reports: a session's Claude
-// credentials, which a server its hook started inherits, and a cloud
-// provider's, which a Bedrock account's own probe may need.
-var probedVars = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "AWS_SECRET_ACCESS_KEY"}
+// credentials, which a server its hook started inherits, a cloud provider's,
+// which a Bedrock account's own probe may need, and the Git Bash path, without
+// which Claude Code on Windows cannot find a Git installed somewhere unusual.
+var probedVars = []string{
+	"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_GIT_BASH_PATH",
+}
 
 // writePIDFile records the process's ID at path. It writes a temporary file
 // and renames it, so a reader that sees path sees the whole ID.
@@ -336,6 +339,7 @@ func TestExec_RunKeepsTheServersClaudeCredentialsFromClaude(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-canary")
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-canary")
+	t.Setenv("CLAUDE_CODE_GIT_BASH_PATH", `D:\tools\git\bin\bash.exe`)
 	e := helperExec(t, "echo")
 
 	for _, dir := range []domain.ConfigDir{account, defaultDir} {
@@ -347,8 +351,8 @@ func TestExec_RunKeepsTheServersClaudeCredentialsFromClaude(t *testing.T) {
 		if err := json.Unmarshal(out, &echo); err != nil {
 			t.Fatalf("decode %q: %v", out, err)
 		}
-		if want := []string{"AWS_SECRET_ACCESS_KEY"}; !slices.Equal(echo.Seen, want) {
-			t.Errorf("claude for %s sees %q, want only the cloud provider's %q", dir, echo.Seen, want)
+		if want := []string{"AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_GIT_BASH_PATH"}; !slices.Equal(echo.Seen, want) {
+			t.Errorf("claude for %s sees %q, want only %q", dir, echo.Seen, want)
 		}
 		if dir == account && echo.ConfigDir != string(account) {
 			t.Errorf("CLAUDE_CONFIG_DIR = %q, want %q", echo.ConfigDir, account)
