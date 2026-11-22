@@ -44,15 +44,16 @@ What it defends against:
   creation of the token refuse a symbolic link or junction among them, which writing through would
   follow elsewhere, a file with another name, a hard link, which making it private would change
   wherever that name is too, and one that belongs to anyone but you, SYSTEM, Administrators or
-  TrustedInstaller, since its owner may always change who can use it. A folder of Loadline's that
-  keeps you out is made private without passing that on, so that what it holds is judged before
-  anything is done to it. They leave alone the files another Loadline process is still writing
-  there under a temporary name, when they are files. Since everything in the data directory is
-  made private with it, `LOADLINE_HOME` must be a folder of Loadline's own: install, the server and
-  the creation of the token refuse one that holds anything else, and change nothing in it. Only
-  the files that Windows Explorer and the macOS Finder leave in a folder (`desktop.ini`,
-  `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged by their owner
-  as Loadline's own files are.
+  TrustedInstaller, since its owner may always change who can use it. The data directory, and each
+  folder of Loadline's that keeps you out, is made private without passing that on, and nothing is
+  passed down or put back until every one of Loadline's files and folders has been judged, so that
+  nothing reaches a file elsewhere through a hard link before it is refused. They leave alone the
+  files another Loadline process is still writing there under a temporary name, when they are
+  files. Since everything in the data directory is made private with it, `LOADLINE_HOME` must be a
+  folder of Loadline's own: install, the server and the creation of the token refuse one that
+  holds anything else, and change nothing in it. Only the files that Windows Explorer and the
+  macOS Finder leave in a folder (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and
+  they are made private and judged by their owner as Loadline's own files are.
   `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
   it did before, they may have read the token, so change it as described below. On macOS and Linux
   install also takes group and other permissions off the settings files it edits, which hold the
@@ -74,7 +75,8 @@ What it defends against:
   They judge the folders that really hold the data directory as well as those its path names: when
   a junction, a symbolic link or, on Windows, a `subst` drive is on the way, the folders that hold
   where it leads are judged too. A data directory whose path cannot be followed that way is
-  refused, since those folders would go unjudged. `loadline doctor` reports the same. The default
+  refused, since those folders would go unjudged. `loadline doctor` reports the same, for a data
+  directory that does not exist yet too, saying that install would refuse to make it. The default
   location passes, and so does a `LOADLINE_HOME` directly in a drive root, such as `D:\loadline`,
   that you created; one deeper in a folder every user can modify, such as `D:\tools\loadline`,
   does not, so keep it in your user profile.
