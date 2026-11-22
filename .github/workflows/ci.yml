@@ -52,11 +52,13 @@ jobs:
         # one shell, to stay inside CI time; without it they run every case
         # under every shell.
         run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestBashForm_RealTapBeforeOriginalsThatNeverRead|TestReadHookInput_' ./internal/install/ ./internal/protocol/
-      - name: Test the hot path's time bounds
+      - name: Test the strict time bounds
         # Under the race detector these tests allow several times their
-        # wall-clock bounds on the tap, the hook and the forwarder; without it
-        # they hold them as strict as the plan sets them.
-        run: go test -count=1 -timeout 10m -run 'TestRunTap_EchoesBeforeForwarding$|TestRunTap_GivesUpOnAHungServer$|TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart$|TestRunHook_GivesUpOnAHungServer$|TestClient_SendStopsAtTheDeadline$|TestClient_HealthyGivesUpOnAHungServer$' ./internal/cli/ ./internal/forward/
+        # wall-clock bounds on the tap, the hook and the forwarder, and hold
+        # the credit estimate and the tracker's views to a cost that grows
+        # linearly rather than to a bound in milliseconds; without it they
+        # hold every bound as strict as it is set.
+        run: go test -count=1 -timeout 10m -run 'TestRunTap_EchoesBeforeForwarding$|TestRunTap_GivesUpOnAHungServer$|TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart$|TestRunHook_GivesUpOnAHungServer$|TestClient_SendStopsAtTheDeadline$|TestClient_HealthyGivesUpOnAHungServer$|TestEstimateCredits_OnePassOverManySpansAndCalls$|TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap$|TestTracker_AViewTakesOnePassOverTheSpansAndCalls$' ./internal/cli/ ./internal/forward/ ./internal/domain/ ./internal/tracker/
 
   lint:
     name: lint (${{ matrix.goos }})
