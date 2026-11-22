@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"cmp"
+	"math"
 	"slices"
 	"time"
 
@@ -52,13 +53,50 @@ type usage struct {
 
 func (u usage) plus(o usage) usage {
 	return usage{
-		input:      u.input + o.input,
-		output:     u.output + o.output,
-		cacheRead:  u.cacheRead + o.cacheRead,
-		cacheWrite: u.cacheWrite + o.cacheWrite,
-		costUSD:    u.costUSD + o.costUSD,
-		requests:   u.requests + o.requests,
+		input:      addCount(u.input, o.input),
+		output:     addCount(u.output, o.output),
+		cacheRead:  addCount(u.cacheRead, o.cacheRead),
+		cacheWrite: addCount(u.cacheWrite, o.cacheWrite),
+		costUSD:    addCost(u.costUSD, o.costUSD),
+		requests:   addRequests(u.requests, o.requests),
 	}
+}
+
+// Sums of usage saturate rather than overflow. A token count that wrapped
+// around would show as negative, and a cost that reached infinity could not
+// be encoded, so the view could not be served at all.
+
+// addCount adds token counts, stopping at the largest or smallest an int64
+// holds.
+func addCount(a, b int64) int64 {
+	switch {
+	case b > 0 && a > math.MaxInt64-b:
+		return math.MaxInt64
+	case b < 0 && a < math.MinInt64-b:
+		return math.MinInt64
+	}
+	return a + b
+}
+
+// addRequests adds request counts, stopping at the largest or smallest an
+// int holds.
+func addRequests(a, b int) int {
+	switch {
+	case b > 0 && a > math.MaxInt-b:
+		return math.MaxInt
+	case b < 0 && a < math.MinInt-b:
+		return math.MinInt
+	}
+	return a + b
+}
+
+// addCost adds costs, stopping at the largest finite cost either way.
+func addCost(a, b float64) float64 {
+	sum := a + b
+	if math.IsInf(sum, 0) {
+		return math.Copysign(math.MaxFloat64, sum)
+	}
+	return sum
 }
 
 func usageOf(r domain.APIRequest) usage {
@@ -205,15 +243,15 @@ func (b *usageBook) summarize(today civilDay) usageSummary {
 		}
 		session.add(r.key.model, r.usage)
 
-		account.spendMonthUSD += r.usage.costUSD
+		account.spendMonthUSD = addCost(account.spendMonthUSD, r.usage.costUSD)
 		age := today - r.key.day
 		if age < weekDays {
-			account.spendWeekUSD += r.usage.costUSD
+			account.spendWeekUSD = addCost(account.spendWeekUSD, r.usage.costUSD)
 			account.week.add(r.key.model, r.usage)
 			s.week.add(r.key.model, r.usage)
 		}
 		if age <= 0 {
-			account.spendTodayUSD += r.usage.costUSD
+			account.spendTodayUSD = addCost(account.spendTodayUSD, r.usage.costUSD)
 			account.today.add(r.key.model, r.usage)
 			s.today.add(r.key.model, r.usage)
 		}
