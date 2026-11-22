@@ -28,6 +28,7 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/launch"
+	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
@@ -397,6 +398,48 @@ func (f *serveFixture) waitArmed(d time.Duration) {
 	waitFor(f.t, fmt.Sprintf("a %v timer", d), func() bool { return slices.Contains(f.clock.Pending(), d) })
 }
 
+// passDebounce waits until the poller has scheduled the poll a hook asked
+// for, and moves the clock to it and no further. The poller then schedules
+// its next round on a clock that has stopped, with all of its interval to
+// run.
+func (f *serveFixture) passDebounce() {
+	f.t.Helper()
+	f.waitArmed(poll.DefaultDebounce)
+	f.clock.Advance(poll.DefaultDebounce)
+}
+
+// nextPollIn waits until the poller has scheduled its next round, which it
+// does once the round before has ended, and returns how far off that round
+// is: the fast interval while a session is live, the slow one while none is.
+func (f *serveFixture) nextPollIn() time.Duration {
+	f.t.Helper()
+	var next time.Duration
+	waitFor(f.t, "the poller to schedule its next round", func() bool {
+		pending := f.clock.Pending()
+		for _, d := range []time.Duration{poll.DefaultFast, poll.DefaultSlow} {
+			if slices.Contains(pending, d) {
+				next = d
+				return true
+			}
+		}
+		return false
+	})
+	return next
+}
+
+// holdPolls makes each `claude agents` call wait until release is called or
+// the test ends, so that a round of polls begun meanwhile cannot end, nor
+// the poller schedule the next.
+func (f *serveFixture) holdPolls() (release func()) {
+	held := make(chan struct{})
+	release = sync.OnceFunc(func() { close(held) })
+	f.t.Cleanup(release)
+	f.claude.mu.Lock()
+	defer f.claude.mu.Unlock()
+	f.claude.onAgents = func(domain.ConfigDir) { <-held }
+	return release
+}
+
 func (f *serveFixture) logText() string {
 	f.t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.paths.DataDir, "loadline.log"))
@@ -603,7 +646,7 @@ func TestServe_ExitsOnceIdleForTheConfiguredMinutes(t *testing.T) {
 	f.writeConfig(`{"idleExitMinutes":1}`)
 	r := f.start()
 
-	elapsed := advanceUntilExit(t, f.clock, r, 10*time.Second, 5*time.Minute)
+	elapsed := advanceUntilExit(t, f.clock, r, 5*time.Minute)
 
 	if elapsed < time.Minute {
 		t.Errorf("exited after %v idle, want at least a minute", elapsed)
@@ -623,16 +666,18 @@ func TestServe_IdleExitWaitsWhileASessionIsLive(t *testing.T) {
 	f.hook(f.defaultDir(), "s1", "SessionStart")
 	f.claude.setAgents(f.defaultDir(), `[{"sessionId":"s1","kind":"interactive","pid":4242,"status":"busy","cwd":"/x","startedAt":1795299000000}]`)
 
-	for range 30 {
-		f.clock.Advance(10 * time.Second)
-		if _, done := r.exited(); done {
+	for range 20 {
+		if !awaitIdleCheck(t, f.clock, r) {
 			t.Fatal("exited with a session live")
 		}
+		f.clock.Advance(cli.IdleCheckEvery)
 	}
 
 	f.hook(f.defaultDir(), "s1", "SessionEnd")
 	f.claude.setAgents(f.defaultDir(), `[]`)
-	advanceUntilExit(t, f.clock, r, 10*time.Second, 5*time.Minute)
+	if elapsed := advanceUntilExit(t, f.clock, r, 5*time.Minute); elapsed < time.Minute {
+		t.Errorf("exited %v after the session ended, want at least the idle minute", elapsed)
+	}
 }
 
 func TestServe_IdleExitZeroNeverExits(t *testing.T) {
@@ -650,29 +695,36 @@ func TestServe_IdleExitZeroNeverExits(t *testing.T) {
 	}
 }
 
-// advanceUntilExit moves the clock step by step until Serve returns, and
-// returns how far it moved. It fails the test once the clock has moved
-// limit without Serve returning.
-func advanceUntilExit(t *testing.T, clock *clocktest.Clock, r *running, step, limit time.Duration) time.Duration {
+// advanceUntilExit moves the clock from one idle check to the next until
+// Serve returns, and returns how far it moved. It fails the test once the
+// clock has moved limit without Serve returning.
+func advanceUntilExit(t *testing.T, clock *clocktest.Clock, r *running, limit time.Duration) time.Duration {
 	t.Helper()
 	var elapsed time.Duration
-	for elapsed < limit {
-		clock.Advance(step)
-		elapsed += step
-		deadline := time.After(20 * time.Millisecond)
-	wait:
-		for {
-			select {
-			case code := <-r.done:
-				r.done <- code
-				return elapsed
-			case <-deadline:
-				break wait
-			}
+	for awaitIdleCheck(t, clock, r) {
+		if elapsed >= limit {
+			t.Fatalf("still serving after %v", limit)
 		}
+		clock.Advance(cli.IdleCheckEvery)
+		elapsed += cli.IdleCheckEvery
 	}
-	t.Fatalf("still serving after %v", limit)
 	return elapsed
+}
+
+// awaitIdleCheck waits until the server has scheduled its next check for
+// being idle, and reports true, or until Serve has returned, and reports
+// false. A move of the clock by the check's interval then runs that check.
+func awaitIdleCheck(t *testing.T, clock *clocktest.Clock, r *running) bool {
+	t.Helper()
+	scheduled := false
+	waitFor(t, "the next idle check, or Serve to return", func() bool {
+		if _, done := r.exited(); done {
+			return true
+		}
+		scheduled = slices.Contains(clock.Pending(), cli.IdleCheckEvery)
+		return scheduled
+	})
+	return scheduled
 }
 
 // After a restart the spool holds what the hooks could not deliver. All of
@@ -1046,6 +1098,9 @@ func TestServe_NeverRunsClaudeForAMissingConfigDir(t *testing.T) {
 	f.waitArmed(accounts.DefaultEvery)
 	f.waitArmed(30 * time.Second)
 	f.hook(gone, "s-gone", "SessionEnd")
+	// The hook asks for a poll of its own, before the two on schedule.
+	f.passDebounce()
+	f.waitArmed(30 * time.Second)
 	for range 2 {
 		before := f.claude.callsFor(existing, agentsCommand)
 		f.clock.Advance(30 * time.Second)
@@ -1100,10 +1155,15 @@ func TestServe_ADeletedDirIsDroppedUntilAnEventNamesIt(t *testing.T) {
 	f.mkdirs(b)
 	nextRound()
 	// Past the six hours after which both accounts were due to be probed
-	// again: only the one still known is.
+	// again: only the one still known is. The round of polls the jump
+	// starts is held until the clock has stopped, so that the poller
+	// schedules the next from there.
 	defaultProbes := f.claude.callsFor(f.defaultDir(), authCommand)
+	release := f.holdPolls()
 	f.clock.Advance(accounts.DefaultEvery)
 	waitFor(t, "the default dir probed again", func() bool { return f.claude.callsFor(f.defaultDir(), authCommand) > defaultProbes })
+	release()
+	f.waitArmed(30 * time.Second)
 	time.Sleep(50 * time.Millisecond)
 	if got := f.claude.callsFor(b, agentsCommand); got != polls {
 		t.Errorf("the dropped dir was polled %d more times, want none until an event names it", got-polls)
@@ -1114,10 +1174,6 @@ func TestServe_ADeletedDirIsDroppedUntilAnEventNamesIt(t *testing.T) {
 
 	f.statusLine(b, "s1")
 	waitFor(t, "the named dir probed at once", func() bool { return f.claude.callsFor(b, authCommand) > probes })
-	waitFor(t, "the next poll to be scheduled", func() bool {
-		pending := f.clock.Pending()
-		return len(pending) > 0 && pending[0] <= 30*time.Second
-	})
 	f.clock.Advance(30 * time.Second)
 	waitFor(t, "the named dir polled again", func() bool { return f.claude.callsFor(b, agentsCommand) > polls })
 }
@@ -1137,16 +1193,22 @@ func TestServe_ADeletedDirWithALiveSessionListsNothing(t *testing.T) {
 		s, ok := sessionByID(f.snapshot(), "s1")
 		return ok && s.State == domain.StateWorking
 	})
+	// The first round of polls is over, so its poll of b ran while b was
+	// there.
+	f.waitArmed(poll.DefaultFast)
 
 	if err := os.RemoveAll(string(b)); err != nil {
 		t.Fatal(err)
 	}
 	polls := f.claude.callsFor(b, agentsCommand)
-	for range 3 {
-		before := f.claude.callsFor(f.defaultDir(), agentsCommand)
-		f.clock.Advance(30 * time.Second)
-		waitFor(t, "the next round of polls", func() bool { return f.claude.callsFor(f.defaultDir(), agentsCommand) > before })
+	// The poll the hook asked for, then a minute and a half of rounds: the
+	// clock moves to each once the poller has scheduled it.
+	end := f.clock.Now().Add(90 * time.Second)
+	f.passDebounce()
+	for f.clock.Now().Before(end) {
+		f.clock.Advance(f.nextPollIn())
 	}
+	f.nextPollIn() // the last round has ended
 
 	if s, _ := sessionByID(f.snapshot(), "s1"); s.State != domain.StateEnded || !s.Lost {
 		t.Errorf("s1 is %v (lost %t) with its dir gone and no status line for over a minute, want ended and lost", s.State, s.Lost)

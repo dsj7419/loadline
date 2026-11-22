@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// IdleCheckEvery is how often a server checks whether it has been idle long
+// enough to exit.
+const IdleCheckEvery = idleCheckEvery
+
 // SetTapSendTimeout replaces the bound on the tap's post for the rest of the
 // test.
 func SetTapSendTimeout(t *testing.T, timeout time.Duration) {
