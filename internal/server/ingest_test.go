@@ -319,6 +319,59 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
 
+// A hook or a tap stamps its event with its own clock before it posts it,
+// so an event dated more than 5 s ahead of the server's clock comes from
+// before a step back of the system clock, or from a broken one. It is taken
+// as happening now, so that it cannot date its session ahead of all that
+// follows.
+func TestIngest_EventTimeAheadOfTheServerClockIsTakenAsNow(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ahead time.Duration
+		want  time.Time
+	}{
+		{name: "an hour ahead", ahead: time.Hour, want: t0},
+		{name: "just over 5 s ahead", ahead: 5*time.Second + time.Nanosecond, want: t0},
+		{name: "5 s ahead", ahead: 5 * time.Second, want: t0.Add(5 * time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := func(f map[string]json.RawMessage) {
+				f["at"] = json.RawMessage(`"` + t0.Add(tc.ahead).Format(time.RFC3339Nano) + `"`)
+			}
+			h := newHarness(t)
+			assertStatus(t, h.do(hookRequest(envelopeWith(t, protocol.KindHook, hookPayload, at))), http.StatusOK)
+			assertStatus(t, h.do(statusRequest(envelopeWith(t, protocol.KindStatus, statusPayload, func(f map[string]json.RawMessage) {
+				at(f)
+				f["id"] = json.RawMessage(`"` + eventID(2) + `"`)
+			}))), http.StatusOK)
+			spooled := spooledEnvelope(t, protocol.KindHook, eventID(3), hookPayload)
+			spooled.At = t0.Add(tc.ahead)
+			if err := h.srv.ApplySpooledHook(spooled); err != nil {
+				t.Fatalf("ApplySpooledHook: %v", err)
+			}
+
+			events, _ := h.sink.recorded()
+			if len(events) != 3 {
+				t.Fatalf("applied %d events, want 3", len(events))
+			}
+			for _, e := range events {
+				switch e := e.(type) {
+				case domain.Hook:
+					if !e.At.Equal(tc.want) {
+						t.Errorf("hook dated %v, want %v", e.At, tc.want)
+					}
+				case domain.Status:
+					if !e.At.Equal(tc.want) || !e.Limits.ObservedAt.Equal(tc.want) {
+						t.Errorf("status dated %v, limits observed at %v; want both %v", e.At, e.Limits.ObservedAt, tc.want)
+					}
+				default:
+					t.Errorf("applied %T, want hooks and a status", e)
+				}
+			}
+		})
+	}
+}
+
 func TestIngest_UnreadableBodyIsABadRequest(t *testing.T) {
 	h := newHarness(t)
 	r := hookRequest(nil)

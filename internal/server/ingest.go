@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/otlp"
@@ -22,6 +23,11 @@ const (
 	// maxLogsBody caps an OpenTelemetry export, which batches every event of
 	// a few seconds.
 	maxLogsBody = 4 << 20
+	// maxClockAhead is how far ahead of the server's clock an envelope may
+	// be dated. A hook or a tap stamps its event on this machine's clock
+	// before posting it, so one dated further ahead was stamped before the
+	// clock was set back, or by a broken one.
+	maxClockAhead = 5 * time.Second
 )
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +59,7 @@ func (s *Server) ApplySpooledHook(env protocol.Envelope) error {
 	if refusal := checkEnvelope(env, protocol.KindHook); refusal != "" {
 		return errors.New(refusal)
 	}
-	hook, refusal := hookEvent(env)
+	hook, refusal := hookEvent(s.notAhead(env))
 	if refusal != "" {
 		return errors.New(refusal)
 	}
@@ -148,7 +154,17 @@ func (s *Server) readEnvelope(w http.ResponseWriter, r *http.Request, kind proto
 		s.reject(w, r, http.StatusBadRequest, refusal)
 		return protocol.Envelope{}, false
 	}
-	return env, true
+	return s.notAhead(env), true
+}
+
+// notAhead returns env dated now when it is dated more than maxClockAhead
+// after now. Dated ahead, the event would make all that its session observes
+// after it look stale.
+func (s *Server) notAhead(env protocol.Envelope) protocol.Envelope {
+	if now := s.clock(); env.At.After(now.Add(maxClockAhead)) {
+		env.At = now
+	}
+	return env
 }
 
 // checkEnvelope returns the reason env cannot be taken as an envelope of

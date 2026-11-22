@@ -12,10 +12,12 @@ import "github.com/dsj7419/loadline/internal/domain"
 // rate-limit window after it has handed one out.
 type Recorder interface {
 	// SessionChanged reports a session as it stands after an event changed
-	// it, including when the event first made it known.
+	// it, including when the event first made it known, and after the clock
+	// was set back and its times moved to match.
 	SessionChanged(domain.Session)
-	// AccountChanged reports an account when it is first seen and each time
-	// who it belongs to or a window's values change. A probe that finds the
+	// AccountChanged reports an account when it is first seen, each time
+	// who it belongs to or a window's values change, and after the clock was
+	// set back and its times moved to match. A probe that finds the
 	// account as it was, or a status line that reports the same windows
 	// again, is not reported: LimitSampled carries how fresh the windows are.
 	AccountChanged(domain.Account)

@@ -365,6 +365,18 @@ func moveTo(s Session, state State, reason string, at time.Time) Session {
 	return s
 }
 
+// Shifted returns s with every time it holds moved by d, those unset aside.
+// It serves a clock that was set back: what was stamped before the step,
+// moved back by as much, stays older than what is stamped after it.
+func (s Session) Shifted(d time.Duration) Session {
+	for _, t := range []*time.Time{&s.StateAt, &s.observedAt, &s.StartedAt, &s.LastSeenAt, &s.LastStatusAt, &s.EndedAt} {
+		if !t.IsZero() {
+			*t = t.Add(d)
+		}
+	}
+	return s
+}
+
 // staleAt reports whether an event at t is older than what is already known
 // of the session: its last state change or its newest observation.
 func (s Session) staleAt(t time.Time) bool {

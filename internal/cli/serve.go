@@ -211,6 +211,7 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 			NeedsYouAfter: time.Duration(cfg.Alerts.NeedsYouSeconds) * time.Second,
 		},
 		Ticker: o.Ticker,
+		Log:    log,
 	}
 	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo}
 	if o.Demo {

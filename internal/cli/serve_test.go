@@ -1049,3 +1049,28 @@ func TestServe_ADeletedDirWithALiveSessionListsNothing(t *testing.T) {
 		t.Errorf("claude ran %d more times for the deleted dir, want none", got-polls)
 	}
 }
+
+// The tracker moves its times back when the system clock is set back, and
+// the server's log says so.
+func TestServe_LogsTheClockBeingSetBack(t *testing.T) {
+	f := newServeFixture(t)
+	var mu sync.Mutex
+	var offset time.Duration
+	f.start(func(o *cli.ServeOptions) {
+		o.Clock = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return f.clock.Now().Add(offset)
+		}
+	})
+	f.snapshot()
+
+	mu.Lock()
+	offset = -time.Hour
+	mu.Unlock()
+	f.snapshot()
+
+	if log := f.logText(); !strings.Contains(log, "system clock was set back") {
+		t.Errorf("the log does not mention the clock being set back:\n%s", log)
+	}
+}

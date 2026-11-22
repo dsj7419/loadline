@@ -104,7 +104,7 @@ func (t *Tracker) changed() {
 	if t.pub.closed || t.pub.flushing {
 		return
 	}
-	wait := min(publishInterval, t.pub.lastAt.Add(publishInterval).Sub(t.clock()))
+	wait := min(publishInterval, t.pub.lastAt.Add(publishInterval).Sub(t.now()))
 	if wait <= 0 {
 		t.publish()
 		return
@@ -126,7 +126,7 @@ func (t *Tracker) flush() {
 // publish builds the view and hands it to every subscriber, replacing any
 // view a subscriber has not taken yet.
 func (t *Tracker) publish() {
-	now := t.clock()
+	now := t.now()
 	v := t.buildView(now)
 	t.pub.lastAt, t.pub.lastAlerts = now, v.Alerts
 	for ch := range t.pub.subscribers {
@@ -158,7 +158,7 @@ func (t *Tracker) recheck() {
 		return
 	}
 	t.pub.rechecking, t.pub.stopRecheck = false, nil
-	now := t.clock()
+	now := t.now()
 	if !sameAlerts(t.buildView(now).Alerts, t.pub.lastAlerts) {
 		t.changed()
 	}

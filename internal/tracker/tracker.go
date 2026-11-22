@@ -6,6 +6,7 @@ package tracker
 
 import (
 	"cmp"
+	"log/slog"
 	"maps"
 	"slices"
 	"sync"
@@ -48,6 +49,8 @@ type Config struct {
 	// Ticker schedules the tracker's deferred work. Nil means wall-clock
 	// timers.
 	Ticker Ticker
+	// Log receives the tracker's warnings. Nil discards them.
+	Log *slog.Logger
 }
 
 // Restored is the state a store kept from an earlier run. A session needs its
@@ -83,8 +86,12 @@ type Tracker struct {
 	cfg    Config
 	rec    Recorder
 	ticker Ticker
+	log    *slog.Logger
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// newest is the latest reading of the clock, which tells when the clock
+	// has been set back.
+	newest   time.Time
 	sessions map[domain.SessionID]*sessionEntry
 	accounts map[domain.ConfigDir]*accountEntry
 	usage    usageBook
@@ -111,11 +118,16 @@ func New(clock Clock, cfg Config, rec Recorder) *Tracker {
 	if ticker == nil {
 		ticker = wallTicker{}
 	}
+	log := cfg.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	return &Tracker{
 		clock:    clock,
 		cfg:      cfg,
 		rec:      rec,
 		ticker:   ticker,
+		log:      log,
 		sessions: make(map[domain.SessionID]*sessionEntry),
 		accounts: make(map[domain.ConfigDir]*accountEntry),
 		usage:    newUsageBook(cfg.Location),
@@ -130,19 +142,24 @@ func New(clock Clock, cfg Config, rec Recorder) *Tracker {
 func (t *Tracker) Apply(e domain.Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.now()
 	t.apply(e)
 	t.changed()
 }
 
 // ApplyPoll folds in one poll of dir, taken at at: each entry, and then an
-// absence for each session of dir that the poll no longer lists.
+// absence for each session of dir that the poll no longer lists. A poll
+// taken before the clock was set back and applied after is dated now.
 func (t *Tracker) ApplyPoll(dir domain.ConfigDir, at time.Time, polls []domain.Poll) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
+	at = notAhead(at, now)
 	t.account(dir)
 	listed := make(map[domain.SessionID]bool, len(polls))
 	for _, p := range onePerSession(polls) {
 		listed[p.Session] = true
+		p.At = notAhead(p.At, now)
 		t.apply(p)
 	}
 	var missing []domain.SessionID
@@ -184,9 +201,10 @@ func onePerSession(polls []domain.Poll) []domain.Poll {
 func (t *Tracker) RecordAPI(r domain.APIRequest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	e, ok := t.sessions[r.Session]
 	if !ok {
-		t.pending.hold(r, t.clock())
+		t.pending.hold(r, now)
 		return
 	}
 	t.attach(e.session.Dir, r)
@@ -200,6 +218,7 @@ func (t *Tracker) RecordAPI(r domain.APIRequest) {
 func (t *Tracker) SetAccount(a domain.Account) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.now()
 	entry, isNew := t.accountEntry(a.Dir)
 	before := entry.account
 	entry.account.Label, entry.account.Plan, entry.account.Org = a.Label, a.Plan, a.Org
@@ -235,6 +254,7 @@ func (t *Tracker) shownDifferently(a, b domain.Account) bool {
 func (t *Tracker) Restore(s Restored) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	for _, a := range s.Accounts {
 		if _, known := t.accounts[a.Dir]; known {
 			continue
@@ -263,7 +283,7 @@ func (t *Tracker) Restore(s Restored) {
 		}
 		t.sessions[session.ID] = e
 		restored = append(restored, e)
-		for _, r := range t.pending.take(session.ID, t.clock().Add(-pendingFor)) {
+		for _, r := range t.pending.take(session.ID, now.Add(-pendingFor)) {
 			t.attach(session.Dir, r)
 		}
 	}
@@ -323,7 +343,7 @@ func isLive(s domain.Session) bool {
 func (t *Tracker) Snapshot() View {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.buildView(t.clock())
+	return t.buildView(t.now())
 }
 
 // apply folds one event into its session, creating the session when the
@@ -360,7 +380,7 @@ func (t *Tracker) apply(e domain.Event) {
 		t.rec.SessionChanged(after)
 	}
 	if !known {
-		for _, r := range t.pending.take(id, t.clock().Add(-pendingFor)) {
+		for _, r := range t.pending.take(id, t.now().Add(-pendingFor)) {
 			t.attach(after.Dir, r)
 		}
 	}
