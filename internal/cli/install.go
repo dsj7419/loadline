@@ -65,6 +65,15 @@ func runInstall(args []string, stdio IO) int {
 		return fail(stdio, err)
 	}
 
+	// With nothing to change, the review asks nothing and stops, but the
+	// data directory may still let others in, which the doctor sends the
+	// user here to fix.
+	if upToDate(binary, edits) && !edit.dryRun {
+		if err := secureDataDir(paths.DataDir); err != nil {
+			return fail(stdio, err)
+		}
+	}
+
 	out := &printer{w: stdio.Out}
 	if code, proceed := review(out, stdio, edits, reviewOptions{
 		dryRun: edit.dryRun, yes: edit.yes, nothingToDo: "Already installed.",
@@ -135,9 +144,13 @@ func statusLineShell(settings []byte) install.Shell {
 	return install.DetectShell(install.SettingsEnv(settings, os.Getenv), isFile)
 }
 
-// prepareInstall copies the running binary into place and creates the token,
-// which the settings are about to refer to.
+// prepareInstall makes the data directory private, copies the running binary
+// into place and creates the token, which the settings are about to refer
+// to.
 func prepareInstall(src string, paths config.Paths, opts install.Options) (install.Options, error) {
+	if err := secureDataDir(paths.DataDir); err != nil {
+		return opts, err
+	}
 	exe, err := install.SelfInstall(src, paths.DataDir)
 	if err != nil {
 		return opts, err

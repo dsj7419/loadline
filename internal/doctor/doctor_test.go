@@ -79,6 +79,7 @@ type world struct {
 	settings  string
 	exe       string
 	tokenFile string
+	dataDir   string
 	port      int
 	clock     *clocktest.Clock
 	state     *fakeState
@@ -89,6 +90,12 @@ type world struct {
 
 	// healthDelay holds back the server's answers to /healthz.
 	healthDelay atomic.Int64
+
+	// exposure and exposureErr are what the doctor learns of who else can
+	// get into the data directory, and exposed the paths it asked about.
+	exposure    string
+	exposureErr error
+	exposed     []string
 }
 
 func newWorld(t *testing.T) *world {
@@ -99,6 +106,7 @@ func newWorld(t *testing.T) *world {
 		settings:  filepath.Join(dir, "claude", "settings.json"),
 		exe:       filepath.ToSlash(filepath.Join(dir, "bin", "loadline.exe")),
 		tokenFile: filepath.Join(dir, "token"),
+		dataDir:   dir,
 		clock:     clocktest.New(t0),
 		state:     &fakeState{},
 		http:      &http.Client{Transport: &http.Transport{Proxy: nil}},
@@ -137,7 +145,12 @@ func newWorld(t *testing.T) *world {
 		Client:        forward.Client{BaseURL: forward.LoopbackURL(w.port), HTTP: w.http},
 		ClaudeVersion: func(context.Context) (string, error) { return "2.1.330 (Claude Code)\n", nil },
 		TokenFile:     w.tokenFile,
-		Now:           w.clock.Now,
+		DataDir:       w.dataDir,
+		Exposure: func(path string) (string, error) {
+			w.exposed = append(w.exposed, path)
+			return w.exposure, w.exposureErr
+		},
+		Now: w.clock.Now,
 	}
 	return w
 }
@@ -288,6 +301,7 @@ func TestDoctor_AllGreen(t *testing.T) {
 
 	assertChecks(t, got, []doctor.Check{
 		{Name: "claude", Status: doctor.OK, Detail: "2.1.330"},
+		{Name: "data directory", Status: doctor.OK, Detail: w.dataDir},
 		{Name: "token", Status: doctor.OK, Detail: w.tokenFile},
 		{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"},
 		{Name: "binary", Status: doctor.OK, Detail: filepath.FromSlash(w.exe)},
@@ -668,6 +682,7 @@ func TestDoctor_ServerDownFailsButOtherChecksRun(t *testing.T) {
 	url := forward.LoopbackURL(w.port)
 	assertChecks(t, got, []doctor.Check{
 		{Name: "claude", Status: doctor.OK, Detail: "2.1.330"},
+		{Name: "data directory", Status: doctor.OK, Detail: w.dataDir},
 		{Name: "token", Status: doctor.OK, Detail: w.tokenFile},
 		{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"},
 		{Name: "binary", Status: doctor.OK, Detail: filepath.FromSlash(w.exe)},
@@ -713,5 +728,54 @@ func TestLevel_String(t *testing.T) {
 		if got := level.String(); got != want {
 			t.Errorf("Level(%d).String() = %q, want %q", uint8(level), got, want)
 		}
+	}
+}
+
+// The data directory holds the token and the binary every hook runs, so
+// anyone else it admits can read the one and replace the other.
+func TestDoctor_DataDirThatAdmitsOthersFails(t *testing.T) {
+	w := newWorld(t)
+	w.exposure = `its access list also admits BUILTIN\Users`
+
+	got := w.run()
+
+	assertChecks(t, named(got, "data directory"), []doctor.Check{{
+		Name:   "data directory",
+		Status: doctor.Fail,
+		Detail: w.dataDir + ` is not private: its access list also admits BUILTIN\Users; run loadline install`,
+	}})
+	if want := []string{w.dataDir}; !slices.Equal(w.exposed, want) {
+		t.Errorf("asked who else can get into %q, want %q", w.exposed, want)
+	}
+}
+
+func TestDoctor_DataDirThatCannotBeReadFails(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want func(w *world) string
+	}{
+		{
+			name: "missing",
+			err:  fmt.Errorf("read the access list: %w", fs.ErrNotExist),
+			want: func(w *world) string { return w.dataDir + " does not exist; run loadline install" },
+		},
+		{
+			name: "unreadable",
+			err:  errors.New("read the access list: access is denied"),
+			want: fixed("read the access list: access is denied"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.exposureErr = tt.err
+
+			got := w.run()
+
+			assertChecks(t, named(got, "data directory"), []doctor.Check{
+				{Name: "data directory", Status: doctor.Fail, Detail: tt.want(w)},
+			})
+		})
 	}
 }

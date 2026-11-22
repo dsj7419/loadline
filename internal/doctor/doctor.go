@@ -57,8 +57,8 @@ type Check struct {
 	Detail string
 }
 
-// Deps is the setup Run checks and the means to reach it. Shell and
-// ClaudeVersion must be set.
+// Deps is the setup Run checks and the means to reach it. Shell,
+// ClaudeVersion and Exposure must be set.
 type Deps struct {
 	// SettingsFiles are the Claude Code settings files Loadline should be
 	// wired into.
@@ -78,6 +78,12 @@ type Deps struct {
 	ClaudeVersion func(ctx context.Context) (string, error)
 	// TokenFile holds the ingest token. Run never creates it.
 	TokenFile string
+	// DataDir holds the token, the installed binary, the spool and the
+	// history.
+	DataDir string
+	// Exposure says who besides the user can get into a directory, as
+	// fsperm.Exposure does, or "" when nobody can.
+	Exposure func(path string) (string, error)
 	// Now reads the time. Nil means time.Now.
 	Now func() time.Time
 }
@@ -119,17 +125,18 @@ var minClaude = version{release: [3]int{2, 1, 300}}
 // 2.1.330 in "2.1.330 (Claude Code)", with its pre-release label if any.
 var leadingVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?`)
 
-// Run runs every check and returns their outcomes in order: claude, the
-// token, each settings file, the binary, the server and each feed. A failed
-// check never keeps a later one from reporting. The feeds are read only from
-// a server that answers as Loadline, since reading them takes the token.
+// Run runs every check and returns their outcomes in order: claude, the data
+// directory, the token, each settings file, the binary, the server and each
+// feed. A failed check never keeps a later one from reporting. The feeds are
+// read only from a server that answers as Loadline, since reading them takes
+// the token.
 func Run(ctx context.Context, d Deps) []Check {
 	now := d.Now
 	if now == nil {
 		now = time.Now
 	}
 	token, tokenCheck := checkToken(d.TokenFile)
-	checks := []Check{checkClaude(ctx, d.ClaudeVersion), tokenCheck}
+	checks := []Check{checkClaude(ctx, d.ClaudeVersion), checkDataDir(d.DataDir, d.Exposure), tokenCheck}
 
 	target := install.Options{Exe: d.Exe, Port: d.Port, Token: string(token)}
 	if len(token) == 0 {
@@ -215,6 +222,23 @@ func (v version) String() string {
 		text += "-" + v.pre
 	}
 	return text
+}
+
+// checkDataDir fails unless the data directory admits only the user: anyone
+// else it lets in can read the token, and replace the binary every hook
+// runs.
+func checkDataDir(dir string, exposure func(string) (string, error)) Check {
+	const name = "data directory"
+	others, err := exposure(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return Check{Name: name, Status: Fail, Detail: dir + " does not exist; " + installHint}
+	case err != nil:
+		return Check{Name: name, Status: Fail, Detail: err.Error()}
+	case others != "":
+		return Check{Name: name, Status: Fail, Detail: dir + " is not private: " + others + "; " + installHint}
+	}
+	return Check{Name: name, Status: OK, Detail: dir}
 }
 
 // checkToken returns the ingest token, or nil when it cannot be read.

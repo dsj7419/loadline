@@ -13,6 +13,7 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/doctor"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -102,6 +103,11 @@ func TestDoctor_ABadConfigFailsAndTheOtherChecksUseTheFallback(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte(`{"theme": "dark"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Whatever the temporary folder passes down on this machine, home admits
+	// only the user, as a data directory Loadline made does.
+	if err := fsperm.Private(home); err != nil {
+		t.Fatal(err)
+	}
 	_, loadErr := config.Load(configFile, "")
 	if loadErr == nil {
 		t.Fatal("the config loads; want it refused")
@@ -121,6 +127,7 @@ func TestDoctor_ABadConfigFailsAndTheOtherChecksUseTheFallback(t *testing.T) {
 	want := "" +
 		"✖ config: " + loadErr.Error() + "; the checks below use the defaults\n" +
 		"✖ claude: not found; install Claude Code, or set claudePath in the Loadline config\n" +
+		"✔ data directory: " + home + "\n" +
 		"✖ token: " + filepath.Join(home, "token") + " does not exist; run loadline install\n" +
 		"✖ settings " + filepath.Join(dir, "settings.json") + ": not wired: the file does not exist; run loadline install\n" +
 		"✖ binary: " + filepath.FromSlash(install.InstalledPath(home)) + " does not exist; run loadline install\n" +

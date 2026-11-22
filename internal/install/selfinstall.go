@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
 // executableMode lets only the user run, read and replace the installed
@@ -35,7 +37,8 @@ func installTarget(dataDir string) string {
 // SelfInstall copies the binary at src, normally the running one, to
 // InstalledPath(dataDir), which settings refer to, so hooks keep working
 // wherever the downloaded copy goes. It does nothing when the installed copy
-// is already identical, and returns InstalledPath(dataDir).
+// is already identical, and returns InstalledPath(dataDir). Otherwise it
+// first makes the bin directory private to the user.
 //
 // The copy is written to a temporary file and renamed over the target.
 // Windows will not replace an executable that is running, as the installed
@@ -53,10 +56,18 @@ func SelfInstall(src, dataDir string) (string, error) {
 		return filepath.ToSlash(target), nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), executableMode); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+	bin := filepath.Dir(target)
+	if err := os.MkdirAll(bin, executableMode); err != nil {
+		return "", fmt.Errorf("create %s: %w", bin, err)
 	}
-	temp, err := copyToTemp(src, filepath.Dir(target))
+	// Every hook runs the binary here, so only the user may replace it,
+	// whatever the folder above passes down. Made private before the copy is
+	// written, bin never lets anyone else at the new binary, even for a
+	// moment, and the binaries already in it lose what they inherited.
+	if err := fsperm.Private(bin); err != nil {
+		return "", err
+	}
+	temp, err := copyToTemp(src, bin)
 	if err != nil {
 		return "", err
 	}

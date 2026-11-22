@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
 // tokenBytes is the amount of randomness in an ingest token.
@@ -16,6 +18,7 @@ const tokenBytes = 32
 
 // EnsureToken returns the ingest token stored at path, creating it first when
 // the file does not exist. The token is tokenBytes random bytes, hex-encoded.
+// Creating it first makes the directory that holds it private to the user.
 // A file that holds anything else is an error, never silently replaced,
 // because replacing it would lock out every hook that already holds the old
 // token.
@@ -33,8 +36,15 @@ func EnsureToken(path string) ([]byte, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create token directory: %w", err)
+	}
+	// Whoever reads the token can feed the dashboard and read it. Made
+	// private before the token is written, the directory passes nothing
+	// wider down to it, whatever folder LOADLINE_HOME puts it in.
+	if err := fsperm.Private(dir); err != nil {
+		return nil, fmt.Errorf("protect the token: %w", err)
 	}
 	return createToken(path)
 }

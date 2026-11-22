@@ -114,7 +114,8 @@ func RunServe(ctx context.Context, args []string, stdio IO) int {
 // configured idle time, then shuts it down gracefully and returns 0. It
 // returns 1 when it cannot start, and 0 without a word when another
 // loadline already serves the port: binding the port is what keeps to one
-// server per machine. What the running server has to say goes to its log
+// server per machine. It makes the data directory private to the user each
+// time it starts. What the running server has to say goes to its log
 // file in the data directory, never to stdout or stderr.
 func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	cfg, err := config.Load(o.Paths.ConfigFile, o.Home)
@@ -130,6 +131,10 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	}
 	token, err := config.EnsureToken(o.Paths.TokenFile)
 	if err != nil {
+		return fail(stdio, err)
+	}
+	// Before the log and the history are written there.
+	if err := secureDataDir(o.Paths.DataDir); err != nil {
 		return fail(stdio, err)
 	}
 

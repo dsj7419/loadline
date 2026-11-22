@@ -13,6 +13,7 @@ import (
 	"github.com/dsj7419/loadline/internal/clocktest"
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -53,6 +54,7 @@ func TestDoctor_PassesEveryCheckOnceInstalled(t *testing.T) {
 
 	want := "" +
 		"✔ claude: 2.1.330\n" +
+		"✔ data directory: " + paths.DataDir + "\n" +
 		"✔ token: " + paths.TokenFile + "\n" +
 		"✔ settings " + filepath.Join(dir, "settings.json") + ": wired\n" +
 		"✔ binary: " + filepath.FromSlash(install.InstalledPath(paths.DataDir)) + "\n" +
@@ -74,6 +76,11 @@ func TestDoctor_FailsBeforeInstallAndChangesNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Whatever the temporary folder passes down on this machine, home admits
+	// only the user, as a data directory Loadline made does.
+	if err := fsperm.Private(home); err != nil {
+		t.Fatal(err)
+	}
 	missing, unwired := t.TempDir(), t.TempDir()
 	writeSettings(t, unwired, `{"model": "opus"}`)
 
@@ -81,6 +88,7 @@ func TestDoctor_FailsBeforeInstallAndChangesNothing(t *testing.T) {
 
 	want := "" +
 		"✖ claude: not found; install Claude Code, or set claudePath in the Loadline config\n" +
+		"✔ data directory: " + home + "\n" +
 		"✖ token: " + filepath.Join(home, "token") + " does not exist; run loadline install\n" +
 		"✖ settings " + filepath.Join(missing, "settings.json") + ": not wired: the file does not exist; run loadline install\n" +
 		"✖ settings " + filepath.Join(unwired, "settings.json") + ": not wired: install would change " +

@@ -190,7 +190,7 @@ func review(out *printer, stdio IO, edits []settingsEdit, o reviewOptions) (int,
 	case out.err != nil:
 		// Nobody saw the changes, so they must not be made.
 		return out.exit(stdio, exitFailure), false
-	case !install.HasEdits(o.binary) && !slices.ContainsFunc(edits, settingsEdit.pending):
+	case upToDate(o.binary, edits):
 		out.printf("%s\n", o.nothingToDo)
 		return out.exit(stdio, exitOK), false
 	case o.dryRun:
@@ -209,6 +209,12 @@ func review(out *printer, stdio IO, edits []settingsEdit, o reviewOptions) (int,
 		return out.exit(stdio, exitFailure), false
 	}
 	return exitOK, true
+}
+
+// upToDate reports whether neither the binary nor any settings file needs a
+// change.
+func upToDate(binary []install.Change, edits []settingsEdit) bool {
+	return !install.HasEdits(binary) && !slices.ContainsFunc(edits, settingsEdit.pending)
 }
 
 // show prints an edit's changes as a list and as a unified diff, with the
