@@ -309,6 +309,7 @@ func TestStatusEvent_UltraFixture(t *testing.T) {
 			SevenDay:   &domain.Window{UsedPct: 98, ResetsAt: time.Unix(fixtureResetsAt, 0).UTC()},
 			ObservedAt: envelopeTime,
 		},
+		APIDurationMS: 2400000,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("StatusEvent()\n got %+v\nwant %+v", got, want)
@@ -455,7 +456,8 @@ func TestStatusEvent_MapsEveryMetric(t *testing.T) {
 		"model": {"id": "m-id", "display_name": "M"},
 		"effort": {"level": "high"},
 		"workspace": {"project_dir": "/work/project", "repo": {"host": "h", "owner": "o", "name": "n"}},
-		"cost": {"total_cost_usd": 1.5, "total_duration_ms": 90000, "total_lines_added": 12, "total_lines_removed": 3},
+		"cost": {"total_cost_usd": 1.5, "total_duration_ms": 90000, "total_api_duration_ms": 30000,
+			"total_lines_added": 12, "total_lines_removed": 3},
 		"context_window": {"used_percentage": 42.5, "remaining_percentage": 57.5,
 			"context_window_size": 200000, "total_input_tokens": 85000},
 		"prompt_cache": {"warm": true, "hit_ratio": 0.75}
@@ -469,6 +471,9 @@ func TestStatusEvent_MapsEveryMetric(t *testing.T) {
 	}
 	if event.Metrics != want {
 		t.Errorf("Metrics\n got %+v\nwant %+v", event.Metrics, want)
+	}
+	if event.APIDurationMS != 30000 {
+		t.Errorf("APIDurationMS = %d, want 30000", event.APIDurationMS)
 	}
 	if event.Name != "named" || event.ProjectDir != "/work/project" || event.Session != "s" {
 		t.Errorf("identity = %q, %q, %q", event.Name, event.ProjectDir, event.Session)

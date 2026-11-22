@@ -70,10 +70,11 @@ type StatusRepo struct {
 
 // StatusCost is what the session has cost so far.
 type StatusCost struct {
-	TotalCostUSD      float64 `json:"total_cost_usd,omitempty"`
-	TotalDurationMS   int64   `json:"total_duration_ms,omitempty"`
-	TotalLinesAdded   int64   `json:"total_lines_added,omitempty"`
-	TotalLinesRemoved int64   `json:"total_lines_removed,omitempty"`
+	TotalCostUSD       float64 `json:"total_cost_usd,omitempty"`
+	TotalDurationMS    int64   `json:"total_duration_ms,omitempty"`
+	TotalAPIDurationMS int64   `json:"total_api_duration_ms,omitempty"`
+	TotalLinesAdded    int64   `json:"total_lines_added,omitempty"`
+	TotalLinesRemoved  int64   `json:"total_lines_removed,omitempty"`
 }
 
 // StatusContextWindow is the context window's fill. Claude Code sends null
@@ -228,7 +229,8 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 			SevenDay:   window(rateLimits.SevenDay),
 			ObservedAt: env.At,
 		},
-		SpendLimit: spendLimit(rateLimits.SpendLimit),
+		SpendLimit:    spendLimit(rateLimits.SpendLimit),
+		APIDurationMS: cost.TotalAPIDurationMS,
 	}, nil
 }
 

@@ -56,6 +56,10 @@ type Status struct {
 	Limits  Limits
 	// SpendLimit is the account's spend limit, when the line reports one.
 	SpendLimit *SpendLimit
+	// APIDurationMS is how long the session has spent on API calls, which
+	// grows with each response it gets: a line on which it has grown carries
+	// the rate limits of a response the session got since its last line.
+	APIDurationMS int64
 }
 
 // ValidEventTime reports whether t can date an event: in UTC, after the Unix
