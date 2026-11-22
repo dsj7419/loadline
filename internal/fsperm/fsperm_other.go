@@ -85,8 +85,9 @@ func emptiable(folder string) (string, error) {
 	return fmt.Sprintf("%s lets %s rename the folders in it (mode %#o, without the sticky bit)", folder, andList(who), mode.Perm()), nil
 }
 
-// finalPath returns path with every symbolic link in it followed.
-func finalPath(path string) (string, error) {
+// finalPath returns path with every symbolic link in it followed. Tests
+// replace it: no file system at hand fails to say.
+var finalPath = func(path string) (string, error) {
 	final, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", path, err)

@@ -538,8 +538,9 @@ func samePath(a, b string) bool {
 const finalPathFlags = 0
 
 // finalPath returns the path the system opens for path, each junction,
-// symbolic link and subst drive in it resolved.
-func finalPath(path string) (string, error) {
+// symbolic link and subst drive in it resolved. Tests replace it: no file
+// system at hand fails to say.
+var finalPath = func(path string) (string, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", path, err)
@@ -553,8 +554,7 @@ func finalPath(path string) (string, error) {
 	defer func() { _ = windows.CloseHandle(handle) }()
 	buf := make([]uint16, windows.MAX_PATH)
 	for {
-		// buf holds MAX_PATH, or what an earlier call asked for in a uint32.
-		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), finalPathFlags) //nolint:gosec // G115: see above
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), finalPathFlags)
 		if err != nil {
 			return "", fmt.Errorf("resolve %s: %w", path, err)
 		}

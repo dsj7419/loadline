@@ -46,9 +46,12 @@ func MovableAncestor(dir, top string) (string, error) {
 	if found, err := movableChain(dir, top); err != nil || found != "" {
 		return found, err
 	}
+	// The folders that really hold it go unjudged when they cannot be found,
+	// so such a path is refused; one in the user's profile resolves.
+	const unresolved = "find the folders that hold %s: %w; set LOADLINE_HOME to a folder in your user profile"
 	held, err := resolved(dir)
 	if err != nil {
-		return "", fmt.Errorf("find the folders that hold %s: %w", dir, err)
+		return "", fmt.Errorf(unresolved, dir, err)
 	}
 	if samePath(held, dir) {
 		return "", nil
@@ -56,7 +59,7 @@ func MovableAncestor(dir, top string) (string, error) {
 	heldTop := top
 	if top != "" {
 		if heldTop, err = resolved(top); err != nil {
-			return "", fmt.Errorf("find the folders that hold %s: %w", top, err)
+			return "", fmt.Errorf(unresolved, top, err)
 		}
 	}
 	found, err := movableChain(held, heldTop)
