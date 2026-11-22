@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionStates, type View } from '../src/api/types';
 import { AccountCard } from '../src/components/AccountCard';
 import { App } from '../src/components/App';
+import { Gauge } from '../src/components/Gauge';
 import { ModelsBar } from '../src/components/ModelsBar';
 import { browserOptIn, createNotifier, type NotificationApi, type OptInStore } from '../src/components/Notifier';
 import { SessionRow } from '../src/components/SessionRow';
@@ -170,6 +171,20 @@ describe('App', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /copper-lantern/ }));
   });
 
+  it('makes the page behind the detail panel inert while the panel is open', async () => {
+    const user = userEvent.setup();
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ ...waiting })] }));
+    expect(screen.getByRole('main').closest('[inert]')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /copper-lantern/ }));
+    expect(screen.getByRole('main').closest('[inert]')).not.toBeNull();
+    expect(screen.getByRole('dialog').closest('[inert]')).toBeNull();
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('main').closest('[inert]')).toBeNull();
+  });
+
   it('keeps focus inside the detail panel while it is open', async () => {
     const user = userEvent.setup();
     const { send } = renderApp();
@@ -308,6 +323,12 @@ describe('App', () => {
     send(viewOf());
     expect(document.title).toBe('Loadline');
     expect(drawFavicon).toHaveBeenLastCalledWith(false);
+  });
+
+  it('announces changes to the alert count politely', () => {
+    const { send } = renderApp();
+    send(viewOf({ alerts: [alertOf(), alertOf({ kind: 'runs_out', session: '' })] }));
+    expect(screen.getByText('2 alerts').closest('[aria-live="polite"]')).not.toBeNull();
   });
 
   it('lists the alerts in the order the server gives', () => {
@@ -597,6 +618,35 @@ describe('AccountCard', () => {
   });
 });
 
+describe('Gauge', () => {
+  function renderGauge(value: number, heading: number | null = null) {
+    render(<Gauge label="Weekly" ownerId="owner" value={value} reading="—" heading={heading} tone="ok" />);
+    const meter = screen.getByRole('meter');
+    const [fill, ahead] = [...meter.children].map((child) => (child instanceof HTMLElement ? child.style : null));
+    return { meter, fill, ahead };
+  }
+
+  it.each<[number, string]>([
+    [250, '100'],
+    [100, '100'],
+    [42.5, '42.5'],
+    [0, '0'],
+    [-5, '0'],
+    [Number.NaN, '0'],
+    [Number.POSITIVE_INFINITY, '0'],
+  ])('draws %s as %s%%', (value, want) => {
+    const { meter, fill } = renderGauge(value);
+    expect(meter.getAttribute('aria-valuenow')).toBe(want);
+    expect(fill?.width).toBe(`${want}%`);
+  });
+
+  it('draws the way ahead only up to the end of the bar', () => {
+    const { ahead } = renderGauge(50, 300);
+    expect(ahead?.left).toBe('50%');
+    expect(ahead?.width).toBe('50%');
+  });
+});
+
 describe('ModelsBar', () => {
   it('asks for the other period when its button is pressed', async () => {
     const user = userEvent.setup();
@@ -662,6 +712,23 @@ describe('createNotifier', () => {
     expect(notifier.state.value).toBe('off');
     notifier.update([needsYou, runsOut]);
     expect(notifications.shown).toEqual([]);
+  });
+
+  it('never notifies of context, weekly limit or budget alerts', async () => {
+    const notifications = fakeNotifications('granted');
+    const notifier = createNotifier(notifications.api, memoryOptIn().store);
+    await notifier.toggle();
+    notifier.update([]);
+
+    notifier.update([
+      alertOf({ kind: 'context_high', message: 'harbor-api is at 87% of its context window' }),
+      alertOf({ kind: 'weekly_threshold', session: '', message: 'Main is at 93% of its weekly limit' }),
+      alertOf({ kind: 'budget', session: '', message: 'API has spent its daily budget' }),
+    ]);
+    expect(notifications.shown).toEqual([]);
+
+    notifier.update([needsYou]);
+    expect(notifications.shown).toEqual([needsYou.message]);
   });
 
   it('reports blocked when permission is refused', async () => {

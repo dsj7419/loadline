@@ -1,5 +1,6 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { accountOf, sessionOf, viewOf } from '../test/fixtures';
+import { expect, test } from './fixtures';
 import { startScriptedServer, type ScriptedServer } from './scripted';
 
 // The narrowest width the page supports.
@@ -63,4 +64,14 @@ test.describe('long text and large amounts', () => {
     expect(await sidewaysOverflow(dialog)).toBe(0);
     expect(await sidewaysOverflow(page360(page))).toBe(0);
   });
+});
+
+test('the demo never scrolls sideways at 360 px, with or without the details open', async ({ dashboard: page }) => {
+  expect(await sidewaysOverflow(page360(page))).toBe(0);
+
+  await page.getByRole('button', { name: /copper-lantern/ }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  expect(await sidewaysOverflow(dialog)).toBe(0);
+  expect(await sidewaysOverflow(page360(page))).toBe(0);
 });
