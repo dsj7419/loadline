@@ -196,6 +196,24 @@ func TestTracker_WithoutAResetTimeALowerReadingWaitsOutTheWindow(t *testing.T) {
 	}
 }
 
+// Without a reset time to tell windows apart, a reading as high as the one
+// held is news of it: the window is observed afresh, and learns the reset
+// time the reading brings.
+func TestTracker_WithoutAResetTimeAnEqualReadingIsNews(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.Apply(withWindows(statusLine(0, s1), nil, window(50, time.Time{})))
+
+	h.tr.Apply(withWindows(statusLine(10, s2), nil, window(50, time.Time{})))
+	if got := h.account(dirA).SevenDay; got == nil || !time.Time(got.ObservedAt).Equal(at(10)) {
+		t.Errorf("weekly window %+v, want the 50%% observed afresh at +10s", got)
+	}
+
+	h.tr.Apply(withWindows(statusLine(20, s2), nil, window(50, weekResets)))
+	if got := h.account(dirA).SevenDay; got == nil || !time.Time(got.ResetsAt).Equal(weekResets) {
+		t.Errorf("weekly window %+v, want it to reset at %v, as the reading at +20s says", got, weekResets)
+	}
+}
+
 // A restored window's reading dates from when it was observed, so a restart
 // takes no older reading for news.
 func TestTracker_ARestoredWindowIsJudgedAsOfItsObservation(t *testing.T) {
