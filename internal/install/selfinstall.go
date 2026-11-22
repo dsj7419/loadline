@@ -172,8 +172,17 @@ func replaceFile(temp, target string) error {
 	if err == nil {
 		return nil
 	}
-	if _, statErr := os.Stat(target); statErr != nil {
-		return fmt.Errorf("install %s: %w", target, err)
+	_, statErr := os.Stat(target)
+	switch {
+	case errors.Is(statErr, fs.ErrNotExist):
+		// A first install. Nothing is at target, so a refusal can only be a
+		// brief hold, such as a scan of the new copy.
+		if err := renameRetrying(temp, target, time.Now().Add(renameBudget), isHeld); err != nil {
+			return fmt.Errorf("install %s: %w", target, err)
+		}
+		return nil
+	case statErr != nil:
+		return fmt.Errorf("install %s: %w", target, errors.Join(err, statErr))
 	}
 
 	deadline := time.Now().Add(renameBudget)
@@ -184,7 +193,10 @@ func replaceFile(temp, target string) error {
 	// Nothing is at target now, so a refusal can only be a brief hold.
 	if err := renameRetrying(temp, target, deadline, isHeld); err != nil {
 		// Put the previous binary back so the hooks that run it keep working.
-		_ = renameRetrying(aside, target, time.Now().Add(renameBudget), isHeld)
+		if rollbackErr := renameRetrying(aside, target, time.Now().Add(renameBudget), isHeld); rollbackErr != nil {
+			return fmt.Errorf("install %s: %w; the previous binary is left at %s, as putting it back failed: %w",
+				target, err, aside, rollbackErr)
+		}
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 	return nil

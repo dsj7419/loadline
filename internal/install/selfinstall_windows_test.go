@@ -242,3 +242,154 @@ func TestSelfInstall_PutsThePreviousBinaryBackWhenTheNewOneCannotMoveIn(t *testi
 		t.Errorf("bin dir holds %q, want only the previous binary", entries)
 	}
 }
+
+// refusals scripts how renames into each destination fail. A destination in
+// running holds a running binary while a file is there, so replacing it is
+// refused with ERROR_ACCESS_DENIED for good; a destination in held refuses
+// its next renames with the listed errors, one per attempt, as a scan of
+// the file does for a moment. Every attempt is counted per destination, and
+// the rest are renamed for real.
+type refusals struct {
+	running  map[string]bool
+	held     map[string][]syscall.Errno
+	attempts map[string]int
+}
+
+func (r *refusals) rename(from, to string) error {
+	if r.attempts == nil {
+		r.attempts = map[string]int{}
+	}
+	r.attempts[to]++
+	if _, err := os.Lstat(to); err == nil && r.running[to] {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_ACCESS_DENIED}
+	}
+	if errnos := r.held[to]; len(errnos) > 0 {
+		r.held[to] = errnos[1:]
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: errnos[0]}
+	}
+	return os.Rename(from, to)
+}
+
+// A first install renames the new copy to a name that does not exist yet,
+// so any refusal is a brief hold, such as an antivirus scan of the new copy.
+func TestSelfInstall_FirstInstallWaitsOutABriefHoldOnTheNewCopy(t *testing.T) {
+	for name, errnos := range map[string][]syscall.Errno{
+		"sharing violation": {windows.ERROR_SHARING_VIOLATION},
+		"lock violation":    {windows.ERROR_LOCK_VIOLATION, windows.ERROR_LOCK_VIOLATION},
+		"access denied":     {windows.ERROR_ACCESS_DENIED, windows.ERROR_ACCESS_DENIED, windows.ERROR_ACCESS_DENIED},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			target := filepath.Join(dataDir, "bin", "loadline.exe")
+			scripted := &refusals{held: map[string][]syscall.Errno{target: errnos}}
+			install.SetRename(t, scripted.rename)
+
+			if _, err := install.SelfInstall(writeBinary(t, "loadline v1"), dataDir); err != nil {
+				t.Fatalf("SelfInstall gave up after %d rename(s) on a brief hold: %v", scripted.attempts[target], err)
+			}
+			if content := readFile(t, target); string(content) != "loadline v1" {
+				t.Errorf("target holds %q, want the new binary", content)
+			}
+		})
+	}
+}
+
+// Renames to a name that does not exist yet wait out access denied too:
+// nothing at the destination can be refusing, so it is a hold on the file.
+func TestSelfInstall_WaitsOutAccessDeniedOnAFreshName(t *testing.T) {
+	denied := []syscall.Errno{windows.ERROR_ACCESS_DENIED, windows.ERROR_ACCESS_DENIED, windows.ERROR_ACCESS_DENIED}
+	tests := map[string]struct {
+		oldRunning bool
+		heldAt     string // the destination that is held
+		wantAside  string
+	}{
+		"moving the running binary to a fresh .old-1": {oldRunning: true, heldAt: ".old-1", wantAside: ".old-1"},
+		"moving the new binary into the emptied name": {heldAt: "", wantAside: ".old"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+			target := filepath.Join(dataDir, "bin", "loadline.exe")
+			scripted := &refusals{
+				running: map[string]bool{target: true},
+				held:    map[string][]syscall.Errno{target + tt.heldAt: slices.Clone(denied)},
+			}
+			if tt.oldRunning {
+				writeFile(t, target+".old", []byte("an older binary that still runs"))
+				scripted.running[target+".old"] = true
+			}
+			install.SetRename(t, scripted.rename)
+
+			if _, err := install.SelfInstall(writeBinary(t, "loadline v2"), dataDir); err != nil {
+				t.Fatalf("SelfInstall gave up on access denied at a fresh name: %v", err)
+			}
+			if content := readFile(t, target); string(content) != "loadline v2" {
+				t.Errorf("target holds %q, want the new binary", content)
+			}
+			if aside := readFile(t, target+tt.wantAside); string(aside) != "loadline v1" {
+				t.Errorf("%s holds %q, want the previous binary", tt.wantAside, aside)
+			}
+			if left := scripted.held[target+tt.heldAt]; len(left) != 0 {
+				t.Errorf("%d refusals were never tried", len(left))
+			}
+		})
+	}
+}
+
+// A running .old refuses to be replaced for as long as it runs, so waiting
+// on it would only spend the budget; the next free name is tried at once.
+func TestSelfInstall_MovesPastARunningOldAtOnce(t *testing.T) {
+	dataDir := t.TempDir()
+	selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+	target := filepath.Join(dataDir, "bin", "loadline.exe")
+	writeFile(t, target+".old", []byte("an older binary that still runs"))
+	scripted := &refusals{running: map[string]bool{target: true, target + ".old": true}}
+	install.SetRename(t, scripted.rename)
+	install.SetRenameBudget(t, 2*time.Second)
+
+	start := time.Now()
+	selfInstall(t, writeBinary(t, "loadline v2"), dataDir)
+
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("SelfInstall took %s, want it to move past the running .old at once", elapsed)
+	}
+	if n := scripted.attempts[target+".old"]; n != 1 {
+		t.Errorf("tried .old %d times, want once", n)
+	}
+	if aside := readFile(t, target+".old-1"); string(aside) != "loadline v1" {
+		t.Errorf(".old-1 holds %q, want the previous binary", aside)
+	}
+}
+
+func TestSelfInstall_SaysWhereThePreviousBinaryIsWhenPuttingItBackFails(t *testing.T) {
+	dataDir := t.TempDir()
+	selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+	target := filepath.Join(dataDir, "bin", "loadline.exe")
+	aside := target + ".old"
+	install.SetRename(t, func(from, to string) error {
+		switch {
+		case from == target:
+			return os.Rename(from, to)
+		case to == target && strings.HasSuffix(from, ".tmp"):
+			if _, err := os.Lstat(target); err == nil {
+				return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_ACCESS_DENIED}
+			}
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_DISK_FULL}
+		default:
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_INVALID_PARAMETER}
+		}
+	})
+
+	_, err := install.SelfInstall(writeBinary(t, "loadline v2"), dataDir)
+
+	if !errors.Is(err, windows.ERROR_DISK_FULL) || !errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		t.Errorf("err = %v, want both the failed install and the failed rollback", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), aside) {
+		t.Errorf("err = %v, want it to say the previous binary is at %s", err, aside)
+	}
+	if content := readFile(t, aside); string(content) != "loadline v1" {
+		t.Errorf("%s holds %q, want the previous binary", aside, content)
+	}
+}
