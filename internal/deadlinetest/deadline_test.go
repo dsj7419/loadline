@@ -20,18 +20,32 @@ func (r *recorder) Errorf(format string, args ...any) {
 
 const ms = time.Millisecond
 
-func TestLimit_IsTheSumAndHalfTheLongest(t *testing.T) {
+func TestLimit_IsTheSumAndHalfTheShortest(t *testing.T) {
 	for _, tt := range []struct {
-		deadlines []time.Duration
-		want      time.Duration
+		deadline time.Duration
+		more     []time.Duration
+		want     time.Duration
 	}{
-		{deadlines: []time.Duration{400 * ms}, want: 600 * ms},
-		{deadlines: []time.Duration{300 * ms, 300 * ms}, want: 750 * ms},
-		{deadlines: []time.Duration{100 * ms, 400 * ms}, want: 700 * ms},
+		{deadline: 400 * ms, want: 600 * ms},
+		{deadline: 300 * ms, more: []time.Duration{300 * ms}, want: 750 * ms},
+		{deadline: 100 * ms, more: []time.Duration{400 * ms}, want: 550 * ms},
+		{deadline: 400 * ms, more: []time.Duration{100 * ms}, want: 550 * ms},
 	} {
-		if got := deadlinetest.Limit(tt.deadlines...); got != tt.want {
-			t.Errorf("Limit(%v) = %v, want %v", tt.deadlines, got, tt.want)
+		if got := deadlinetest.Limit(tt.deadline, tt.more...); got != tt.want {
+			t.Errorf("Limit(%v, %v) = %v, want %v", tt.deadline, tt.more, got, tt.want)
 		}
+	}
+}
+
+// Of uneven deadlines, the shorter one applied twice over still takes the
+// call past its limit.
+func TestAssertGaveUpAt_FailsTheShorterOfUnevenDeadlinesWaitedOutTwice(t *testing.T) {
+	var r recorder
+
+	deadlinetest.AssertGaveUpAt(&r, "the call", 2*100*ms+400*ms, 100*ms, 400*ms)
+
+	if len(r.errors) != 1 {
+		t.Errorf("errors %q for a 100 ms deadline waited out twice before a 400 ms one, want one", r.errors)
 	}
 }
 

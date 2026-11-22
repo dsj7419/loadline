@@ -134,8 +134,9 @@ func (p *echoPipe) echo() string {
 // echoCeiling bounds how long the echo may take here. It is no budget,
 // which BenchmarkRunTap_Echo measures, but a ceiling far above any loaded
 // machine's echo, some 150 times the 35 ms the slowest yet took on a shared
-// runner, and far below the 30 s post window: an echo held up by anything
-// cannot keep under it.
+// runner, and far below the 30 s post window. It catches an echo held up
+// for 5 s or more, such as one that waits out the post window; the order
+// of the echo and the requests catches shorter holds.
 const echoCeiling = 5 * time.Second
 
 // The status line shows the echo, so it must not wait for the server: the
