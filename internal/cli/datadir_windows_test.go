@@ -355,3 +355,50 @@ func TestServe_DemoRefusesADataDirThatIsALink(t *testing.T) {
 		t.Errorf("demo Serve = %d, stderr %q; want 1 and %s refused as a link", code, stderr.String(), data)
 	}
 }
+
+// Doctor sends the user to install for a file of Loadline's that keeps
+// them, or the hooks, out of it. Install puts the data directory right
+// before it reads the token or the binary, so it gets that far.
+func TestInstall_RepairsWhatKeepsTheUserOutOfLoadlinesFiles(t *testing.T) {
+	for name, tt := range map[string]struct{ path, rights string }{
+		"the spool, nobody may add a file": {"spool", "DC"},
+		"the binary, nobody may run it":    {filepath.Join("bin", "loadline.exe"), "WP"},
+		"the binary, nobody may read it":   {filepath.Join("bin", "loadline.exe"), "FR"},
+		"the token, nobody may read it":    {"token", "FR"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := sharedHome(t)
+			dir := t.TempDir()
+			if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+				t.Fatalf("install = %d, stderr %q", got.code, got.stderr)
+			}
+			if err := os.MkdirAll(filepath.Join(home, "spool"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(home, tt.path)
+			fspermtest.SetAccessList(t, path, "D:(D;;"+tt.rights+";;;WD)")
+			// So that the temporary folder can be removed whatever install did.
+			t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+
+			again := run(t, "install", "--config-dir", dir, "--yes")
+
+			if list := fspermtest.AccessList(t, path); again.code != 0 || strings.Contains(list, "(D;") {
+				t.Errorf("install again = %d, stderr %q; %s is still %s", again.code, again.stderr, path, list)
+			}
+		})
+	}
+}
+
+// The server too puts the data directory right before it reads the token.
+func TestServe_RepairsATokenNobodyMayRead(t *testing.T) {
+	f := newServeFixture(t)
+	f.token()
+	fspermtest.SetAccessList(t, f.paths.TokenFile, "D:(D;;FR;;;WD)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(f.paths.TokenFile) })
+
+	f.start().stop(t)
+
+	if list := fspermtest.AccessList(t, f.paths.TokenFile); strings.Contains(list, "(D;") {
+		t.Errorf("after the server started, %s is still %s", f.paths.TokenFile, list)
+	}
+}

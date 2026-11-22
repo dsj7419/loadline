@@ -50,6 +50,15 @@ func runInstall(args []string, stdio IO) int {
 	if err := datadir.Verify(paths.DataDir, trustFrom); err != nil {
 		return fail(stdio, err)
 	}
+	// Put right before the token and the binary are read, even with nothing
+	// else to change: the doctor sends the user here for a data directory
+	// that lets others in, or keeps them out of either. A new one is made
+	// only once the user has agreed.
+	if _, err := os.Stat(paths.DataDir); err == nil && !edit.dryRun {
+		if err := secureDataDir(paths.DataDir); err != nil {
+			return fail(stdio, err)
+		}
+	}
 	src, err := os.Executable()
 	if err != nil {
 		return fail(stdio, fmt.Errorf("find the running binary: %w", err))
@@ -69,15 +78,6 @@ func runInstall(args []string, stdio IO) int {
 	edits, err := planEdits(files, installPlanner(opts))
 	if err != nil {
 		return fail(stdio, err)
-	}
-
-	// With nothing to change, the review asks nothing and stops, but the
-	// data directory may still let others in, which the doctor sends the
-	// user here to fix.
-	if upToDate(binary, edits) && !edit.dryRun {
-		if err := secureDataDir(paths.DataDir); err != nil {
-			return fail(stdio, err)
-		}
 	}
 
 	out := &printer{w: stdio.Out}

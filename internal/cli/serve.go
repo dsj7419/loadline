@@ -140,12 +140,13 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		}
 		port = o.Port
 	}
-	token, err := config.EnsureToken(o.Paths.TokenFile)
+	// Before the token is read, which a list of its own may keep from the
+	// user, and the log and the history are written there.
+	relaxed, err := secureServedDataDir(o.Paths.DataDir, trust, o.Demo)
 	if err != nil {
 		return failToStart(err)
 	}
-	// Before the log and the history are written there.
-	relaxed, err := secureServedDataDir(o.Paths.DataDir, trust, o.Demo)
+	token, err := config.EnsureToken(o.Paths.TokenFile)
 	if err != nil {
 		return failToStart(err)
 	}
