@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,69 +84,100 @@ func TestRunTap_EchoesAndForwardsTheAllowlist(t *testing.T) {
 	}
 }
 
-// tapAgainstAHungServer runs the tap against a server that takes its post
-// and does not answer for hold, with its output a pipe that is read as it
-// is written. It returns how long after the start the echo was complete,
-// that is the tap had closed its output, and the tap had returned.
-func tapAgainstAHungServer(t *testing.T, hold time.Duration) (srv *ingestServer, echoAt, total time.Duration) {
+// echoPipe is the tap's output as the status line has it: a pipe, read as
+// it is written.
+type echoPipe struct {
+	writer *os.File
+	// read is closed once the pipe has been read to its end.
+	read chan struct{}
+	got  bytes.Buffer
+}
+
+func newEchoPipe(t *testing.T) *echoPipe {
 	t.Helper()
-	f := newFixture(t)
-	srv = f.serve(func(s *ingestServer) { s.hold = hold })
-	input := statusInput(t)
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	t.Cleanup(func() { _ = reader.Close() })
-	echoed := make(chan time.Duration, 1)
-	var got bytes.Buffer
-	start := time.Now()
+	p := &echoPipe{writer: writer, read: make(chan struct{})}
 	go func() {
-		_, _ = io.Copy(&got, reader) // ends when the tap closes its output
-		echoed <- time.Since(start)
+		defer close(p.read)
+		_, _ = io.Copy(&p.got, reader) // ends when the tap closes its output
 	}()
+	t.Cleanup(func() {
+		p.echo()
+		_ = reader.Close()
+	})
+	return p
+}
 
-	code := cli.RunTap(t.Context(), strings.NewReader(input), writer, f.env(), f.paths, f.cfg, cli.TapMode{})
+// closed reports whether the tap has closed its output, which completes
+// its echo. It neither reads nor writes the pipe, so it can be asked while
+// the tap runs, and the answer does not wait on the reader.
+func (p *echoPipe) closed() bool {
+	conn, err := p.writer.SyscallConn()
+	return err == nil && conn.Control(func(uintptr) {}) != nil
+}
 
-	total = time.Since(start)
-	echoAt = <-echoed
-	t.Logf("echo complete after %v, tap returned after %v", echoAt, total)
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
-	if got.String() != input {
-		t.Errorf("echoed %q, want the input", got.String())
-	}
-	return srv, echoAt, total
+// echo returns everything the tap wrote. It closes the output first, as
+// the tap should have, so that a tap that left it open cannot hold the read.
+func (p *echoPipe) echo() string {
+	_ = p.writer.Close()
+	<-p.read
+	return p.got.String()
 }
 
 // The status line shows the echo, so it must not wait for the server: the
-// output is complete, and closed, while the post still waits for a server
-// that is slow to answer.
+// tap's output is complete, and closed, before its post reaches the server.
+// The tap still waits for the server's answer, which comes only after a
+// hold, so that a tap that did not wait for it would return first.
 func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
-	const hold = 500 * time.Millisecond
+	f := newFixture(t)
+	out := newEchoPipe(t)
+	srv := f.serve(func(s *ingestServer) {
+		s.echoComplete = out.closed
+		s.hold = 500 * time.Millisecond
+	})
+	input := statusInput(t)
 
-	srv, echoAt, total := tapAgainstAHungServer(t, hold)
+	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	if bound := hotPathBound(20 * time.Millisecond); echoAt > bound {
-		t.Errorf("echo complete after %v, want within %v", echoAt, bound)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
 	}
-	if total < hold {
-		t.Errorf("tap returned after %v, before the server answered at %v; want it to wait for its post", total, hold)
+	if echo := out.echo(); echo != input {
+		t.Errorf("echoed %q, want the input", echo)
 	}
-	if posts := srv.received(); len(posts) != 1 {
-		t.Errorf("server received %d posts, want 1", len(posts))
+	posts := srv.received()
+	if len(posts) != 1 {
+		t.Fatalf("server received %d posts, want 1", len(posts))
+	}
+	if !posts[0].afterEcho {
+		t.Error("the post reached the server before the tap closed its output, want the echo complete first")
+	}
+	if !posts[0].answered {
+		t.Error("the tap returned before the server answered its post, want it to wait for the answer")
 	}
 }
 
 // The status line process does not linger on a server that does not answer:
-// the tap echoes at once and gives up on its post at its 100 ms bound.
+// the tap gives up on its post at its 100 ms bound.
 func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
-	_, echoAt, total := tapAgainstAHungServer(t, 2*time.Second)
+	f := newFixture(t)
+	out := newEchoPipe(t)
+	f.serve(func(s *ingestServer) { s.hold = 2 * time.Second })
+	input := statusInput(t)
+	start := time.Now()
 
-	if bound := hotPathBound(20 * time.Millisecond); echoAt > bound {
-		t.Errorf("echo complete after %v, want within %v", echoAt, bound)
+	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
+
+	total := time.Since(start)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if echo := out.echo(); echo != input {
+		t.Errorf("echoed %q, want the input", echo)
 	}
 	if bound := hotPathBound(150 * time.Millisecond); total > bound {
 		t.Errorf("tap took %v against a hung server, want at most %v", total, bound)
@@ -536,6 +568,63 @@ func TestRun_HelpListsHookAndTap(t *testing.T) {
 // BenchmarkRunTap measures one tap's own cost against a server that answers
 // at once.
 func BenchmarkRunTap(b *testing.B) {
+	tap := newBenchTap(b)
+	b.ReportAllocs()
+
+	for b.Loop() {
+		tap.run(b, io.Discard)
+	}
+}
+
+// BenchmarkRunTap_Echo measures how long a status line waits for the tap's
+// echo: from the start of the tap until its output is complete and closed,
+// against a server that answers at once. The spec's budget for Loadline's
+// own work on anything Claude Code waits on is 30 ms at the 95th
+// percentile; the benchmark reports the mean wait as echo-ms/op and the
+// 95th percentile as echo-p95-ms. Go's clock on Windows steps every half
+// millisecond or more, so there a wait within one step reads as 0.
+func BenchmarkRunTap_Echo(b *testing.B) {
+	tap := newBenchTap(b)
+	var waits []time.Duration
+
+	for b.Loop() {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			b.Fatalf("pipe: %v", err)
+		}
+		read := make(chan time.Duration, 1)
+		start := time.Now()
+		go func() {
+			_, _ = io.Copy(io.Discard, reader) // ends when the tap closes its output
+			read <- time.Since(start)
+		}()
+		tap.run(b, writer)
+		waits = append(waits, <-read)
+		_ = reader.Close()
+	}
+
+	milliseconds := func(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+	var total time.Duration
+	for _, wait := range waits {
+		total += wait
+	}
+	slices.Sort(waits)
+	nearestRank95 := (len(waits)*95+99)/100 - 1
+	b.ReportMetric(milliseconds(total)/float64(len(waits)), "echo-ms/op")
+	b.ReportMetric(milliseconds(waits[nearestRank95]), "echo-p95-ms")
+}
+
+// benchTap is a tap's world in a benchmark: a server that answers at once,
+// Loadline's directories with a token, and a status line's input.
+type benchTap struct {
+	env   cli.Env
+	paths config.Paths
+	cfg   config.Config
+	input []byte
+}
+
+func newBenchTap(b *testing.B) benchTap {
+	b.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = io.WriteString(w, "{}")
@@ -566,11 +655,13 @@ func BenchmarkRunTap(b *testing.B) {
 			"seven_day": map[string]any{"used_percentage": 97.6, "resets_at": 1800000000},
 		},
 	}))
-	b.ReportAllocs()
+	return benchTap{env: env, paths: paths, cfg: cfg, input: input}
+}
 
-	for b.Loop() {
-		if code := cli.RunTap(b.Context(), bytes.NewReader(input), io.Discard, env, paths, cfg, cli.TapMode{}); code != 0 {
-			b.Fatalf("exit code = %d", code)
-		}
+// run runs the tap once, with out as its output.
+func (bt benchTap) run(b *testing.B, out io.Writer) {
+	b.Helper()
+	if code := cli.RunTap(b.Context(), bytes.NewReader(bt.input), out, bt.env, bt.paths, bt.cfg, cli.TapMode{}); code != 0 {
+		b.Fatalf("exit code = %d", code)
 	}
 }

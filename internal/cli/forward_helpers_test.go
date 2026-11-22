@@ -266,6 +266,12 @@ type post struct {
 	path     string
 	raw      []byte
 	envelope protocol.Envelope
+	// afterEcho is what the server's echoComplete reported as the request
+	// arrived.
+	afterEcho bool
+	// answered says that a held request was answered at the end of its
+	// hold, its client still waiting for the answer.
+	answered bool
 }
 
 // ingestServer is the real server on a free loopback port, fed into a
@@ -275,12 +281,15 @@ type ingestServer struct {
 	sink *recordingSink
 	// answer, when set, is the status every ingest request gets.
 	answer int
-	// hold, when set, is how long each ingest request waits for an answer
-	// that never comes.
+	// hold, when set, is how long each ingest request waits before it is
+	// answered, with a 200 and no body.
 	hold time.Duration
 	// slowHealth, when set, is how long every other request, such as the
 	// health check, waits before it is answered.
 	slowHealth time.Duration
+	// echoComplete, when set, reports whether the tap's echo is complete;
+	// each ingest request notes what it reports as the request arrives.
+	echoComplete func() bool
 
 	mu    sync.Mutex
 	posts []post
@@ -317,15 +326,18 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 			}
 			return
 		}
+		afterEcho := s.echoComplete != nil && s.echoComplete()
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		s.record(r.URL.Path, raw)
+		i := s.record(r.URL.Path, raw, afterEcho)
 		switch {
 		case s.hold > 0:
-			wait(r, s.hold)
+			if wait(r, s.hold) {
+				s.answered(i)
+			}
 		case s.answer != 0:
 			w.WriteHeader(s.answer)
 		default:
@@ -340,12 +352,21 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 	return s
 }
 
-func (s *ingestServer) record(path string, raw []byte) {
+// record keeps a request and returns its index among the posts.
+func (s *ingestServer) record(path string, raw []byte, afterEcho bool) int {
 	var env protocol.Envelope
 	_ = json.Unmarshal(raw, &env) // a body that is no envelope is kept raw
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.posts = append(s.posts, post{path: path, raw: raw, envelope: env})
+	s.posts = append(s.posts, post{path: path, raw: raw, envelope: env, afterEcho: afterEcho})
+	return len(s.posts) - 1
+}
+
+// answered notes that the held post at index i is being answered.
+func (s *ingestServer) answered(i int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.posts[i].answered = true
 }
 
 func (s *ingestServer) received() []post {
