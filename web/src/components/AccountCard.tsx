@@ -1,8 +1,8 @@
 import type { ReadonlySignal } from '@preact/signals';
 import { useId } from 'preact/hooks';
-import type { AccountView, WindowView } from '../api/types';
+import type { AccountView, CreditsView, WindowView } from '../api/types';
 import { isCurrent, windowNote } from '../model/describe';
-import { formatPct, formatUSD } from '../model/format';
+import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen, paceCap, roundPace } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
 import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
@@ -16,8 +16,9 @@ type AccountCardProps = {
 
 /**
  * One account: who it is, and either its rate-limit windows or, for an
- * account billed per token, its spend. The windows count down against the
- * page's clock and drop out as soon as they reset.
+ * account billed per token, its spend, then, for a subscription, its usage
+ * credits when it has any. The windows count down against the page's clock
+ * and drop out as soon as they reset.
  */
 export function AccountCard({ account, now, range }: AccountCardProps) {
   const titleId = useId();
@@ -35,6 +36,9 @@ export function AccountCard({ account, now, range }: AccountCardProps) {
         <Spend account={account} ownerId={titleId} />
       ) : (
         <Windows account={account} ownerId={titleId} now={now.value} />
+      )}
+      {account.auth === 'subscription' && account.credits !== null && (
+        <Credits credits={account.credits} now={now.value} />
       )}
       <div class="account-foot">
         <ModelSplit
@@ -118,8 +122,50 @@ function WindowGauge({ label, window, ownerId, now }: WindowGaugeProps) {
           {note.text}
         </p>
       )}
+      {window.pace !== undefined && <Pace pace={window.pace} />}
     </Gauge>
   );
+}
+
+// How fast a window is burning, as a multiplier of the pace that reaches 100%
+// at reset. A screen reader hears it in words rather than as a × sign, and
+// the tooltip, on the figure itself, is not read out a second time. The
+// colour and the words both go by the figure shown.
+function Pace({ pace }: { readonly pace: number }) {
+  const rounded = roundPace(pace);
+  const shown = formatPace(pace);
+  const spoken = rounded > paceCap ? `more than ${paceCap}` : shown;
+  return (
+    <>
+      <span class={`pace num tone-${paceTone(rounded)}`} aria-hidden="true" title={paceTooltip(rounded, shown)}>
+        ×{shown}
+      </span>
+      <span class="visually-hidden">Pace {spoken} times the rate that reaches 100% at reset</span>
+    </>
+  );
+}
+
+// The tooltip says a pace above ×1.0 is faster than the one that reaches 100%
+// at reset, and one below it a fraction of that pace.
+function paceTooltip(rounded: number, shown: string): string {
+  const target = 'the pace that reaches 100% at reset.';
+  if (rounded > paceCap) {
+    return `Burning more than ${paceCap}× faster than ${target}`;
+  }
+  if (rounded > 1) {
+    return `Burning ${shown}× faster than ${target}`;
+  }
+  return rounded === 1 ? `Burning at ${target}` : `Burning at ${shown}× ${target}`;
+}
+
+// A pace of 1 uses the window up just as it resets. Near it is worth
+// watching; well past it, the limit comes first. It is judged as shown, so
+// two equal figures never differ in colour.
+function paceTone(shown: number): Tone {
+  if (shown > 1.2) {
+    return 'bad';
+  }
+  return shown >= 0.9 ? 'warn' : 'ok';
 }
 
 function usageTone(pct: number): Tone {
@@ -127,6 +173,44 @@ function usageTone(pct: number): Tone {
     return 'bad';
   }
   return pct >= 75 ? 'warn' : 'ok';
+}
+
+type CreditsProps = {
+  readonly credits: CreditsView;
+  readonly now: Date;
+};
+
+// What a subscription's usage credits come to. Worked-out figures are marked
+// as estimates, and say what they are made from; a reported spend limit's are
+// shown as they are.
+function Credits({ credits, now }: CreditsProps) {
+  const estimate = credits.source === 'estimate';
+  const days = credits.days === 1 ? '1 day' : `${credits.days} days`;
+  return (
+    <div class="credits">
+      <p
+        class="credits-figures"
+        title={estimate ? `Estimated from the last ${days} of usage` : 'As the spend limit reports them'}
+      >
+        Credits {estimate ? '≈ ' : ''}
+        <Amount usd={credits.spentUSD} /> of <Amount usd={credits.balanceUSD} /> used ·{' '}
+        <Amount usd={credits.remainingUSD} /> left
+      </p>
+      {credits.active && (
+        <p class="credits-state">
+          <span class="badge badge-bad">
+            <WarningIcon />
+            On credits
+          </span>
+          {credits.onCreditsSince !== null && ` since ${formatWhen(credits.onCreditsSince, now)}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Amount({ usd }: { readonly usd: number }) {
+  return <span class="num">{formatUSDBrief(usd)}</span>;
 }
 
 type SpendProps = {

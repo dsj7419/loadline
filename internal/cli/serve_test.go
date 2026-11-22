@@ -807,6 +807,59 @@ func TestServe_ListsEveryConfiguredAccountFromTheStart(t *testing.T) {
 	assertListed("after claude failed for Work")
 }
 
+func TestServe_CreditsComeFromTheConfig(t *testing.T) {
+	f := newServeFixture(t)
+	f.mkdirs(f.dir(".claude-b"))
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B","credits":[` +
+		`{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"},{"usd":5.5,"addedAt":"2026-11-22T08:00:00-08:00"}]}]}`)
+	f.start()
+
+	waitFor(t, "the configured credits", func() bool {
+		a, ok := accountByDir(f.snapshot(), f.dir(".claude-b"))
+		return ok && a.Credits != nil && a.Credits.BalanceUSD == 25.5 && a.Credits.Source == domain.CreditSourceEstimate
+	})
+}
+
+// Credits are estimated over the history the server keeps, so a restart does
+// not change them.
+func TestServe_CreditsCountTheDaysTheHistoryKeeps(t *testing.T) {
+	for name, tc := range map[string]struct {
+		retention string
+		days      int
+	}{
+		"a week of history":    {retention: `"retentionDays":7,`, days: 7},
+		"the default 30 days":  {days: 30},
+		"a year, capped at 30": {retention: `"retentionDays":365,`, days: 30},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newServeFixture(t)
+			f.mkdirs(f.dir(".claude-b"))
+			f.writeConfig(`{` + tc.retention + `"accounts":[{"configDir":"~/.claude-b","credits":[{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"}]}]}`)
+			f.start()
+
+			waitFor(t, "the credits", func() bool {
+				a, ok := accountByDir(f.snapshot(), f.dir(".claude-b"))
+				return ok && a.Credits != nil && a.Credits.Days == tc.days
+			})
+		})
+	}
+}
+
+func TestServe_DemoShowsAnAccountOnCredits(t *testing.T) {
+	f := newServeFixture(t)
+	f.start(func(o *cli.ServeOptions) { o.Demo = true })
+
+	var onCredits []string
+	for _, a := range f.snapshot().Accounts {
+		if a.Credits != nil && a.Credits.Active {
+			onCredits = append(onCredits, a.Label)
+		}
+	}
+	if !slices.Equal(onCredits, []string{"Main"}) {
+		t.Errorf("accounts on credits %v, want Main", onCredits)
+	}
+}
+
 func TestServe_LogsStartupShutdownAndFailuresOncePerMinute(t *testing.T) {
 	f := newServeFixture(t)
 	f.claude.fail = fmt.Errorf("locate claude: executable file not found")

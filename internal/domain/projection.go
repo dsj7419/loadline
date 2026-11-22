@@ -23,6 +23,9 @@ const (
 type Sample struct {
 	At      time.Time
 	UsedPct float64
+	// ResetsAt is when the window the sample was taken from resets; zero when
+	// that is unknown.
+	ResetsAt time.Time
 }
 
 // Projection is where a rate-limit window is heading. The zero value says the

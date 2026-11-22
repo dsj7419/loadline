@@ -39,7 +39,15 @@ type Config struct {
 	// US dollars a day.
 	Labels  map[domain.ConfigDir]string
 	Budgets map[domain.ConfigDir]float64
-	Alerts  domain.AlertConfig
+	// Credits are the usage credits the owner recorded for each account,
+	// keyed by normalized config dir.
+	Credits map[domain.ConfigDir][]domain.CreditGrant
+	// CreditDays is how many days back credit estimates count spend. The
+	// server sets it to the days its history keeps, so a tracker restored
+	// from the history counts what one that ran on does. It is at most 30,
+	// the days the view's spend covers; zero means 30.
+	CreditDays int
+	Alerts     domain.AlertConfig
 	// ShareWindow is how far back a session's share of its account's spend
 	// looks. Zero means 60 minutes.
 	ShareWindow time.Duration
@@ -60,7 +68,7 @@ type Config struct {
 type Restored struct {
 	Accounts  []domain.Account
 	Sessions  []domain.Session
-	Samples   map[domain.ConfigDir]WindowSamples
+	Samples   map[domain.ConfigDir]domain.WindowSamples
 	Usage     []UsageRow
 	Timelines map[domain.SessionID][]domain.Transition
 }
@@ -107,9 +115,12 @@ func New(clock Clock, cfg Config, rec Recorder) *Tracker {
 	if rec == nil {
 		rec = NopRecorder{}
 	}
-	cfg.Labels, cfg.Budgets = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets)
+	cfg.Labels, cfg.Budgets, cfg.Credits = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets), cloneGrants(cfg.Credits)
 	if cfg.ShareWindow <= 0 {
 		cfg.ShareWindow = defaultShareWindow
+	}
+	if cfg.CreditDays <= 0 || cfg.CreditDays > keepDays {
+		cfg.CreditDays = keepDays
 	}
 	if cfg.Location == nil {
 		cfg.Location = time.Local
@@ -287,6 +298,14 @@ func (t *Tracker) Restore(s Restored) {
 	}
 	for _, row := range s.Usage {
 		t.usage.add(row.Dir, row.Session, row.Model, row.Minute, usageOfRow(row))
+		// Usage is kept by the minute, so a restored call is dated at the
+		// start of its minute: one made in the minute an account reached its
+		// limit may fall just before the span on credits it was made in, and
+		// one made in the minute a span closed, after it closed, just inside
+		// that span.
+		if entry, ok := t.accounts[row.Dir]; ok {
+			entry.credits.recordCall(row.Minute, row.CostUSD)
+		}
 	}
 
 	var restored []*sessionEntry
@@ -374,6 +393,7 @@ func (t *Tracker) apply(e domain.Event) {
 	}
 	if st, ok := e.(domain.Status); ok {
 		t.observeLimits(st.Dir, st.Limits)
+		t.account(st.Dir).credits.observe(st.SpendLimit, st.At)
 	}
 	if id == "" {
 		return
@@ -479,6 +499,7 @@ func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits) {
 func (t *Tracker) attach(dir domain.ConfigDir, r domain.APIRequest) {
 	entry := t.account(dir)
 	t.usage.add(dir, r.Session, r.Model, r.At, usageOf(r))
+	entry.credits.recordCall(r.At, r.CostUSD)
 	t.rec.UsageRecorded(dir, r)
 	if entry.account.Email == "" && r.Email != "" {
 		entry.account.Email = r.Email
@@ -555,8 +576,9 @@ func (t *Tracker) nearest(gap func(*sessionEntry) (time.Duration, bool)) *sessio
 
 // expire forgets what has aged out by now: sessions parked or ended for a
 // day, usage older than the days the view covers, spend older than the share
-// window, calls that waited too long for their session, and samples older
-// than any projection reads.
+// window, calls that waited too long for their session, and samples and
+// calls older than any projection reads, but for those a span on credits
+// still needs.
 func (t *Tracker) expire(now time.Time) {
 	finishedBefore := now.Add(-finishedKeep)
 	for id, e := range t.sessions {
@@ -567,8 +589,10 @@ func (t *Tracker) expire(now time.Time) {
 	}
 	t.usage.prune(dayOf(now, t.cfg.Location)-keepDays+1, now.Add(-t.cfg.ShareWindow))
 	t.pending.prune(now.Add(-pendingFor))
+	horizon, oldest := now.Add(-sampleHorizon), now.Add(-t.creditHistory())
 	for _, a := range t.accounts {
-		a.pruneSamples(now.Add(-sampleHorizon))
+		a.credits.prune(domain.OnCreditsSpans(a.samples, now), horizon, oldest)
+		a.pruneSamples(horizon, oldest)
 	}
 }
 

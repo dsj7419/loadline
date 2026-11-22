@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   formatDuration,
+  formatPace,
   formatPct,
   formatRelative,
   formatReset,
   formatTokens,
   formatUSD,
+  formatUSDBrief,
   formatWhen,
+  roundPace,
 } from '../src/model/format';
 
 const notNumbers = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
@@ -94,6 +97,71 @@ describe('formatUSD', () => {
 
   it.each(notNumbers)('shows %s as a dash', (n) => {
     expect(formatUSD(n)).toBe('—');
+  });
+});
+
+describe('formatUSDBrief', () => {
+  it.each<[number, string]>([
+    [20, '$20'],
+    [0, '$0'],
+    [13.6, '$13.60'],
+    [6.4, '$6.40'],
+    [19.999, '$20'],
+    [0.001, '<$0.01'],
+    [1_000, '$1,000'],
+    [-5, '-$5'],
+    [2_500_000, '$2.5M'],
+    [1e21, '>$999T'],
+  ])('shows %s as %s', (n, want) => {
+    expect(formatUSDBrief(n)).toBe(want);
+  });
+
+  it.each(notNumbers)('shows %s as a dash', (n) => {
+    expect(formatUSDBrief(n)).toBe('—');
+  });
+});
+
+describe('formatPace', () => {
+  it.each<[number, string]>([
+    [0, '0.0'],
+    [0.04, '0.0'],
+    [0.849, '0.8'],
+    [0.851, '0.9'],
+    [0.86, '0.9'],
+    [1, '1.0'],
+    [1.249, '1.2'],
+    [1.25, '1.3'],
+    [1.44, '1.4'],
+    [9.94, '9.9'],
+    [9.96, '10'],
+    [10, '10'],
+    [12.4, '12'],
+    [12.5, '13'],
+    [99, '99'],
+    [99.4, '99'],
+    [99.5, '99+'],
+    [1680, '99+'],
+    [1e300, '99+'],
+  ])('shows %s as %s', (n, want) => {
+    expect(formatPace(n)).toBe(want);
+  });
+
+  it.each([...notNumbers, -0.5])('shows %s as a dash', (n) => {
+    expect(formatPace(n)).toBe('—');
+  });
+});
+
+describe('roundPace', () => {
+  it.each<[number, number]>([
+    [0.849, 0.8],
+    [0.851, 0.9],
+    [1.25, 1.3],
+    [9.94, 9.9],
+    [9.96, 10],
+    [12.5, 13],
+    [1680, 1680],
+  ])('rounds %s to %s, the figure formatPace shows', (n, want) => {
+    expect(roundPace(n)).toBe(want);
   });
 });
 

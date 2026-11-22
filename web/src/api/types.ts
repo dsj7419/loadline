@@ -19,8 +19,20 @@ export type SessionKind = (typeof sessionKinds)[number];
 export const authKinds = ['unknown', 'subscription', 'api_key', 'third_party'] as const;
 export type AuthKind = (typeof authKinds)[number];
 
-export const alertKinds = ['needs_you', 'runs_out', 'budget', 'weekly_threshold', 'context_high'] as const;
+export const alertKinds = [
+  'needs_you',
+  'runs_out',
+  'credits_active',
+  'credits_low',
+  'budget',
+  'weekly_threshold',
+  'context_high',
+] as const;
 export type AlertKind = (typeof alertKinds)[number];
+
+/** Where an account's credit figures come from: worked out, or reported by its spend limit. */
+export const creditSources = ['estimate', 'reported'] as const;
+export type CreditSource = (typeof creditSources)[number];
 
 declare const brand: unique symbol;
 
@@ -61,8 +73,27 @@ export type AccountView = {
   readonly spendMonthUSD: number;
   /** The daily budget, or 0 for none. */
   readonly budgetUSD: number;
+  /**
+   * Null unless the account is a subscription, and usage credits were
+   * recorded for it or its spend limit was reported within the hour.
+   */
+  readonly credits: CreditsView | null;
   readonly models: readonly ModelTotal[];
   readonly modelsWeek: readonly ModelTotal[];
+};
+
+/** Where an account's usage credits stand, in US dollars. */
+export type CreditsView = {
+  readonly balanceUSD: number;
+  readonly spentUSD: number;
+  readonly remainingUSD: number;
+  /** How many days back an estimate counts spend: the history the server keeps, up to 30. */
+  readonly days: Int;
+  /** When the account went on credits; null unless active. */
+  readonly onCreditsSince: Timestamp | null;
+  /** The account is at a plan limit and working on credits. */
+  readonly active: boolean;
+  readonly source: CreditSource;
 };
 
 /** One rate-limit window. */
@@ -73,6 +104,12 @@ export type WindowView = {
   readonly observedAt: Timestamp | null;
   /** Null while the trend is unknown. */
   readonly projection: ProjectionView | null;
+  /**
+   * How fast the usage has burned against the pace that reaches 100% at
+   * reset: 1 is on that pace. Left out until an hour of the window has gone,
+   * and while the reset time is unknown. Unrounded.
+   */
+  readonly pace?: number;
 };
 
 /** Where a window's usage is heading. */

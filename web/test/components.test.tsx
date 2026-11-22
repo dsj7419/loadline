@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionStates, type View } from '../src/api/types';
 import { AccountCard } from '../src/components/AccountCard';
 import { App } from '../src/components/App';
-import { Gauge } from '../src/components/Gauge';
+import { Gauge, type Tone } from '../src/components/Gauge';
 import { ModelsBar } from '../src/components/ModelsBar';
 import { browserOptIn, createNotifier, type NotificationApi, type OptInStore } from '../src/components/Notifier';
 import { SessionRow } from '../src/components/SessionRow';
@@ -41,6 +41,31 @@ async function rendered(): Promise<void> {
 
 function pressKey(key: string, init: KeyboardEventInit = {}): void {
   document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+}
+
+// Matches the innermost element that reads text as a whole, though parts of
+// it sit in child elements, as amounts set in their own type do.
+function wholeText(text: string): (content: string, element: Element | null) => boolean {
+  return (_, element) =>
+    element !== null && element.textContent === text && [...element.children].every((child) => child.textContent !== text);
+}
+
+// The text in element, leaving out each child element that keep turns away,
+// with all it holds.
+function textOf(element: Element, keep: (child: Element) => boolean): string {
+  return [...element.childNodes]
+    .map((node) => (node instanceof Element ? (keep(node) ? textOf(node, keep) : '') : (node.textContent ?? '')))
+    .join('');
+}
+
+// What a sighted user reads: all but the text set aside for screen readers.
+function seenText(element: Element): string {
+  return textOf(element, (child) => !child.classList.contains('visually-hidden'));
+}
+
+// What a screen reader reads: all but what aria-hidden hides.
+function spokenText(element: Element): string {
+  return textOf(element, (child) => child.getAttribute('aria-hidden') !== 'true');
 }
 
 function memoryOptIn(initial = false): { store: OptInStore; saved: boolean[] } {
@@ -376,6 +401,21 @@ describe('App', () => {
     ]);
   });
 
+  it('labels the credit alerts', () => {
+    const { send } = renderApp();
+    send(
+      viewOf({
+        alerts: [
+          alertOf({ kind: 'credits_active', session: '', message: 'Main is using usage credits' }),
+          alertOf({ kind: 'credits_low', session: '', message: 'Main has used about $16.40 of its $20.00 in usage credits' }),
+        ],
+      }),
+    );
+
+    const items = within(screen.getByRole('region', { name: /alerts/i })).getAllByRole('listitem');
+    expect(items.map((item) => item.querySelector('.alert-kind')?.textContent)).toEqual(['On credits', 'Credits low']);
+  });
+
   it('says whether it is live', () => {
     const { send, lose } = renderApp();
     expect(screen.getByRole('status').textContent).toMatch(/connecting/i);
@@ -590,6 +630,64 @@ describe('AccountCard', () => {
     expect(screen.getByText('+2.1%/h · runs out Sun 14:00 · resets Mon 09:00')).toBeTruthy();
   });
 
+  it('shows how fast each window is burning after when it resets', () => {
+    const account = accountOf({ fiveHour: { ...fiveHour, pace: 0.41 }, sevenDay: { ...week, pace: 1.44 } });
+    render(<AccountCard range="today" account={account} now={signal(now)} />);
+
+    const card = screen.getByRole('article', { name: 'Main' });
+    expect(seenText(card)).toMatch(/5-hour\s*38%\s*resets Sat 20:10\s*×0\.4\s*Weekly\s*93%\s*resets Mon 09:00\s*×1\.4/);
+  });
+
+  // The tooltip is worded by the figure shown: a fraction of the pace below
+  // ×1.0, the pace itself at ×1.0, and faster than it above.
+  it.each<[number, string, string, string]>([
+    [0.41, '0.4', 'Burning at 0.4× the pace that reaches 100% at reset.', 'Pace 0.4 times'],
+    [0.96, '1.0', 'Burning at the pace that reaches 100% at reset.', 'Pace 1.0 times'],
+    [1.04, '1.0', 'Burning at the pace that reaches 100% at reset.', 'Pace 1.0 times'],
+    [1.05, '1.1', 'Burning 1.1× faster than the pace that reaches 100% at reset.', 'Pace 1.1 times'],
+    [1.44, '1.4', 'Burning 1.4× faster than the pace that reaches 100% at reset.', 'Pace 1.4 times'],
+    [12.4, '12', 'Burning 12× faster than the pace that reaches 100% at reset.', 'Pace 12 times'],
+    [1680, '99+', 'Burning more than 99× faster than the pace that reaches 100% at reset.', 'Pace more than 99 times'],
+  ])('explains a pace of %s, shown as ×%s, in a tooltip and to a screen reader in words', (pace, shown, tooltip, spoken) => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
+
+    expect(screen.getByText(`×${shown}`).getAttribute('title')).toBe(tooltip);
+    const heard = spokenText(screen.getByRole('article', { name: 'Main' }));
+    expect(heard).toContain(`${spoken} the rate that reaches 100% at reset`);
+    expect(heard).not.toContain('×');
+    expect(heard).not.toContain('99+');
+  });
+
+  // The colour follows the figure shown, so equal figures always get equal
+  // colours. The inputs sit either side of a rounding edge without resting on
+  // a binary tie, except 1.25, which binary holds exactly.
+  it.each<[number, string, Tone]>([
+    [0.84, '×0.8', 'ok'],
+    [0.849, '×0.8', 'ok'],
+    [0.851, '×0.9', 'warn'],
+    [0.89, '×0.9', 'warn'],
+    [0.9, '×0.9', 'warn'],
+    [1.2, '×1.2', 'warn'],
+    [1.21, '×1.2', 'warn'],
+    [1.24, '×1.2', 'warn'],
+    [1.249, '×1.2', 'warn'],
+    [1.25, '×1.3', 'bad'],
+    [1680, '×99+', 'bad'],
+  ])('colours a pace of %s, shown as %s, as %s', (pace, shown, tone) => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
+
+    const tones = [...screen.getByText(shown).classList].filter((name) => name.startsWith('tone-'));
+    expect(tones).toEqual([`tone-${tone}`]);
+  });
+
+  it('shows no pace for a window without one', () => {
+    render(<AccountCard range="today" account={accountOf({ fiveHour, sevenDay: week })} now={signal(now)} />);
+
+    const text = screen.getByRole('article', { name: 'Main' }).textContent;
+    expect(text).not.toContain('×');
+    expect(text).not.toContain('times the rate');
+  });
+
   it("shows an API account's spend against its daily budget, as an estimate", () => {
     render(
       <AccountCard
@@ -642,6 +740,76 @@ describe('AccountCard', () => {
   it('says so when no limits have been reported', () => {
     render(<AccountCard range="today" account={accountOf({ fiveHour: null, sevenDay: null })} now={signal(now)} />);
     expect(screen.getByText('No rate limits reported yet.')).toBeTruthy();
+  });
+
+  const onCredits = {
+    balanceUSD: 20,
+    spentUSD: 6.4,
+    remainingUSD: 13.6,
+    days: 30,
+    onCreditsSince: '2026-11-21T17:42:00Z',
+    active: true,
+    source: 'estimate',
+  };
+
+  it('estimates the credits spent, with a badge while the account is on them', () => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: onCredits })} now={signal(now)} />);
+    const card = screen.getByRole('article', { name: 'Main' });
+
+    expect(within(card).getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+    const badge = within(card).getByText('On credits');
+    // An icon and words, never colour alone.
+    expect(badge.querySelector('svg')).not.toBeNull();
+    expect(badge.closest('p')?.textContent).toBe('On credits since 17:42');
+  });
+
+  it('shows reported credits as they are, without the estimate mark', () => {
+    const reported = { ...onCredits, spentUSD: 314.12, balanceUSD: 500, remainingUSD: 185.88, source: 'reported' };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: reported })} now={signal(now)} />);
+
+    expect(screen.getByText(wholeText('Credits $314.12 of $500 used · $185.88 left'))).toBeTruthy();
+  });
+
+  it('drops the badge while the account is off credits', () => {
+    const off = { ...onCredits, active: false, onCreditsSince: null };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: off })} now={signal(now)} />);
+
+    expect(screen.getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+    expect(screen.queryByText('On credits')).toBeNull();
+  });
+
+  it('shows no credits for an account that has none', () => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: null })} now={signal(now)} />);
+
+    expect(screen.getByRole('article', { name: 'Main' }).textContent).not.toContain('Credits');
+  });
+
+  it.each(['api_key', 'third_party', 'unknown'])('shows no credits for an account that signs in with %s', (auth) => {
+    render(<AccountCard range="today" account={accountOf({ label: 'Other', auth, credits: onCredits })} now={signal(now)} />);
+
+    const card = screen.getByRole('article', { name: 'Other' });
+    expect(card.textContent).not.toContain('Credits');
+    expect(card.textContent).not.toMatch(/on credits/i);
+  });
+
+  it.each([
+    ['Estimated from the last 30 days of usage', 30],
+    ['Estimated from the last 7 days of usage', 7],
+    ['Estimated from the last 1 day of usage', 1],
+  ])('says what an estimate is made from: %s', (title, days) => {
+    const credits = { ...onCredits, days };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits })} now={signal(now)} />);
+
+    const row = screen.getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'));
+    expect(row.getAttribute('title')).toBe(title);
+  });
+
+  it('gives reported figures as the spend limit reports them', () => {
+    const reported = { ...onCredits, source: 'reported' };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: reported })} now={signal(now)} />);
+
+    const row = screen.getByText(wholeText('Credits $6.40 of $20 used · $13.60 left'));
+    expect(row.getAttribute('title')).toBe('As the spend limit reports them');
   });
 });
 
@@ -706,8 +874,9 @@ describe('createNotifier', () => {
   const needsYou = alertOf();
   const runsOut = alertOf({ kind: 'runs_out', session: '', message: 'Main is on pace to run out' });
   const weekly = alertOf({ kind: 'weekly_threshold', session: '', message: 'Main is at 93%' });
+  const onCredits = alertOf({ kind: 'credits_active', session: '', message: 'Main is using usage credits' });
 
-  it('notifies once for each new needs-you or runs-out alert', async () => {
+  it('notifies once for each new needs-you, runs-out or credits-active alert', async () => {
     const notifications = fakeNotifications('granted');
     const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
@@ -718,12 +887,20 @@ describe('createNotifier', () => {
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, runsOut, weekly]);
+    notifier.update([needsYou, runsOut, onCredits, weekly]);
+    notifier.update([needsYou, runsOut, onCredits, weekly]);
     notifier.update([]);
     notifier.update([alertOf({ since: '2026-11-21T18:05:00Z' })]);
     // Answered and asked again between two views: a new wait, so a new alert.
     notifier.update([alertOf({ since: '2026-11-21T18:09:00Z' })]);
 
-    expect(notifications.shown).toEqual([needsYou.message, runsOut.message, needsYou.message, needsYou.message]);
+    expect(notifications.shown).toEqual([
+      needsYou.message,
+      runsOut.message,
+      onCredits.message,
+      needsYou.message,
+      needsYou.message,
+    ]);
     expect(notifications.requestPermission).not.toHaveBeenCalled();
   });
 
@@ -741,7 +918,7 @@ describe('createNotifier', () => {
     expect(notifications.shown).toEqual([]);
   });
 
-  it('never notifies of context, weekly limit or budget alerts', async () => {
+  it('never notifies of context, weekly limit, budget or credits-low alerts', async () => {
     const notifications = fakeNotifications('granted');
     const notifier = createNotifier(notifications.api, memoryOptIn().store);
     await notifier.toggle();
@@ -751,6 +928,7 @@ describe('createNotifier', () => {
       alertOf({ kind: 'context_high', message: 'harbor-api is at 87% of its context window' }),
       alertOf({ kind: 'weekly_threshold', session: '', message: 'Main is at 93% of its weekly limit' }),
       alertOf({ kind: 'budget', session: '', message: 'API has spent its daily budget' }),
+      alertOf({ kind: 'credits_low', session: '', message: 'Main has used about $16.40 of its $20.00 in usage credits' }),
     ]);
     expect(notifications.shown).toEqual([]);
 

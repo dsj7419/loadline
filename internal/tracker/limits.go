@@ -11,20 +11,18 @@ const (
 	// sampleInterval is how often a window that holds steady is sampled
 	// anyway: a flat stretch is evidence of a flat trend.
 	sampleInterval = 60 * time.Second
-	// sampleHorizon is how far back samples are kept. Projections read no
-	// further.
+	// sampleHorizon is how far back every sample is kept. Projections read
+	// no further; beyond it, only the samples that mark a span on credits
+	// stay.
 	sampleHorizon = 2 * time.Hour
 )
 
-// WindowSamples holds an account's usage samples for each rate-limit window.
-type WindowSamples struct {
-	FiveHour, SevenDay []domain.Sample
-}
-
-// accountEntry is an account and the usage samples of its windows.
+// accountEntry is an account, the usage samples of its windows and what its
+// credits are worked out from.
 type accountEntry struct {
 	account domain.Account
-	samples WindowSamples
+	samples domain.WindowSamples
+	credits accountCredits
 }
 
 // observe applies the rate limits a status line reports. A line that reports
@@ -44,14 +42,33 @@ func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limi
 	a.account.Limits = domain.Limits{FiveHour: cloneWindow(l.FiveHour), SevenDay: cloneWindow(l.SevenDay), ObservedAt: l.ObservedAt}
 
 	sampled.ObservedAt = l.ObservedAt
-	var ok bool
-	if a.samples.FiveHour, ok = appendSample(a.samples.FiveHour, l.FiveHour, l.ObservedAt); ok {
-		sampled.FiveHour = cloneWindow(l.FiveHour)
-	}
-	if a.samples.SevenDay, ok = appendSample(a.samples.SevenDay, l.SevenDay, l.ObservedAt); ok {
-		sampled.SevenDay = cloneWindow(l.SevenDay)
-	}
+	a.samples.FiveHour, sampled.FiveHour = sampleWindow(a.samples.FiveHour, l.FiveHour, l.ObservedAt)
+	a.samples.SevenDay, sampled.SevenDay = sampleWindow(a.samples.SevenDay, l.SevenDay, l.ObservedAt)
 	return moved, sampled
+}
+
+// sampleWindow adds the sample a line at at gives of a window, w being nil
+// when the line no longer reports it, and returns the window it sampled.
+func sampleWindow(samples []domain.Sample, w *domain.Window, at time.Time) ([]domain.Sample, *domain.Window) {
+	if w == nil {
+		w = droppedAtLimit(samples)
+	}
+	samples, ok := appendSample(samples, w, at)
+	if !ok {
+		return samples, nil
+	}
+	return samples, cloneWindow(w)
+}
+
+// droppedAtLimit returns the window a line dropped while its last sample was
+// at the limit with no known reset time, as back at 0%: Claude Code drops a
+// window once it resets, and the reset time it never gave cannot end the
+// span on credits by itself. A window dropped otherwise needs no sample.
+func droppedAtLimit(samples []domain.Sample) *domain.Window {
+	if n := len(samples); n > 0 && samples[n-1].AtLimit() && samples[n-1].ResetsAt.IsZero() {
+		return &domain.Window{}
+	}
+	return nil
 }
 
 func sameWindow(a, b *domain.Window) bool {
@@ -61,23 +78,24 @@ func sameWindow(a, b *domain.Window) bool {
 	return a.UsedPct == b.UsedPct && a.ResetsAt.Equal(b.ResetsAt)
 }
 
-// appendSample adds w's usage at at to samples when it differs from the last
-// sample, or when sampleInterval has passed since that one.
+// appendSample adds w's usage at at to samples when it or the window's reset
+// time differs from the last sample's, or when sampleInterval has passed
+// since that one.
 func appendSample(samples []domain.Sample, w *domain.Window, at time.Time) ([]domain.Sample, bool) {
 	if w == nil {
 		return samples, false
 	}
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
-		if last.UsedPct == w.UsedPct && at.Sub(last.At) < sampleInterval {
+		if last.UsedPct == w.UsedPct && last.ResetsAt.Equal(w.ResetsAt) && at.Sub(last.At) < sampleInterval {
 			return samples, false
 		}
 	}
-	return append(samples, domain.Sample{At: at, UsedPct: w.UsedPct}), true
+	return append(samples, domain.Sample{At: at, UsedPct: w.UsedPct, ResetsAt: w.ResetsAt}), true
 }
 
 // restore merges samples kept from an earlier run into the account's.
-func (a *accountEntry) restore(s WindowSamples) {
+func (a *accountEntry) restore(s domain.WindowSamples) {
 	a.samples.FiveHour = mergeSamples(a.samples.FiveHour, s.FiveHour)
 	a.samples.SevenDay = mergeSamples(a.samples.SevenDay, s.SevenDay)
 }
@@ -88,11 +106,24 @@ func mergeSamples(current, restored []domain.Sample) []domain.Sample {
 	return merged
 }
 
-// pruneSamples forgets the samples taken before oldest.
-func (a *accountEntry) pruneSamples(oldest time.Time) {
-	before := func(s domain.Sample) bool { return s.At.Before(oldest) }
-	a.samples.FiveHour = slices.DeleteFunc(a.samples.FiveHour, before)
-	a.samples.SevenDay = slices.DeleteFunc(a.samples.SevenDay, before)
+// pruneSamples keeps of the samples taken before horizon only the marks of
+// the spans on credits, and of those none taken before oldest but one for the
+// span still running then.
+func (a *accountEntry) pruneSamples(horizon, oldest time.Time) {
+	a.samples.FiveHour = pruneWindow(a.samples.FiveHour, horizon, oldest)
+	a.samples.SevenDay = pruneWindow(a.samples.SevenDay, horizon, oldest)
+}
+
+// pruneWindow prunes one window's samples, which are in time order.
+func pruneWindow(samples []domain.Sample, horizon, oldest time.Time) []domain.Sample {
+	recent := slices.IndexFunc(samples, func(s domain.Sample) bool { return !s.At.Before(horizon) })
+	if recent < 0 {
+		recent = len(samples)
+	}
+	if recent == 0 {
+		return samples
+	}
+	return slices.Concat(domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples[:recent]), oldest), samples[recent:])
 }
 
 // currentLimits returns the account's limits as they stand at now. A window

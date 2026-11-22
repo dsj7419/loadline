@@ -43,9 +43,29 @@ type AccountView struct {
 	SpendWeekUSD  float64 `json:"spendWeekUSD"`
 	SpendMonthUSD float64 `json:"spendMonthUSD"`
 	// BudgetUSD is the daily budget, or 0 for none.
-	BudgetUSD  float64      `json:"budgetUSD"`
+	BudgetUSD float64 `json:"budgetUSD"`
+	// Credits is null unless the account is a subscription, and the owner
+	// recorded usage credits for it or a status line reported its spend limit
+	// within the last hour.
+	Credits    *CreditsView `json:"credits"`
 	Models     []ModelTotal `json:"models"`
 	ModelsWeek []ModelTotal `json:"modelsWeek"`
+}
+
+// CreditsView is where an account's usage credits stand, in US dollars.
+type CreditsView struct {
+	BalanceUSD   float64 `json:"balanceUSD"`
+	SpentUSD     float64 `json:"spentUSD"`
+	RemainingUSD float64 `json:"remainingUSD"`
+	// Days is how many days back an estimate counts spend.
+	Days int `json:"days"`
+	// OnCreditsSince is when the account went on credits; null unless Active.
+	OnCreditsSince Timestamp `json:"onCreditsSince"`
+	// Active says the account is at a plan limit and working on credits.
+	Active bool `json:"active"`
+	// Source is "estimate" for figures worked out from the cost of calls, or
+	// "reported" for a spend limit's own figures.
+	Source domain.CreditSource `json:"source"`
 }
 
 // WindowView is one rate-limit window.
@@ -56,6 +76,10 @@ type WindowView struct {
 	ObservedAt Timestamp `json:"observedAt"`
 	// Projection is null while the trend is unknown.
 	Projection *ProjectionView `json:"projection"`
+	// Pace is how fast the usage has burned against the pace that reaches
+	// 100% at reset, as of GeneratedAt (see domain.Pace). It is left out
+	// while there is none, and the page rounds it.
+	Pace *float64 `json:"pace,omitempty"`
 }
 
 // ProjectionView is where a window's usage is heading.
@@ -211,6 +235,7 @@ func (t *Tracker) buildView(now time.Time) View {
 		Projections: make(map[domain.ConfigDir]domain.WindowProjections, len(dirs)),
 		SpendToday:  make(map[domain.ConfigDir]float64, len(dirs)),
 		Budgets:     t.cfg.Budgets,
+		Credits:     make(map[domain.ConfigDir]domain.CreditEstimate, len(dirs)),
 	}
 	for _, dir := range dirs {
 		entry := t.accounts[dir]
@@ -221,7 +246,16 @@ func (t *Tracker) buildView(now time.Time) View {
 		spend := usage.account(dir)
 
 		labels[dir] = account.Label
-		accounts = append(accounts, t.accountView(account, projections, spend))
+		view := t.accountView(account, projections, spend, now)
+		// Usage credits are a subscription's; no other account has them.
+		if account.Auth == domain.AuthSubscription {
+			credits, show := entry.creditEstimate(t.cfg.Credits[dir], now)
+			if show {
+				view.Credits = creditsView(credits, t.cfg.CreditDays)
+			}
+			alerting.Credits[dir] = credits
+		}
+		accounts = append(accounts, view)
 		alerting.Accounts = append(alerting.Accounts, account)
 		alerting.Projections[dir] = projections
 		alerting.SpendToday[dir] = spend.spendTodayUSD
@@ -274,15 +308,15 @@ func (t *Tracker) shownSessions() []*sessionEntry {
 	return shown
 }
 
-func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spend accountUsage) AccountView {
+func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spend accountUsage, now time.Time) AccountView {
 	return AccountView{
 		Dir:           a.Dir,
 		Label:         a.Label,
 		Email:         a.Email,
 		Plan:          a.Plan,
 		Auth:          a.Auth,
-		FiveHour:      windowView(a.Limits.FiveHour, a.Limits.ObservedAt, p.FiveHour),
-		SevenDay:      windowView(a.Limits.SevenDay, a.Limits.ObservedAt, p.SevenDay),
+		FiveHour:      windowView(a.Limits.FiveHour, domain.FiveHourLength, a.Limits.ObservedAt, p.FiveHour, now),
+		SevenDay:      windowView(a.Limits.SevenDay, domain.SevenDayLength, a.Limits.ObservedAt, p.SevenDay, now),
 		SpendTodayUSD: spend.spendTodayUSD,
 		SpendWeekUSD:  spend.spendWeekUSD,
 		SpendMonthUSD: spend.spendMonthUSD,
@@ -292,11 +326,15 @@ func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spen
 	}
 }
 
-func windowView(w *domain.Window, observedAt time.Time, p domain.Projection) *WindowView {
+// windowView shows w, a window of the given length, as of now.
+func windowView(w *domain.Window, length time.Duration, observedAt time.Time, p domain.Projection, now time.Time) *WindowView {
 	if w == nil {
 		return nil
 	}
 	view := &WindowView{UsedPct: w.UsedPct, ResetsAt: Timestamp(w.ResetsAt), ObservedAt: Timestamp(observedAt)}
+	if pace, ok := domain.Pace(w.UsedPct, w.ResetsAt, length, now); ok {
+		view.Pace = &pace
+	}
 	if p.Known {
 		view.Projection = &ProjectionView{
 			RatePerHour:        p.RatePerHour,
@@ -306,6 +344,18 @@ func windowView(w *domain.Window, observedAt time.Time, p domain.Projection) *Wi
 		}
 	}
 	return view
+}
+
+func creditsView(e domain.CreditEstimate, days int) *CreditsView {
+	return &CreditsView{
+		BalanceUSD:     e.BalanceUSD,
+		SpentUSD:       e.SpentUSD,
+		RemainingUSD:   e.RemainingUSD,
+		Days:           days,
+		OnCreditsSince: Timestamp(e.OnCreditsSince),
+		Active:         e.Active,
+		Source:         e.Source,
+	}
 }
 
 func sessionView(e *sessionEntry, account string, share float64, models []ModelTotal) SessionView {

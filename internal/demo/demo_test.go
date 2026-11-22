@@ -1,6 +1,7 @@
 package demo_test
 
 import (
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,6 +25,7 @@ func seeded(t *testing.T, at time.Time) tracker.View {
 	accounts, events, api := demo.Scenario(at)
 	tr := tracker.New(func() time.Time { return at }, tracker.Config{
 		Budgets:  demo.Budgets(),
+		Credits:  demo.Credits(at),
 		Alerts:   alertConfig,
 		Location: at.Location(),
 	}, nil)
@@ -111,7 +113,7 @@ func TestScenario_ProducesAllStates(t *testing.T) {
 	}
 }
 
-func TestScenario_MainRunsOutBeforeItsWeekResets(t *testing.T) {
+func TestScenario_MainReachedItsWeeklyLimitAndWorksOnCredits(t *testing.T) {
 	main := accountByLabel(t, seeded(t, now), "Main")
 
 	if main.Auth != domain.AuthSubscription || main.Plan != "Ultra" {
@@ -121,11 +123,40 @@ func TestScenario_MainRunsOutBeforeItsWeekResets(t *testing.T) {
 		t.Errorf("Main has a 5-hour window %+v, want none", main.FiveHour)
 	}
 	week := main.SevenDay
-	if week == nil || week.UsedPct != 93 {
-		t.Fatalf("Main's weekly window is %+v, want 93%% used", week)
+	if week == nil || week.UsedPct != 100 {
+		t.Fatalf("Main's weekly window is %+v, want 100%% used", week)
 	}
 	if week.Projection == nil || !week.Projection.RunsOutBeforeReset || week.Projection.RatePerHour <= 0 {
-		t.Errorf("Main's weekly projection is %+v, want a rising rate that runs out before the reset", week.Projection)
+		t.Errorf("Main's weekly projection is %+v, want a rising rate that ran out before the reset", week.Projection)
+	}
+	credits := main.Credits
+	if credits == nil || !credits.Active || credits.Source != domain.CreditSourceEstimate || credits.BalanceUSD != 20 {
+		t.Fatalf("Main's credits are %+v, want an estimate of a $20 balance it is spending now", credits)
+	}
+	if since := time.Time(credits.OnCreditsSince); !since.Equal(now.Add(-18 * time.Minute)) {
+		t.Errorf("Main has been on credits since %v, want since its weekly window filled 18 minutes ago", since)
+	}
+	// About $6.20 of calls since.
+	if credits.SpentUSD < 6 || credits.SpentUSD > 6.5 || credits.RemainingUSD != credits.BalanceUSD-credits.SpentUSD {
+		t.Errorf("Main has spent $%v and has $%v left, want about $6.20 of $20 spent", credits.SpentUSD, credits.RemainingUSD)
+	}
+	for _, a := range []string{"B", "API"} {
+		if c := accountByLabel(t, seeded(t, now), a).Credits; c != nil {
+			t.Errorf("%s has credits %+v, want none", a, c)
+		}
+	}
+}
+
+// Just after midnight the scenario dates the calls of the hours before at the
+// start of the day, and must not count them as spent on credits.
+func TestScenario_CreditsStayCoherentJustAfterMidnight(t *testing.T) {
+	tokyo := time.FixedZone("Tokyo", 9*3600)
+	at := time.Date(2026, 11, 22, 0, 5, 0, 0, tokyo)
+
+	credits := accountByLabel(t, seeded(t, at), "Main").Credits
+
+	if credits == nil || !credits.Active || credits.SpentUSD <= 0 || credits.SpentUSD > 6.5 {
+		t.Errorf("Main's credits at %v are %+v, want on credits with no more than the last minutes' calls spent", at, credits)
 	}
 }
 
@@ -146,6 +177,44 @@ func TestScenario_BShowsBothWindowsOnPace(t *testing.T) {
 			t.Errorf("B's %s window is %+v, want a projection that stays under the limit", name, w)
 		}
 	}
+}
+
+// The page colors a pace by band, and the demo shows a window in each,
+// whenever in the hour, and whatever the day, it starts.
+func TestScenario_ShowsAPaceInEachBand(t *testing.T) {
+	tokyo := time.FixedZone("Tokyo", 9*3600)
+	for _, at := range []time.Time{now, now.Add(9 * time.Minute), now.Add(59 * time.Minute), time.Date(2026, 11, 22, 0, 5, 0, 0, tokyo)} {
+		bands := make(map[string][]float64)
+		for _, a := range seeded(t, at).Accounts {
+			for _, w := range []*tracker.WindowView{a.FiveHour, a.SevenDay} {
+				if w == nil || w.Pace == nil {
+					continue
+				}
+				switch pace := shownPace(*w.Pace); {
+				case pace < 0.9:
+					bands["below 0.9"] = append(bands["below 0.9"], pace)
+				case pace <= 1.2:
+					bands["0.9 to 1.2"] = append(bands["0.9 to 1.2"], pace)
+				default:
+					bands["above 1.2"] = append(bands["above 1.2"], pace)
+				}
+			}
+		}
+		for _, band := range []string{"below 0.9", "0.9 to 1.2", "above 1.2"} {
+			if len(bands[band]) == 0 {
+				t.Errorf("at %v no window shows a pace %s; the shown paces are %v", at, band, bands)
+			}
+		}
+	}
+}
+
+// shownPace is a pace as the page shows it, and so colors it: to tenths below
+// 10, else to a whole number.
+func shownPace(pace float64) float64 {
+	if tenths := math.Round(pace*10) / 10; tenths < 10 {
+		return tenths
+	}
+	return math.Round(pace)
 }
 
 func TestScenario_APIAccountSpendsAcrossDays(t *testing.T) {
@@ -212,7 +281,7 @@ func TestScenario_RaisesTheAlertsThatNotify(t *testing.T) {
 	for _, a := range v.Alerts {
 		kinds[a.Kind] = true
 	}
-	for _, want := range []domain.AlertKind{domain.AlertNeedsYou, domain.AlertRunsOut} {
+	for _, want := range []domain.AlertKind{domain.AlertNeedsYou, domain.AlertRunsOut, domain.AlertCreditsActive} {
 		if !kinds[want] {
 			t.Errorf("no %s alert in %+v", want, v.Alerts)
 		}

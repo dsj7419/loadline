@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { isView, viewSchema, type Schema } from '../src/api/guard';
+import { alertKinds, authKinds, creditSources } from '../src/api/types';
 
 // TestView_GoldenJSON in internal/tracker holds this file to the JSON of a
 // View that fills every field, so it is the API exactly as the server sends it.
@@ -57,6 +58,8 @@ function undescribed(schema: Schema, value: unknown, path: Path = []): Path[] {
   switch (schema.kind) {
     case 'nullable':
       return value === null ? [] : undescribed(schema.of, value, path);
+    case 'optional':
+      return value === undefined ? [] : undescribed(schema.of, value, path);
     case 'array':
       return Array.isArray(value)
         ? value.flatMap((item: unknown, index) => undescribed(schema.of, item, [...path, index]))
@@ -70,6 +73,55 @@ function undescribed(schema: Schema, value: unknown, path: Path = []): Path[] {
         : [];
     default:
       return [];
+  }
+}
+
+// The paths to the fields in the payload that the schema lets the server
+// leave out, in the order the payload holds them.
+function optionalIn(schema: Schema, value: unknown, path: Path = []): Path[] {
+  switch (schema.kind) {
+    case 'nullable':
+      return value === null ? [] : optionalIn(schema.of, value, path);
+    case 'optional':
+      return value === undefined ? [] : optionalIn(schema.of, value, path);
+    case 'array':
+      return Array.isArray(value)
+        ? value.flatMap((item: unknown, index) => optionalIn(schema.of, item, [...path, index]))
+        : [];
+    case 'object':
+      return isObject(value)
+        ? Object.entries(value).flatMap(([key, field]) => {
+            const fieldSchema = schema.fields[key];
+            if (fieldSchema === undefined) {
+              return [];
+            }
+            const here = fieldSchema.kind === 'optional' ? [[...path, key]] : [];
+            return [...here, ...optionalIn(fieldSchema, field, [...path, key])];
+          })
+        : [];
+    default:
+      return [];
+  }
+}
+
+// The value lists of every enum in schema.
+function* enumsIn(schema: Schema): Generator<readonly string[]> {
+  switch (schema.kind) {
+    case 'enum':
+      yield schema.values;
+      return;
+    case 'nullable':
+    case 'optional':
+    case 'array':
+      yield* enumsIn(schema.of);
+      return;
+    case 'object':
+      for (const field of Object.values(schema.fields)) {
+        yield* enumsIn(field);
+      }
+      return;
+    default:
+      return;
   }
 }
 
@@ -102,6 +154,52 @@ describe('the View contract', () => {
     expect(everyField.map(({ path }) => show(path))).toContain(deepest);
   });
 
+  it('holds every value of every enum, so the sweeps below try them all', () => {
+    const seen = new Map<readonly string[], Set<string>>();
+    const collect = (schema: Schema, value: unknown): void => {
+      switch (schema.kind) {
+        case 'enum':
+          if (typeof value === 'string') {
+            seen.set(schema.values, (seen.get(schema.values) ?? new Set<string>()).add(value));
+          }
+          return;
+        case 'nullable':
+          if (value !== null) {
+            collect(schema.of, value);
+          }
+          return;
+        case 'optional':
+          if (value !== undefined) {
+            collect(schema.of, value);
+          }
+          return;
+        case 'array':
+          if (Array.isArray(value)) {
+            value.forEach((item: unknown) => {
+              collect(schema.of, item);
+            });
+          }
+          return;
+        case 'object':
+          if (isObject(value)) {
+            Object.entries(schema.fields).forEach(([key, field]) => {
+              collect(field, value[key]);
+            });
+          }
+          return;
+        default:
+          return;
+      }
+    };
+    collect(viewSchema, golden);
+
+    const enums = [...enumsIn(viewSchema)];
+    expect(enums).toEqual(expect.arrayContaining([authKinds, alertKinds, creditSources]));
+    for (const values of enums) {
+      expect([...(seen.get(values) ?? [])].sort()).toEqual([...values].sort());
+    }
+  });
+
   it('rejects the payload when any one value has the wrong type', () => {
     const accepted = everyValue
       .filter(({ path, value }) => isView(edit(golden, path, wrongTypeFor(value))))
@@ -109,11 +207,19 @@ describe('the View contract', () => {
     expect(accepted).toEqual([]);
   });
 
-  it('rejects the payload when any one field is missing', () => {
+  it('rejects the payload when any one field is missing, but for those the server may leave out', () => {
     const accepted = everyField
       .filter(({ path }) => isView(edit(golden, path, absent)))
       .map(({ path }) => show(path));
-    expect(accepted).toEqual([]);
+    expect(accepted).toEqual(optionalIn(viewSchema, golden).map(show));
+  });
+
+  // Without this, marking any field optional would also excuse it from the
+  // sweep above.
+  it("lets the server leave out a window's pace, and nothing else", () => {
+    const optional = optionalIn(viewSchema, golden).map(show);
+    expect(optional).not.toEqual([]);
+    expect(optional.filter((path) => !/\.(fiveHour|sevenDay)\.pace$/.test(path))).toEqual([]);
   });
 
   it.each<[string, Path, unknown]>([
@@ -121,6 +227,7 @@ describe('the View contract', () => {
     ['an unknown session kind', ['sessions', 0, 'kind'], 'batch'],
     ['an unknown auth kind', ['accounts', 0, 'auth'], 'oauth'],
     ['an unknown alert kind', ['alerts', 0, 'kind'], 'urgent'],
+    ['an unknown credit source', ['accounts', 0, 'credits', 'source'], 'guessed'],
     ['a timestamp that is not RFC 3339', ['generatedAt'], '21 Nov 2026 18:00'],
     ['an impossible timestamp', ['sessions', 0, 'startedAt'], '2026-13-45T18:00:00Z'],
     ['a nullable timestamp that is not RFC 3339', ['accounts', 0, 'sevenDay', 'resetsAt'], 'soon'],
@@ -130,16 +237,22 @@ describe('the View contract', () => {
     ['NaN for an amount', ['sessions', 0, 'contextPct'], Number.NaN],
     ['a fractional count', ['sessions', 0, 'subagents'], 1.5],
     ['a fractional token count', ['models', 0, 'input'], 10.25],
+    ['a fractional number of days of credit history', ['accounts', 0, 'credits', 'days'], 7.5],
     ['a list element of the wrong type', ['alerts', 0], 'needs_you'],
+    ['null for a pace, which the server leaves out instead', ['accounts', 0, 'sevenDay', 'pace'], null],
+    ['an infinite pace', ['accounts', 0, 'sevenDay', 'pace'], Number.POSITIVE_INFINITY],
   ])('rejects %s', (_, path, replacement) => {
     expect(isView(edit(golden, path, replacement))).toBe(false);
   });
 
   it.each<[string, Path, unknown]>([
     ['a missing rate-limit window', ['accounts', 0, 'sevenDay'], null],
+    ['an account without credits', ['accounts', 0, 'credits'], null],
+    ['credits not in use', ['accounts', 0, 'credits', 'onCreditsSince'], null],
     ['an unknown observation time', ['accounts', 0, 'fiveHour', 'observedAt'], null],
     ['a timestamp with a fraction and an offset', ['generatedAt'], '2026-11-21T19:00:00.123456789+01:00'],
     ['empty lists', ['sessions'], []],
+    ['a window without a pace', ['accounts', 0, 'sevenDay', 'pace'], absent],
   ])('accepts %s', (_, path, replacement) => {
     expect(isView(edit(golden, path, replacement))).toBe(true);
   });

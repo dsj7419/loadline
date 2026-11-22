@@ -190,9 +190,12 @@ func TestSQLite_RoundTripRestored(t *testing.T) {
 	if ids := got.Sessions[0].SubagentIDs(); !reflect.DeepEqual(ids, session.SubagentIDs()) {
 		t.Errorf("subagent IDs %+v, want %+v", ids, session.SubagentIDs())
 	}
-	wantSamples := map[domain.ConfigDir]tracker.WindowSamples{dirA: {
-		FiveHour: []domain.Sample{{At: at(-30), UsedPct: 12.5}},
-		SevenDay: []domain.Sample{{At: at(-30), UsedPct: 61.25}, {At: at(30), UsedPct: 62}},
+	wantSamples := map[domain.ConfigDir]domain.WindowSamples{dirA: {
+		FiveHour: []domain.Sample{{At: at(-30), UsedPct: 12.5, ResetsAt: at(3 * 3600)}},
+		SevenDay: []domain.Sample{
+			{At: at(-30), UsedPct: 61.25, ResetsAt: at(4 * 86400)},
+			{At: at(30), UsedPct: 62, ResetsAt: at(4 * 86400)},
+		},
 	}}
 	if !reflect.DeepEqual(got.Samples, wantSamples) {
 		t.Errorf("samples\n got %+v\nwant %+v", got.Samples, wantSamples)
@@ -465,6 +468,97 @@ func TestSQLite_PruneRemovesOld(t *testing.T) {
 	}
 	if len(got.Usage) != 1 || !got.Usage[0].Minute.Equal(at(0)) {
 		t.Errorf("usage %+v, want only the minute at %s", got.Usage, at(0))
+	}
+}
+
+// historyAcrossACut stores samples either side of at(0). dirA's 5-hour
+// window reaches its limit at -300 and is still there at the cut, its reset
+// moved on at -100; its 7-day window comes off its limit before the cut.
+// dirB's 7-day window is at its limit with no known reset, and its 5-hour
+// window's span ended at its reset before the cut.
+func historyAcrossACut(t *testing.T, s *store.SQLite) {
+	t.Helper()
+	type line struct {
+		dir                domain.ConfigDir
+		sec                int
+		fiveHour, sevenDay *domain.Window
+	}
+	w := func(pct float64, resetsSec int) *domain.Window {
+		if resetsSec == 0 {
+			return &domain.Window{UsedPct: pct}
+		}
+		return &domain.Window{UsedPct: pct, ResetsAt: at(resetsSec)}
+	}
+	for _, l := range []line{
+		{dirA, -400, w(90, 2000), w(100, 100_000)},
+		{dirA, -300, w(100, 2000), w(100, 100_000)},
+		{dirA, -200, w(103, 2000), w(60, 100_000)},
+		{dirA, -100, w(100, 3000), w(61, 100_000)},
+		{dirA, 10, w(30, 3000), w(62, 100_000)},
+		{dirB, -600, w(100, -10), nil},
+		{dirB, -500, nil, w(100, 0)},
+		{dirB, -50, nil, w(100, 0)},
+	} {
+		must(t, s.AddLimitSample(t.Context(), l.dir, domain.Limits{FiveHour: l.fiveHour, SevenDay: l.sevenDay, ObservedAt: at(l.sec)}))
+	}
+}
+
+// Of each window's samples before a cut, the history keeps one, standing for
+// the span on credits they leave open at the cut: dated at the span's start,
+// with the reset time the span had come to. A restart then rebuilds the span,
+// whether or not a prune came first.
+func TestSQLite_KeepsTheStartOfASpanOnCreditsOpenAtTheCut(t *testing.T) {
+	want := map[domain.ConfigDir]domain.WindowSamples{
+		dirA: {
+			FiveHour: []domain.Sample{{At: at(-300), UsedPct: 100, ResetsAt: at(3000)}, {At: at(10), UsedPct: 30, ResetsAt: at(3000)}},
+			SevenDay: []domain.Sample{{At: at(10), UsedPct: 62, ResetsAt: at(100_000)}},
+		},
+		dirB: {SevenDay: []domain.Sample{{At: at(-500), UsedPct: 100}}},
+	}
+	for name, read := range map[string]func(t *testing.T, s *store.SQLite) tracker.Restored{
+		"loaded from the cut on": func(t *testing.T, s *store.SQLite) tracker.Restored {
+			t.Helper()
+			return load(t, s, at(0))
+		},
+		"pruned at the cut": func(t *testing.T, s *store.SQLite) tracker.Restored {
+			t.Helper()
+			must(t, s.Prune(t.Context(), at(0)))
+			return load(t, s, at(-86400))
+		},
+		"pruned at the cut twice": func(t *testing.T, s *store.SQLite) tracker.Restored {
+			t.Helper()
+			must(t, s.Prune(t.Context(), at(0)))
+			must(t, s.Prune(t.Context(), at(0)))
+			return load(t, s, at(-86400))
+		},
+		"pruned earlier, then loaded from the cut on": func(t *testing.T, s *store.SQLite) tracker.Restored {
+			t.Helper()
+			must(t, s.Prune(t.Context(), at(-250)))
+			return load(t, s, at(0))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := openStore(t)
+			historyAcrossACut(t, s)
+
+			if got := read(t, s).Samples; !reflect.DeepEqual(got, want) {
+				t.Errorf("samples\n got %+v\nwant %+v", got, want)
+			}
+		})
+	}
+}
+
+// Once a span on credits has closed before the cut, nothing of it is kept.
+func TestSQLite_PruneForgetsASpanOnCreditsThatClosedBeforeTheCut(t *testing.T) {
+	s, _ := openStore(t)
+	historyAcrossACut(t, s)
+	must(t, s.Prune(t.Context(), at(0)))
+
+	must(t, s.Prune(t.Context(), at(5000)))
+
+	want := map[domain.ConfigDir]domain.WindowSamples{dirB: {SevenDay: []domain.Sample{{At: at(-500), UsedPct: 100}}}}
+	if got := load(t, s, at(-86400)).Samples; !reflect.DeepEqual(got, want) {
+		t.Errorf("samples\n got %+v\nwant %+v: only the span still open at the cut", got, want)
 	}
 }
 

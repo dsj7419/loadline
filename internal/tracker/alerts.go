@@ -9,6 +9,12 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 )
 
+// datedByEvaluate reports whether domain.Evaluate dates alerts of kind by
+// when their condition began, rather than by when it evaluated them.
+func datedByEvaluate(kind domain.AlertKind) bool {
+	return kind == domain.AlertNeedsYou || kind == domain.AlertCreditsActive
+}
+
 type alertKey struct {
 	kind    domain.AlertKind
 	dir     domain.ConfigDir
@@ -29,8 +35,9 @@ func (d alertDates) date(alerts []domain.Alert) []domain.Alert {
 	for i, a := range alerts {
 		key := alertKey{a.Kind, a.Dir, a.Session}
 		// A needs-you alert is dated by its session's wait, which starts
-		// afresh each time the session needs the user again.
-		if since, ok := d[key]; ok && a.Kind != domain.AlertNeedsYou {
+		// afresh each time the session needs the user again, and a
+		// credits-active alert by the stretch at a limit it is part of.
+		if since, ok := d[key]; ok && !datedByEvaluate(a.Kind) {
 			alerts[i].Since = since
 		}
 		seen[key] = alerts[i].Since

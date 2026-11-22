@@ -364,7 +364,7 @@ func TestStatusEvent_ZeroUsageIsReported(t *testing.T) {
 	}
 }
 
-func TestStatusEvent_SpendLimitIsDecodedNotMapped(t *testing.T) {
+func TestStatusEvent_MapsTheSpendLimit(t *testing.T) {
 	payload := []byte(`{"session_id":"s","rate_limits":{"spend_limit":{` +
 		`"used_percentage":62.8,"resets_at":1740787200,"used_usd":314.12,"limit_usd":500,"period":"monthly"}}}`)
 
@@ -372,15 +372,76 @@ func TestStatusEvent_SpendLimitIsDecodedNotMapped(t *testing.T) {
 
 	spend := in.RateLimits.SpendLimit
 	if spend == nil || spend.UsedPercentage != 62.8 || spend.ResetsAt != 1740787200 ||
-		spend.UsedUSD != 314.12 || spend.LimitUSD != 500 || spend.Period != "monthly" {
+		spend.UsedUSD == nil || *spend.UsedUSD != 314.12 || spend.LimitUSD == nil || *spend.LimitUSD != 500 ||
+		spend.Period != "monthly" {
 		t.Errorf("SpendLimit = %+v", spend)
 	}
 	event, err := protocol.StatusEvent(validEnvelope(t), in)
 	if err != nil {
 		t.Fatalf("StatusEvent: %v", err)
 	}
+	if want := (domain.SpendLimit{UsedUSD: 314.12, LimitUSD: 500}); event.SpendLimit == nil || *event.SpendLimit != want {
+		t.Errorf("SpendLimit = %+v, want %+v", event.SpendLimit, want)
+	}
 	if event.Limits.FiveHour != nil || event.Limits.SevenDay != nil {
 		t.Errorf("Limits = %+v, a spend limit is not a rate-limit window", event.Limits)
+	}
+}
+
+func TestStatusEvent_MistypedSpendLimitFieldKeepsTheAmounts(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","rate_limits":{"spend_limit":`+
+		`{"used_usd":1.5,"limit_usd":5,"period":7,"resets_at":"soon","used_percentage":"30"}}}`)
+
+	if want := (domain.SpendLimit{UsedUSD: 1.5, LimitUSD: 5}); event.SpendLimit == nil || *event.SpendLimit != want {
+		t.Errorf("SpendLimit = %+v, want %+v", event.SpendLimit, want)
+	}
+}
+
+func TestStatusEvent_ZeroSpendIsReported(t *testing.T) {
+	event := statusEvent(t, `{"session_id":"s","rate_limits":{"spend_limit":{"used_usd":0,"limit_usd":0}}}`)
+
+	if event.SpendLimit == nil || *event.SpendLimit != (domain.SpendLimit{}) {
+		t.Errorf("SpendLimit = %+v, want $0 of $0", event.SpendLimit)
+	}
+}
+
+func TestStatusEvent_SpendLimitWithoutUsableFiguresIsNotReported(t *testing.T) {
+	for name, spendLimit := range map[string]string{
+		"absent":                  `{}`,
+		"null":                    `null`,
+		"not an object":           `500`,
+		"a share alone":           `{"used_percentage":62.8,"period":"monthly"}`,
+		"no amount spent":         `{"limit_usd":500}`,
+		"no limit":                `{"used_usd":314.12}`,
+		"null amounts":            `{"used_usd":null,"limit_usd":null}`,
+		"text for an amount":      `{"used_usd":"314.12","limit_usd":500}`,
+		"a negative amount spent": `{"used_usd":-1,"limit_usd":500}`,
+		"a negative limit":        `{"used_usd":1,"limit_usd":-500}`,
+		"an amount out of range":  `{"used_usd":1e400,"limit_usd":500}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := `{"session_id":"s","rate_limits":{"spend_limit":` + spendLimit +
+				`,"seven_day":{"used_percentage":40,"resets_at":1800000000}}}`
+
+			event := statusEvent(t, payload)
+
+			if event.SpendLimit != nil {
+				t.Errorf("SpendLimit = %+v, want none: unknown spend must not pass for $0", *event.SpendLimit)
+			}
+			if seven := event.Limits.SevenDay; seven == nil || seven.UsedPct != 40 {
+				t.Errorf("SevenDay = %+v, want the window kept", seven)
+			}
+		})
+	}
+}
+
+func TestStatusInput_RemarshalKeepsAReportedZeroSpend(t *testing.T) {
+	in := decodeStatus(t, []byte(`{"rate_limits":{"spend_limit":{"used_usd":0,"limit_usd":50}}}`))
+
+	got := marshal(t, in)
+
+	if want := `{"rate_limits":{"spend_limit":{"used_usd":0,"limit_usd":50}}}`; got != want {
+		t.Errorf("Marshal = %s, want %s", got, want)
 	}
 }
 

@@ -6,6 +6,8 @@ import { WarningIcon } from './Icons';
 const kindLabels: Readonly<Record<AlertKind, string>> = {
   needs_you: 'Needs you',
   runs_out: 'Runs out',
+  credits_active: 'On credits',
+  credits_low: 'Credits low',
   budget: 'Budget',
   weekly_threshold: 'Weekly limit',
   context_high: 'Context',

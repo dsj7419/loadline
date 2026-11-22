@@ -76,15 +76,16 @@ export type Notifier = {
   readonly update: (alerts: readonly AlertView[]) => void;
 };
 
-// The alerts worth interrupting for: they want something done now.
-const notifyingKinds: ReadonlySet<AlertKind> = new Set<AlertKind>(['needs_you', 'runs_out']);
+// The alerts worth interrupting for: they want something done now, and an
+// account on credits is spending money.
+const notifyingKinds: ReadonlySet<AlertKind> = new Set<AlertKind>(['needs_you', 'runs_out', 'credits_active']);
 
 /**
- * Notifies once for each needs-you or runs-out alert that is new since the
- * previous update. An alert that persists is not new; one that clears and
- * comes back is, because it comes back with a new since. The first update is
- * the baseline: alerts already showing when the page loads, or when
- * notifications are turned on, never notify.
+ * Notifies once for each needs-you, runs-out or credits-active alert that is
+ * new since the previous update. An alert that persists is not new; one that
+ * clears and comes back is, because it comes back with a new since. The
+ * first update is the baseline: alerts already showing when the page loads,
+ * or when notifications are turned on, never notify.
  *
  * It starts on only when the user turned it on before and the browser still
  * allows notifications; it never asks the browser by itself.

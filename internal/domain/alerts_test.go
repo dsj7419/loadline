@@ -303,6 +303,88 @@ func TestEvaluate_Budget(t *testing.T) {
 	}
 }
 
+func TestEvaluate_CreditsActiveAndLow(t *testing.T) {
+	onSince := at(300)
+	for name, tc := range map[string]struct {
+		credits domain.CreditEstimate
+		want    []alertKey
+	}{
+		"no credits": {},
+		"on credits": {
+			credits: domain.CreditEstimate{BalanceUSD: 20, SpentUSD: 6.4, RemainingUSD: 13.6, OnCreditsSince: onSince, Active: true},
+			want:    []alertKey{{domain.AlertCreditsActive, dirA, "", onSince.Sub(t0)}},
+		},
+		"just under 80% spent": {
+			credits: domain.CreditEstimate{BalanceUSD: 20, SpentUSD: 15.99, RemainingUSD: 4.01},
+		},
+		"80% spent, inclusive": {
+			credits: domain.CreditEstimate{BalanceUSD: 20, SpentUSD: 16, RemainingUSD: 4},
+			want:    []alertKey{{domain.AlertCreditsLow, dirA, "", alertNow.Sub(t0)}},
+		},
+		"spent past the balance, while on credits": {
+			credits: domain.CreditEstimate{BalanceUSD: 20, SpentUSD: 23, OnCreditsSince: onSince, Active: true},
+			want: []alertKey{
+				{domain.AlertCreditsActive, dirA, "", onSince.Sub(t0)},
+				{domain.AlertCreditsLow, dirA, "", alertNow.Sub(t0)},
+			},
+		},
+		"spend with no balance recorded": {
+			credits: domain.CreditEstimate{SpentUSD: 3},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := evaluate(domain.AlertInput{
+				Accounts: []domain.Account{{Dir: dirA, Label: "Main"}},
+				Credits:  map[domain.ConfigDir]domain.CreditEstimate{dirA: tc.credits},
+			})
+
+			if len(got) != 0 || len(tc.want) != 0 {
+				if !reflect.DeepEqual(keysOf(got), tc.want) {
+					t.Errorf("Evaluate() = %v, want %v", keysOf(got), tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluate_CreditMessagesNameTheAccountAndTheAmounts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		credits domain.CreditEstimate
+		want    map[domain.AlertKind]string
+	}{
+		"estimated": {
+			credits: domain.CreditEstimate{
+				BalanceUSD: 20, SpentUSD: 16.4, OnCreditsSince: at(300), Active: true, Source: domain.CreditSourceEstimate,
+			},
+			want: map[domain.AlertKind]string{
+				domain.AlertCreditsActive: "Main is using usage credits",
+				domain.AlertCreditsLow:    "Main has used about $16.40 of its $20.00 in usage credits",
+			},
+		},
+		"reported": {
+			credits: domain.CreditEstimate{BalanceUSD: 500, SpentUSD: 450, Source: domain.CreditSourceReported},
+			want: map[domain.AlertKind]string{
+				domain.AlertCreditsLow: "Main has used $450.00 of its $500.00 in usage credits",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := evaluate(domain.AlertInput{
+				Accounts: []domain.Account{{Dir: dirA, Label: "Main"}},
+				Credits:  map[domain.ConfigDir]domain.CreditEstimate{dirA: tc.credits},
+			})
+
+			messages := make(map[domain.AlertKind]string, len(got))
+			for _, a := range got {
+				messages[a.Kind] = a.Message
+			}
+			if !reflect.DeepEqual(messages, tc.want) {
+				t.Errorf("messages %q, want %q", messages, tc.want)
+			}
+		})
+	}
+}
+
 func TestEvaluate_EndedSessionsIgnored(t *testing.T) {
 	ended := withContext(alertSession("ended", dirA, domain.StateEnded, 0), 99)
 	lost := withContext(alertSession("lost", dirA, domain.StateEnded, 0), 99)
@@ -338,6 +420,10 @@ func TestEvaluate_Order(t *testing.T) {
 		},
 		SpendToday: map[domain.ConfigDir]float64{dirA: 12, dirB: 12},
 		Budgets:    map[domain.ConfigDir]float64{dirA: 10, dirB: 10},
+		Credits: map[domain.ConfigDir]domain.CreditEstimate{
+			dirA: {BalanceUSD: 20, SpentUSD: 19, OnCreditsSince: at(700), Active: true},
+			dirB: {BalanceUSD: 20, SpentUSD: 17, OnCreditsSince: at(200), Active: true},
+		},
 	}
 	now := int(alertNow.Sub(t0).Seconds())
 
@@ -350,6 +436,11 @@ func TestEvaluate_Order(t *testing.T) {
 		{domain.AlertNeedsYou, dirB, "zzz", offset(900)},
 		{domain.AlertRunsOut, dirA, "", offset(now)},
 		{domain.AlertRunsOut, dirB, "", offset(now)},
+		// On credits since its span began: the longest-standing first.
+		{domain.AlertCreditsActive, dirB, "", offset(200)},
+		{domain.AlertCreditsActive, dirA, "", offset(700)},
+		{domain.AlertCreditsLow, dirA, "", offset(now)},
+		{domain.AlertCreditsLow, dirB, "", offset(now)},
 		{domain.AlertBudget, dirA, "", offset(now)},
 		{domain.AlertBudget, dirB, "", offset(now)},
 		{domain.AlertWeeklyThreshold, dirA, "", offset(now)},

@@ -233,7 +233,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	}
 	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo}
 	if o.Demo {
-		trackerCfg.Budgets = demo.Budgets()
+		trackerCfg.Budgets, trackerCfg.Credits = demo.Budgets(), demo.Credits(clock())
 		s.tracker = tracker.New(clock, trackerCfg, tracker.NopRecorder{})
 		seedDemo(s.tracker, clock())
 		deps.State = s.tracker
@@ -242,10 +242,13 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	}
 
 	defaultDir := config.ResolveConfigDir("", o.Home)
-	configured, labels, budgets := accountSettings(cfg.Accounts, o.Home)
-	s.configured = configured
-	startDirs := append(slices.Clone(configured), defaultDir)
-	trackerCfg.Labels, trackerCfg.Budgets = labels, budgets
+	settings := accountSettings(cfg.Accounts, o.Home)
+	s.configured = settings.dirs
+	startDirs := slices.Concat(settings.dirs, []domain.ConfigDir{defaultDir})
+	trackerCfg.Labels, trackerCfg.Budgets, trackerCfg.Credits = settings.labels, settings.budgets, settings.credits
+	// Credit estimates count no further back than the history keeps, which
+	// is all a restart gives back.
+	trackerCfg.CreditDays = cfg.RetentionDays
 	s.history = s.openHistory(ctx, cfg.RetentionDays)
 	s.tracker = tracker.New(clock, trackerCfg, s.history.recorder())
 
@@ -267,7 +270,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	s.prober = &accounts.Prober{
 		Status:    s.probeAccount(client),
 		Set:       s.tracker.SetAccount,
-		Labels:    labels,
+		Labels:    settings.labels,
 		Every:     accounts.DefaultEvery,
 		Clock:     clock,
 		AfterFunc: after,
@@ -291,23 +294,36 @@ func claudeRunner(cfg config.Config, home string) claudecli.Exec {
 	return claudecli.Exec{Path: cfg.ClaudePath, DefaultDir: config.ResolveConfigDir("", home)}
 }
 
-// accountSettings returns the config dir of each configured account, and
-// the labels and daily budgets the config gives them, keyed by those dirs.
-func accountSettings(settings []config.AccountSetting, home string) (
-	dirs []domain.ConfigDir, labels map[domain.ConfigDir]string, budgets map[domain.ConfigDir]float64,
-) {
-	labels, budgets = make(map[domain.ConfigDir]string), make(map[domain.ConfigDir]float64)
+// configuredAccounts is what the config says of its accounts: the config dir
+// of each, and the labels, daily budgets and usage credits it gives them,
+// keyed by those dirs.
+type configuredAccounts struct {
+	dirs    []domain.ConfigDir
+	labels  map[domain.ConfigDir]string
+	budgets map[domain.ConfigDir]float64
+	credits map[domain.ConfigDir][]domain.CreditGrant
+}
+
+func accountSettings(settings []config.AccountSetting, home string) configuredAccounts {
+	c := configuredAccounts{
+		labels:  make(map[domain.ConfigDir]string),
+		budgets: make(map[domain.ConfigDir]float64),
+		credits: make(map[domain.ConfigDir][]domain.CreditGrant),
+	}
 	for _, account := range settings {
 		dir := account.Dir(home)
-		dirs = append(dirs, dir)
+		c.dirs = append(c.dirs, dir)
 		if account.Label != "" {
-			labels[dir] = account.Label
+			c.labels[dir] = account.Label
 		}
 		if account.DailyBudgetUSD > 0 {
-			budgets[dir] = account.DailyBudgetUSD
+			c.budgets[dir] = account.DailyBudgetUSD
+		}
+		for _, grant := range account.Credits {
+			c.credits[dir] = append(c.credits[dir], domain.CreditGrant{USD: grant.USD, AddedAt: grant.AddedAt})
 		}
 	}
-	return dirs, labels, budgets
+	return c
 }
 
 // seedDemo fills the tracker with the demo scenario as of now.
