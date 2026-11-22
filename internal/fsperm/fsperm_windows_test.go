@@ -149,7 +149,7 @@ func TestPrivate_ChangesNothingInAFolderThatIsPrivateAlready(t *testing.T) {
 // private list only when it has that list itself. Any other list of its
 // own is replaced with it.
 func TestPrivate_ReplacesAnyOtherListOfTheFoldersOwn(t *testing.T) {
-	user := userSID(t)
+	user := fspermtest.UserSID(t)
 	reference := filepath.Join(t.TempDir(), "reference")
 	if err := os.Mkdir(reference, 0o700); err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestPrivate_ReplacesAnyOtherListOfTheFoldersOwn(t *testing.T) {
 			if err := os.Mkdir(root, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			setList(t, root, list, windows.PROTECTED_DACL_SECURITY_INFORMATION)
+			fspermtest.SetAccessList(t, root, list)
 
 			if err := fsperm.Private(root); err != nil {
 				t.Fatalf("Private: %v", err)
@@ -188,17 +188,16 @@ func TestPrivate_ReplacesAnyOtherListOfTheFoldersOwn(t *testing.T) {
 // passes down is not private either: it takes whatever its parent passes
 // down later.
 func TestPrivate_ProtectsAFolderWithThePrivateEntriesThatStillInherits(t *testing.T) {
-	user := userSID(t)
+	user := fspermtest.UserSID(t)
 	// A parent that passes nothing down, so that the folder's list holds
 	// the private entries alone.
 	parent := t.TempDir()
-	setList(t, parent, "D:P(A;;FA;;;"+user+")", windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	fspermtest.SetAccessList(t, parent, "D:P(A;;FA;;;"+user+")")
 	root := filepath.Join(parent, "loadline")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	setList(t, root, "D:(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
-		windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
+	fspermtest.SetAccessList(t, root, "D:(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 
 	if err := fsperm.Private(root); err != nil {
 		t.Fatalf("Private: %v", err)
@@ -206,31 +205,6 @@ func TestPrivate_ProtectsAFolderWithThePrivateEntriesThatStillInherits(t *testin
 
 	if !fspermtest.Protected(t, root) {
 		t.Errorf("%s still takes what its parent passes down after Private", root)
-	}
-}
-
-func userSID(t *testing.T) string {
-	t.Helper()
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return user.User.Sid.String()
-}
-
-func setList(t *testing.T, path, sddl string, protection windows.SECURITY_INFORMATION) {
-	t.Helper()
-	sd, err := windows.SecurityDescriptorFromString(sddl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dacl, _, err := sd.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|protection, nil, nil, dacl, nil); err != nil {
-		t.Fatalf("set the access list of %s to %s: %v", path, sddl, err)
 	}
 }
 
@@ -332,6 +306,85 @@ func TestExposure_NoAccessListAdmitsEveryone(t *testing.T) {
 
 	if want := "it has no access list, which admits everyone"; err != nil || exposure != want {
 		t.Errorf("Exposure = %q, %v; want %q", exposure, err, want)
+	}
+}
+
+// Windows keeps allow entries of several kinds, each laying its trustee out
+// in its own way, and lets the trustee of any of them in. Exposure names
+// the trustee of each.
+func TestExposure_NamesWhoEveryKindOfAllowEntryAdmits(t *testing.T) {
+	for name, entry := range map[string]fspermtest.Entry{
+		"plain":                              {},
+		"object, with no object type":        {Kind: fspermtest.Object},
+		"object, with an object type":        {Kind: fspermtest.Object, ObjectType: true},
+		"object, with an inherited type":     {Kind: fspermtest.Object, InheritedObjectType: true},
+		"object, with both types":            {Kind: fspermtest.Object, ObjectType: true, InheritedObjectType: true},
+		"callback":                           {Kind: fspermtest.Callback},
+		"callback object":                    {Kind: fspermtest.CallbackObject},
+		"callback object, with both types":   {Kind: fspermtest.CallbackObject, ObjectType: true, InheritedObjectType: true},
+		"compound, through a trusted server": {Kind: fspermtest.Compound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "loadline")
+			if err := fsperm.MkdirAll(root); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(root, "token")
+			write(t, file)
+			entry.Mask = fspermtest.FullControl
+			fspermtest.SetEntry(t, file, entry)
+
+			exposure, err := fsperm.Exposure(file)
+
+			if users := fspermtest.AuthenticatedUsers(t); err != nil || exposure != "its access list also admits "+users {
+				t.Errorf("Exposure = %q, %v; want it to say the access list also admits %s", exposure, err, users)
+			}
+		})
+	}
+}
+
+// An inheritable entry for CREATOR GROUP lets in the primary group of each
+// account that creates a file below, which other accounts are often in
+// too. One for CREATOR OWNER lets in only the creator, who is the user in a
+// folder only the user may write to.
+func TestExposure_NamesCreatorGroupButNotCreatorOwner(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for placeholder, want := range map[string]bool{"CG": true, "CO": false} {
+		t.Run(placeholder, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "loadline")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fspermtest.SetAccessList(t, root, "D:P(A;OICIIO;FA;;;"+placeholder+")(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+
+			exposure, err := fsperm.Exposure(root)
+
+			if err != nil || (exposure != "") != want {
+				t.Errorf("Exposure of a folder with an inheritable entry for %s = %q, %v; want it named: %t", placeholder, exposure, err, want)
+			}
+		})
+	}
+}
+
+// An object entry that lets every signed-in user delete a folder above the
+// data directory lets them move it aside, as a plain one does.
+func TestMovableAncestor_CountsEveryKindOfAllowEntry(t *testing.T) {
+	for name, kind := range map[string]byte{"plain": 0, "object": fspermtest.Object, "compound": fspermtest.Compound} {
+		t.Run(name, func(t *testing.T) {
+			top := privateTop(t)
+			tools := filepath.Join(top, "tools")
+			if err := os.Mkdir(tools, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fspermtest.SetEntry(t, tools, fspermtest.Entry{Kind: kind, Mask: windows.DELETE, Protected: true})
+			t.Cleanup(func() { fspermtest.SetAccessList(t, tools, "D:(A;OICI;FA;;;WD)") })
+
+			got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
+
+			if want := tools + " lets " + fspermtest.AuthenticatedUsers(t) + " delete or rename it"; err != nil || got != want {
+				t.Errorf("MovableAncestor = %q, %v; want %q", got, err, want)
+			}
+		})
 	}
 }
 

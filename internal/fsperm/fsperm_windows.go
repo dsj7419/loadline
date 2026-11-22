@@ -15,11 +15,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// accessAllowedCallbackACEType is ACCESS_ALLOWED_CALLBACK_ACE_TYPE, a
-// conditional allow entry. Up to its SID it is laid out as an
-// ACCESS_ALLOWED_ACE.
-const accessAllowedCallbackACEType = 9
-
 // privateDescriptor is the security descriptor of a private directory: a
 // protected access list, so that nothing the folder above passes down
 // applies, that gives full control to the current user, SYSTEM and
@@ -297,30 +292,94 @@ func othersAllowed(path string, counts func(rights windows.ACCESS_MASK, flags ui
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
 			return nil, false, fmt.Errorf("read the access list of %s: %w", path, err)
 		}
-		if !grants(ace) || !counts(ace.Mask, ace.Header.AceFlags) {
+		if ace.Mask == 0 || !counts(ace.Mask, ace.Header.AceFlags) {
 			continue
 		}
-		sid := entrySID(ace)
-		if slices.ContainsFunc(trusted, sid.Equals) || isCreatorPlaceholder(sid) {
-			continue
-		}
-		if name := accountName(sid); !slices.Contains(others, name) {
-			others = append(others, name)
+		for _, sid := range allowed(ace) {
+			// CREATOR OWNER on a folder only the user may write to lets in
+			// the user, who alone creates anything below it.
+			if sid != nil && (slices.ContainsFunc(trusted, sid.Equals) || sid.IsWellKnown(windows.WinCreatorOwnerSid)) {
+				continue
+			}
+			if name := accountName(sid); !slices.Contains(others, name) {
+				others = append(others, name)
+			}
 		}
 	}
 	runtime.KeepAlive(sd)
 	return others, false, nil
 }
 
-// grants reports whether ace allows its trustee anything. Deny entries
-// only take access away.
-func grants(ace *windows.ACCESS_ALLOWED_ACE) bool {
+// The kinds of allow entry besides ACCESS_ALLOWED_ACE_TYPE, each of which
+// lets its trustee in as a plain one does.
+const (
+	accessAllowedCompoundACEType       = 4
+	accessAllowedObjectACEType         = 5
+	accessAllowedCallbackACEType       = 9
+	accessAllowedCallbackObjectACEType = 11
+)
+
+// objectGUIDSize is the size of each GUID an object entry may hold before
+// its SID.
+const objectGUIDSize = 16
+
+// allowed returns the trustees an allow entry of any kind lets in, read
+// from where its kind keeps them, or none for an entry that only takes
+// access away. A compound entry lets its client in through its server, and
+// both are returned.
+//
+// CREATOR OWNER and CREATOR GROUP are among what it returns: each matches
+// nobody on the folder that holds the entry, but stands for the creator's
+// account, or its primary group, on every file created below.
+func allowed(ace *windows.ACCESS_ALLOWED_ACE) []*windows.SID {
 	switch ace.Header.AceType {
 	case windows.ACCESS_ALLOWED_ACE_TYPE, accessAllowedCallbackACEType:
-		return ace.Mask != 0
+		return sidsAt(ace, unsafe.Offsetof(ace.SidStart), 1)
+	case accessAllowedCompoundACEType:
+		// The mask, then a word for the compound kind and a reserved one.
+		return sidsAt(ace, unsafe.Offsetof(ace.SidStart)+4, 2)
+	case accessAllowedObjectACEType, accessAllowedCallbackObjectACEType:
+		// The mask, then flags that say which of the two GUIDs follow.
+		flagsAt := unsafe.Offsetof(ace.SidStart)
+		if uintptr(ace.Header.AceSize) < flagsAt+4 {
+			return []*windows.SID{nil}
+		}
+		flags := *(*uint32)(unsafe.Add(unsafe.Pointer(ace), flagsAt)) //nolint:gosec // G103: bounded by AceSize above
+		offset := flagsAt + 4
+		if flags&windows.ACE_OBJECT_TYPE_PRESENT != 0 {
+			offset += objectGUIDSize
+		}
+		if flags&windows.ACE_INHERITED_OBJECT_TYPE_PRESENT != 0 {
+			offset += objectGUIDSize
+		}
+		return sidsAt(ace, offset, 1)
 	default:
-		return false
+		return nil
 	}
+}
+
+// sidsAt returns the n SIDs that follow each other in ace from offset. The
+// first that does not fit within the entry ends them as nil, which
+// accountName names as an entry it cannot read: Windows stores no such
+// entry, and none is passed over.
+func sidsAt(ace *windows.ACCESS_ALLOWED_ACE, offset uintptr, n int) []*windows.SID {
+	size := uintptr(ace.Header.AceSize)
+	sids := make([]*windows.SID, 0, n)
+	for range n {
+		// A SID is 8 bytes, the last 6 its authority, then 4 for each of
+		// its sub-authorities, whose count is its second byte.
+		if offset+8 > size {
+			return append(sids, nil)
+		}
+		start := unsafe.Add(unsafe.Pointer(ace), offset) //nolint:gosec // G103: bounded by AceSize above
+		length := 8 + 4*uintptr(*(*byte)(unsafe.Add(start, 1)))
+		if offset+length > size {
+			return append(sids, nil)
+		}
+		sids = append(sids, (*windows.SID)(start))
+		offset += length
+	}
+	return sids
 }
 
 // fileRights turns the generic rights in mask into the file rights they
@@ -340,13 +399,6 @@ func fileRights(mask windows.ACCESS_MASK) windows.ACCESS_MASK {
 		specific |= windows.FILE_GENERIC_EXECUTE
 	}
 	return specific
-}
-
-// isCreatorPlaceholder reports whether sid is CREATOR OWNER or CREATOR
-// GROUP, which stand in for whoever creates a file below and match nobody
-// on the folder itself.
-func isCreatorPlaceholder(sid *windows.SID) bool {
-	return sid.IsWellKnown(windows.WinCreatorOwnerSid) || sid.IsWellKnown(windows.WinCreatorGroupSid)
 }
 
 // samePath reports whether a and b name the same folder, as Windows compares
@@ -374,8 +426,12 @@ func trustedSIDs() ([]*windows.SID, error) {
 }
 
 // accountName is DOMAIN\name for sid, or the SID itself when no account
-// answers to it, as for one deleted since or one of another machine.
+// answers to it, as for one deleted since or one of another machine. A nil
+// sid is one sidsAt could not read.
 func accountName(sid *windows.SID) string {
+	if sid == nil {
+		return "the trustee of an entry it cannot read"
+	}
 	account, domain, _, err := sid.LookupAccount("")
 	if err != nil {
 		return sid.String()

@@ -18,6 +18,9 @@ const (
 	Write = windows.ACCESS_MASK(windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.DELETE)
 	// Any is every right a file or directory can grant.
 	Any = windows.ACCESS_MASK(0xffffffff)
+	// FullControl is FILE_ALL_ACCESS, the Full control permission of the
+	// Security tab.
+	FullControl = windows.ACCESS_MASK(0x1f01ff)
 
 	// modify is the Modify permission of the Security tab.
 	modify = windows.ACCESS_MASK(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.FILE_GENERIC_EXECUTE | windows.DELETE)
