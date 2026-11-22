@@ -38,16 +38,21 @@ What it defends against:
   making the link private would leave that folder as open as it is. Install and the server also
   put back what the data directory passes down on each of Loadline's own files and folders that
   has anything else: access given to it explicitly, denials included, an access list of its own
-  but the private one, or fewer entries than the data directory passes down, which would keep you
-  out of it. Install, the server and the creation of the token refuse a symbolic link or junction
-  among them, which writing through would follow elsewhere, and one that belongs to anyone but you,
-  SYSTEM, Administrators or TrustedInstaller, since its owner may always change who can use it.
-  They leave alone the files another Loadline process is still writing there under a temporary
-  name, when they are files. Since everything in the data directory is made private with it,
-  `LOADLINE_HOME` must be a folder of Loadline's own: install, the server and the creation of the
-  token refuse one that holds anything else, and change nothing in it. Only the files that Windows
-  Explorer and the macOS Finder leave in a folder (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be
-  there too, and they are made private and judged by their owner as Loadline's own files are.
+  but the private one, or other entries than the three the data directory passes down, each once,
+  which could keep you out of it. They do so before they read the token or the binary, so that
+  `loadline install` puts right a token or binary you are kept out of. Install, the server and the
+  creation of the token refuse a symbolic link or junction among them, which writing through would
+  follow elsewhere, a file with another name, a hard link, which making it private would change
+  wherever that name is too, and one that belongs to anyone but you, SYSTEM, Administrators or
+  TrustedInstaller, since its owner may always change who can use it. A folder of Loadline's that
+  keeps you out is made private without passing that on, so that what it holds is judged before
+  anything is done to it. They leave alone the files another Loadline process is still writing
+  there under a temporary name, when they are files. Since everything in the data directory is
+  made private with it, `LOADLINE_HOME` must be a folder of Loadline's own: install, the server and
+  the creation of the token refuse one that holds anything else, and change nothing in it. Only
+  the files that Windows Explorer and the macOS Finder leave in a folder (`desktop.ini`,
+  `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged by their owner
+  as Loadline's own files are.
   `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
   it did before, they may have read the token, so change it as described below. On macOS and Linux
   install also takes group and other permissions off the settings files it edits, which hold the
