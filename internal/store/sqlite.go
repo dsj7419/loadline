@@ -39,8 +39,8 @@ type SQLite struct {
 
 // Open opens the database at path, creating it and its directory as
 // needed, both private to the user, and migrates its schema. A database
-// that a newer Loadline migrated further is refused with ErrNewerSchema and
-// left as it is.
+// that a newer Loadline migrated further is refused with ErrNewerSchema,
+// its schema left as it is.
 func Open(ctx context.Context, path string) (*SQLite, error) {
 	s, err := open(ctx, path)
 	if err != nil {
@@ -275,19 +275,21 @@ const (
 	FROM accounts ORDER BY dir`
 
 	// A session is loaded when it has not ended or was seen since the cut,
-	// and so are its state changes.
+	// and so are its state changes. The first parameter is the ended state.
 	loadSessionsSQL = `SELECT
 		id, dir, kind, pid, name, project_dir, state, wait_reason, end_reason,
 		state_at, started_at, last_seen_at, last_status_at, ended_at,
 		lost, subagents, subagent_ids, metrics_json
-	FROM sessions WHERE state != 'ended' OR last_seen_at >= ? ORDER BY id`
+	FROM sessions WHERE state != ? OR last_seen_at >= ? ORDER BY id`
 
+	// A timeline runs in the order its changes were written, which a clock
+	// set back puts out of the order of their times.
 	loadTimelinesSQL = `SELECT session, at, state, reason FROM (
 		SELECT c.id, c.session, c.at, c.state, c.reason,
-			row_number() OVER (PARTITION BY c.session ORDER BY c.at DESC, c.id DESC) AS newness
+			row_number() OVER (PARTITION BY c.session ORDER BY c.id DESC) AS newness
 		FROM state_changes AS c JOIN sessions AS s ON s.id = c.session
-		WHERE s.state != 'ended' OR s.last_seen_at >= ?
-	) WHERE newness <= ? ORDER BY session, at, id`
+		WHERE s.state != ? OR s.last_seen_at >= ?
+	) WHERE newness <= ? ORDER BY session, id`
 
 	loadSamplesSQL = `SELECT dir, window, at, used_pct FROM limit_samples WHERE at >= ? ORDER BY dir, at, rowid`
 
@@ -299,44 +301,58 @@ const (
 // sessions that have not ended or were seen at or after since, with their
 // last 50 state changes, and the samples and usage from since on. Usage
 // comes in the order its minutes were first written, the order the tracker
-// sums it in.
-func (s *SQLite) Load(ctx context.Context, since time.Time) (tracker.Restored, error) {
+// sums it in. A row that cannot be read is left out and counted in
+// skipped: one that a damaged file or another program left costs that row
+// alone.
+func (s *SQLite) Load(ctx context.Context, since time.Time) (restored tracker.Restored, skipped int, err error) {
+	ended, err := textOf(domain.StateEnded)
+	if err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: begin: %w", err)
+		return tracker.Restored{}, 0, fmt.Errorf("load history: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	l := &loader{tx: tx}
 	cut := since.UnixMilli()
 	var r tracker.Restored
-	if r.Accounts, err = loadAccounts(ctx, tx); err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: %w", err)
+	if r.Accounts, err = l.accounts(ctx); err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	if r.Sessions, err = loadSessions(ctx, tx, cut); err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: %w", err)
+	if r.Sessions, err = l.sessions(ctx, ended, cut); err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	if r.Timelines, err = loadTimelines(ctx, tx, cut); err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: %w", err)
+	if r.Timelines, err = l.timelines(ctx, ended, cut); err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	if r.Samples, err = loadSamples(ctx, tx, cut); err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: %w", err)
+	if r.Samples, err = l.samples(ctx, cut); err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	if r.Usage, err = loadUsage(ctx, tx, cut); err != nil {
-		return tracker.Restored{}, fmt.Errorf("load history: %w", err)
+	if r.Usage, err = l.usage(ctx, cut); err != nil {
+		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	return r, nil
+	return r, l.skipped, nil
 }
 
-// scanAll runs query and calls scan for each row it returns.
-func scanAll(ctx context.Context, tx *sql.Tx, what, query string, scan func(*sql.Rows) error, args ...any) error {
-	rows, err := tx.QueryContext(ctx, query, args...)
+// loader reads the rows of one Load, and counts those it cannot read.
+type loader struct {
+	tx      *sql.Tx
+	skipped int
+}
+
+// each runs query and reads each row it returns with read, skipping and
+// counting a row that read fails on.
+func (l *loader) each(ctx context.Context, what, query string, read func(*sql.Rows) error, args ...any) error {
+	rows, err := l.tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", what, err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		if err := scan(rows); err != nil {
-			return fmt.Errorf("read %s: %w", what, err)
+		if read(rows) != nil {
+			l.skipped++
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -345,9 +361,9 @@ func scanAll(ctx context.Context, tx *sql.Tx, what, query string, scan func(*sql
 	return nil
 }
 
-func loadAccounts(ctx context.Context, tx *sql.Tx) ([]domain.Account, error) {
+func (l *loader) accounts(ctx context.Context) ([]domain.Account, error) {
 	var accounts []domain.Account
-	err := scanAll(ctx, tx, "accounts", loadAccountsSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "accounts", loadAccountsSQL, func(rows *sql.Rows) error {
 		var a domain.Account
 		var auth string
 		var probedAt, fiveHourResets, sevenDayResets, observedAt sql.NullInt64
@@ -357,7 +373,7 @@ func loadAccounts(ctx context.Context, tx *sql.Tx) ([]domain.Account, error) {
 			return err
 		}
 		if err := a.Auth.UnmarshalText([]byte(auth)); err != nil {
-			return fmt.Errorf("account %s: %w", a.Dir, err)
+			return err
 		}
 		a.ProbedAt = fromMillis(probedAt)
 		a.Limits = domain.Limits{
@@ -378,9 +394,9 @@ func windowOf(pct sql.NullFloat64, resetsAt sql.NullInt64) *domain.Window {
 	return &domain.Window{UsedPct: pct.Float64, ResetsAt: fromMillis(resetsAt)}
 }
 
-func loadSessions(ctx context.Context, tx *sql.Tx, cut int64) ([]domain.Session, error) {
+func (l *loader) sessions(ctx context.Context, ended string, cut int64) ([]domain.Session, error) {
 	var sessions []domain.Session
-	err := scanAll(ctx, tx, "sessions", loadSessionsSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "sessions", loadSessionsSQL, func(rows *sql.Rows) error {
 		var s domain.Session
 		var kind, state, subagentIDs, metrics string
 		var stateAt, startedAt, lastSeenAt, lastStatusAt, endedAt sql.NullInt64
@@ -390,30 +406,30 @@ func loadSessions(ctx context.Context, tx *sql.Tx, cut int64) ([]domain.Session,
 			return err
 		}
 		if err := s.Kind.UnmarshalText([]byte(kind)); err != nil {
-			return fmt.Errorf("session %s: %w", s.ID, err)
+			return err
 		}
 		if err := s.State.UnmarshalText([]byte(state)); err != nil {
-			return fmt.Errorf("session %s: %w", s.ID, err)
+			return err
 		}
 		var err error
 		if s.Metrics, err = decodeMetrics(metrics); err != nil {
-			return fmt.Errorf("session %s: %w", s.ID, err)
+			return err
 		}
 		ids, err := decodeSubagentIDs(subagentIDs)
 		if err != nil {
-			return fmt.Errorf("session %s: %w", s.ID, err)
+			return err
 		}
 		s.StateAt, s.StartedAt, s.LastSeenAt = fromMillis(stateAt), fromMillis(startedAt), fromMillis(lastSeenAt)
 		s.LastStatusAt, s.EndedAt = fromMillis(lastStatusAt), fromMillis(endedAt)
 		sessions = append(sessions, s.WithSubagentIDs(ids))
 		return nil
-	}, cut)
+	}, ended, cut)
 	return sessions, err
 }
 
-func loadTimelines(ctx context.Context, tx *sql.Tx, cut int64) (map[domain.SessionID][]domain.Transition, error) {
+func (l *loader) timelines(ctx context.Context, ended string, cut int64) (map[domain.SessionID][]domain.Transition, error) {
 	timelines := make(map[domain.SessionID][]domain.Transition)
-	err := scanAll(ctx, tx, "state changes", loadTimelinesSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "state changes", loadTimelinesSQL, func(rows *sql.Rows) error {
 		var session domain.SessionID
 		var at sql.NullInt64
 		var state string
@@ -422,18 +438,18 @@ func loadTimelines(ctx context.Context, tx *sql.Tx, cut int64) (map[domain.Sessi
 			return err
 		}
 		if err := tr.State.UnmarshalText([]byte(state)); err != nil {
-			return fmt.Errorf("session %s: %w", session, err)
+			return err
 		}
 		tr.At = fromMillis(at)
 		timelines[session] = append(timelines[session], tr)
 		return nil
-	}, cut, maxTimeline)
+	}, ended, cut, maxTimeline)
 	return timelines, err
 }
 
-func loadSamples(ctx context.Context, tx *sql.Tx, cut int64) (map[domain.ConfigDir]tracker.WindowSamples, error) {
+func (l *loader) samples(ctx context.Context, cut int64) (map[domain.ConfigDir]tracker.WindowSamples, error) {
 	samples := make(map[domain.ConfigDir]tracker.WindowSamples)
-	err := scanAll(ctx, tx, "limit samples", loadSamplesSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "limit samples", loadSamplesSQL, func(rows *sql.Rows) error {
 		var dir domain.ConfigDir
 		var window string
 		var at int64
@@ -449,7 +465,7 @@ func loadSamples(ctx context.Context, tx *sql.Tx, cut int64) (map[domain.ConfigD
 		case sevenDayWindow:
 			windows.SevenDay = append(windows.SevenDay, sample)
 		default:
-			return fmt.Errorf("account %s: unknown window %q", dir, window)
+			return fmt.Errorf("unknown window %q", window)
 		}
 		samples[dir] = windows
 		return nil
@@ -457,9 +473,9 @@ func loadSamples(ctx context.Context, tx *sql.Tx, cut int64) (map[domain.ConfigD
 	return samples, err
 }
 
-func loadUsage(ctx context.Context, tx *sql.Tx, cut int64) ([]tracker.UsageRow, error) {
+func (l *loader) usage(ctx context.Context, cut int64) ([]tracker.UsageRow, error) {
 	var usage []tracker.UsageRow
-	err := scanAll(ctx, tx, "usage", loadUsageSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "usage", loadUsageSQL, func(rows *sql.Rows) error {
 		var r tracker.UsageRow
 		var minute int64
 		if err := rows.Scan(&minute, &r.Dir, &r.Session, &r.Model,

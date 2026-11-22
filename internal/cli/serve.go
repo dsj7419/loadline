@@ -274,6 +274,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	}
 
 	deps.State, deps.Kick, deps.OnDir = s.tracker, s.poller.Kick, s.noteDir
+	deps.HoldIngest = true
 	s.srv = server.New(deps)
 	s.poller.OnPoll = s.srv.NotePoll
 	return s
@@ -376,8 +377,11 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	go func() { served <- httpServer.Serve(listener) }()
 	// Restart recovery begins with what the history kept. It waits until
 	// the server is serving, so that a loadline that lost the race for the
-	// port finds this one healthy.
+	// port finds this one healthy, and ingest waits for it: an event applied
+	// first would replace the session it restores. The hooks spool what is
+	// refused meanwhile, for the drain below.
 	s.history.restore(ctx, s.tracker)
+	s.srv.OpenIngest()
 	if s.opts.Ready != nil {
 		s.opts.Ready(listener.Addr().String())
 	}

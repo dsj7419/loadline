@@ -17,12 +17,20 @@ const (
 	pruneEvery = day
 )
 
+// historyDB is what the server asks of the history database beside the
+// recorder's writes. *store.SQLite is one.
+type historyDB interface {
+	Load(ctx context.Context, since time.Time) (restored tracker.Restored, skipped int, err error)
+	Prune(ctx context.Context, before time.Time) error
+	Close() error
+}
+
 // history keeps what the tracker learns across restarts, for the configured
 // number of days. A nil history keeps nothing: the server runs without one
 // when its database cannot be opened.
 type history struct {
 	path      string
-	db        *store.SQLite
+	db        historyDB
 	rec       *store.AsyncRecorder
 	retention time.Duration
 	clock     func() time.Time
@@ -76,10 +84,13 @@ func (h *history) restore(ctx context.Context, t *tracker.Tracker) {
 	if h == nil {
 		return
 	}
-	restored, err := h.db.Load(ctx, h.clock().Add(-h.retention))
+	restored, skipped, err := h.db.Load(ctx, h.clock().Add(-h.retention))
 	if err != nil {
 		h.log.Warn("history not restored", "err", err)
 		return
+	}
+	if skipped > 0 {
+		h.log.Warn("history rows skipped: they could not be read", "rows", skipped)
 	}
 	t.Restore(restored)
 	h.log.Info("history restored", "accounts", len(restored.Accounts), "sessions", len(restored.Sessions))

@@ -17,8 +17,9 @@ const (
 	// the queue is full is dropped.
 	queueSize = 4096
 	// batchSize and batchEvery bound how long a change waits: a batch is
-	// written once it holds batchSize changes, or batchEvery after the last
-	// write, whichever comes first.
+	// written as soon as it holds batchSize changes, and whatever is queued
+	// is written at each tick of batchEvery, so a change waits at most one
+	// tick, plus any write still in progress.
 	batchSize  = 100
 	batchEvery = 250 * time.Millisecond
 	// failureLogEvery spaces the warnings about writes that fail.
@@ -81,12 +82,29 @@ func (r *AsyncRecorder) SessionChanged(s domain.Session) {
 // account's row, so however often the account is reported it is stored
 // once.
 func (r *AsyncRecorder) AccountChanged(a domain.Account) {
+	a.Limits = ownLimits(a.Limits)
 	r.enqueue(func(ctx context.Context, tx *sql.Tx) error { return upsertAccount(ctx, tx, a) })
 }
 
 // LimitSampled implements tracker.Recorder.
 func (r *AsyncRecorder) LimitSampled(dir domain.ConfigDir, l domain.Limits) {
+	l = ownLimits(l)
 	r.enqueue(func(ctx context.Context, tx *sql.Tx) error { return addLimitSample(ctx, tx, dir, l) })
+}
+
+// ownLimits copies the windows of l, so that the queue shares none with the
+// caller: they are written later, on another goroutine.
+func ownLimits(l domain.Limits) domain.Limits {
+	l.FiveHour, l.SevenDay = ownWindow(l.FiveHour), ownWindow(l.SevenDay)
+	return l
+}
+
+func ownWindow(w *domain.Window) *domain.Window {
+	if w == nil {
+		return nil
+	}
+	c := *w
+	return &c
 }
 
 // UsageRecorded implements tracker.Recorder.

@@ -29,7 +29,7 @@ func (f *serveFixture) openHistory() *store.SQLite {
 // usageMinutes returns the minutes of the model calls the history holds.
 func (f *serveFixture) usageMinutes(s *store.SQLite) []time.Time {
 	f.t.Helper()
-	restored, err := s.Load(f.t.Context(), time.Time{})
+	restored, _, err := s.Load(f.t.Context(), time.Time{})
 	if err != nil {
 		f.t.Fatalf("Load: %v", err)
 	}
@@ -130,5 +130,37 @@ func TestServe_DemoKeepsNoHistory(t *testing.T) {
 
 	if _, err := os.Stat(f.paths.DBFile); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the demo left a history database (%v), want none", err)
+	}
+}
+
+// A row the server cannot read costs that row, and the log says how many.
+func TestServe_RestoresAroundARowItCannotRead(t *testing.T) {
+	f := newServeFixture(t)
+	history := f.openHistory()
+	for _, id := range []domain.SessionID{"kept", "damaged"} {
+		s := domain.NewSession(id, f.defaultDir(), t0.Add(-time.Minute))
+		if err := history.UpsertSession(t.Context(), s); err != nil {
+			t.Fatalf("UpsertSession: %v", err)
+		}
+	}
+	raw, err := sql.Open("sqlite", f.paths.DBFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.ExecContext(t.Context(), `UPDATE sessions SET kind = 'robot' WHERE id = 'damaged'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.start()
+	v := f.snapshot()
+	if _, ok := sessionByID(v, "kept"); !ok || len(v.Sessions) != 1 {
+		t.Errorf("sessions %v, want the readable one restored", v.Sessions)
+	}
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Serve = %d, want 0", code)
+	}
+	if log := f.logText(); strings.Count(log, "history rows skipped") != 1 || !strings.Contains(log, "rows=1") {
+		t.Errorf("the log does not say once that one row was skipped:\n%s", log)
 	}
 }

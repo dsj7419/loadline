@@ -73,6 +73,11 @@ type Deps struct {
 	// hook then keeps its event for the real server, as it does when none
 	// runs. The UI and its API work as ever.
 	Demo bool
+	// HoldIngest has the ingest routes refuse every event, with 503
+	// "starting", until OpenIngest is called: an event must not reach a
+	// state that is still being put in place. A hook keeps what is refused
+	// for a later drain. The UI, its API and /healthz work as ever.
+	HoldIngest bool
 }
 
 // Server serves the ingest routes, the UI API and the UI. It is safe for
@@ -86,6 +91,8 @@ type Server struct {
 	clock   func() time.Time
 	log     *slog.Logger
 	demo    bool
+	// ingestOpen is false while HoldIngest holds the ingest routes.
+	ingestOpen atomic.Bool
 
 	// hosts are the Host headers any request may carry, and origins the
 	// Origin headers a state-changing request may carry.
@@ -129,6 +136,7 @@ func New(d Deps) *Server {
 	if len(d.Token) > 0 {
 		s.uiCookie = uiCookieValue(d.Token)
 	}
+	s.ingestOpen.Store(!d.HoldIngest)
 	if s.kick == nil {
 		s.kick = func() {}
 	}
@@ -157,6 +165,10 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Clients returns the number of event streams currently open.
 func (s *Server) Clients() int { return int(s.clients.Load()) }
+
+// OpenIngest lets the ingest routes of a server made with HoldIngest take
+// events, once the state they apply to is in place.
+func (s *Server) OpenIngest() { s.ingestOpen.Store(true) }
 
 func (s *Server) routes(static http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -233,9 +245,20 @@ func (h headerOnly) WriteHeader(int)             {}
 
 // ingest guards an ingest route: the token first, so that requests without
 // it cannot spend the rate limit that hooks rely on, and then demo mode,
-// which takes no event.
+// which takes no event, and a hold on ingest.
 func (s *Server) ingest(h http.HandlerFunc) http.Handler {
-	return s.requireToken(s.refuseInDemo(s.rateLimit(h)))
+	return s.requireToken(s.refuseInDemo(s.refuseWhileHeld(s.rateLimit(h))))
+}
+
+// refuseWhileHeld answers every request with 503 until ingest opens.
+func (s *Server) refuseWhileHeld(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.ingestOpen.Load() {
+			s.reject(w, r, http.StatusServiceUnavailable, "starting")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // refuseInDemo answers every request with 503 in demo mode.

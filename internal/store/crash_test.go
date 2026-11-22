@@ -98,9 +98,12 @@ func TestSQLite_RestoresWhatWasCommittedBeforeACrash(t *testing.T) {
 	if err := s.db.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("integrity check after the crash: %q, %v", integrity, err)
 	}
-	got, err := s.Load(t.Context(), crashT0.Add(-time.Hour))
+	got, skipped, err := s.Load(t.Context(), crashT0.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("Load after the crash: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("Load after the crash skipped %d rows, want none", skipped)
 	}
 	if len(got.Sessions) != 1 || got.Sessions[0] != committedSession() {
 		t.Errorf("sessions %+v, want only the committed %+v", got.Sessions, committedSession())

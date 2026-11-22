@@ -68,9 +68,12 @@ func must(t *testing.T, err error) {
 
 func load(t *testing.T, s *store.SQLite, since time.Time) tracker.Restored {
 	t.Helper()
-	restored, err := s.Load(t.Context(), since)
+	restored, skipped, err := s.Load(t.Context(), since)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if skipped != 0 {
+		t.Fatalf("Load skipped %d rows, want none", skipped)
 	}
 	return restored
 }
@@ -301,6 +304,61 @@ func TestSQLite_TimelineKeepsTheLast50Changes(t *testing.T) {
 	}
 }
 
+// A timeline is the order the changes came in, whatever their times say: a
+// clock set back dates the changes after it before those ahead of it.
+func TestSQLite_TimelineFollowsTheOrderOfTheChanges(t *testing.T) {
+	s, _ := openStore(t)
+	for i := range 60 {
+		state := domain.StateWorking
+		if i%2 == 1 {
+			state = domain.StateIdle
+		}
+		must(t, s.UpsertSession(t.Context(), sessionAt(s1, state, 100-i)))
+	}
+
+	got := load(t, s, at(-60)).Timelines[s1]
+	if len(got) != 50 || !got[0].At.Equal(at(90)) || !got[49].At.Equal(at(41)) {
+		t.Errorf("timeline of %d changes from %v to %v, want the last 50 written, from +90s to +41s", len(got), first(got), last(got))
+	}
+}
+
+// A row this version cannot read, such as one a damaged file or another
+// program left, costs that row alone.
+func TestSQLite_LoadSkipsTheRowsItCannotRead(t *testing.T) {
+	s, path := openStore(t)
+	ctx := t.Context()
+	for _, id := range []domain.SessionID{s1, s2, s3} {
+		must(t, s.UpsertSession(ctx, sessionAt(id, domain.StateWorking, 0)))
+	}
+	must(t, s.UpsertAccount(ctx, domain.Account{Dir: dirA}))
+	must(t, s.UpsertAccount(ctx, domain.Account{Dir: dirB}))
+	db := rawDB(t, path)
+	for _, damage := range []string{
+		`UPDATE sessions SET state = 'asleep' WHERE id = 's2'`,
+		`UPDATE sessions SET metrics_json = '{' WHERE id = 's3'`,
+		`UPDATE accounts SET auth = 'magic' WHERE dir = '/home/dev/.claude-b'`,
+		`UPDATE state_changes SET state = 'asleep' WHERE session = 's1'`,
+	} {
+		if _, err := db.ExecContext(ctx, damage); err != nil {
+			t.Fatalf("%s: %v", damage, err)
+		}
+	}
+
+	got, skipped, err := s.Load(ctx, at(-60))
+	if err != nil {
+		t.Fatalf("Load = %v, want the readable rows", err)
+	}
+	if skipped != 4 {
+		t.Errorf("skipped %d rows, want the 4 damaged", skipped)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].ID != s1 || len(got.Accounts) != 1 || got.Accounts[0].Dir != dirA {
+		t.Errorf("sessions %+v and accounts %+v, want s1 and %s", got.Sessions, got.Accounts, dirA)
+	}
+	if len(got.Timelines[s1]) != 0 {
+		t.Errorf("s1's timeline %+v, want its damaged change left out", got.Timelines[s1])
+	}
+}
+
 func first(ts []domain.Transition) domain.Transition {
 	if len(ts) == 0 {
 		return domain.Transition{}
@@ -508,6 +566,9 @@ func TestOpen_CreatesAPrivateDirectory(t *testing.T) {
 }
 
 func TestOpen_RefusesAPathTheDriverWouldMisread(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows path cannot hold a '?'")
+	}
 	path := filepath.Join(t.TempDir(), "odd?_pragma=journal_mode(OFF)", "loadline.db")
 	if s, err := store.Open(t.Context(), path); err == nil {
 		_ = s.Close()
@@ -523,7 +584,7 @@ func TestSQLite_CallsEndWithTheirContext(t *testing.T) {
 	if err := s.UpsertSession(ctx, sessionAt(s1, domain.StateWorking, 0)); !errors.Is(err, context.Canceled) {
 		t.Errorf("UpsertSession on an ended context = %v, want context.Canceled", err)
 	}
-	if _, err := s.Load(ctx, at(0)); !errors.Is(err, context.Canceled) {
+	if _, _, err := s.Load(ctx, at(0)); !errors.Is(err, context.Canceled) {
 		t.Errorf("Load on an ended context = %v, want context.Canceled", err)
 	}
 }

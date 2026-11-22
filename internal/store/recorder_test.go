@@ -235,3 +235,30 @@ func TestAsyncRecorder_CountsWriteErrorsAndLogsThemOncePerMinute(t *testing.T) {
 		t.Errorf("logged %d warnings, want one naming the failure:\n%s", n, text)
 	}
 }
+
+// The recorder keeps its own copy of the windows it is handed, so that what
+// it writes is what was reported, whatever becomes of the caller's.
+func TestAsyncRecorder_KeepsItsOwnCopyOfTheWindows(t *testing.T) {
+	s, path := openStore(t)
+	release := holdWriteLock(t, path)
+	rec, _ := newRecorder(t, s)
+	account := fullAccount(dirA)
+	limits := domain.Limits{FiveHour: &domain.Window{UsedPct: 10}, SevenDay: &domain.Window{UsedPct: 20}, ObservedAt: at(0)}
+
+	rec.AccountChanged(account)
+	rec.LimitSampled(dirA, limits)
+	account.Limits.FiveHour.UsedPct, account.Limits.SevenDay.UsedPct = 99, 99
+	limits.FiveHour.UsedPct, limits.SevenDay.UsedPct = 99, 99
+	release()
+	closeRecorder(t, rec)
+
+	got := load(t, s, at(-3600))
+	if a := got.Accounts[0].Limits; a.FiveHour.UsedPct != 12.5 || a.SevenDay.UsedPct != 61.25 {
+		t.Errorf("the account's windows were stored at %v%% and %v%%, want 12.5%% and 61.25%% as reported",
+			a.FiveHour.UsedPct, a.SevenDay.UsedPct)
+	}
+	samples := got.Samples[dirA]
+	if len(samples.FiveHour) != 1 || samples.FiveHour[0].UsedPct != 10 || len(samples.SevenDay) != 1 || samples.SevenDay[0].UsedPct != 20 {
+		t.Errorf("samples %+v, want 10%% and 20%% as reported", samples)
+	}
+}
