@@ -131,7 +131,7 @@ describe('App', () => {
     send(
       viewOf({
         sessions: [
-          sessionOf({ id: 'i', name: 'ledger', state: 'idle' }),
+          sessionOf({ id: 'i', name: 'linden', state: 'idle' }),
           sessionOf({ id: 'c', name: 'tidewater', state: 'compacting' }),
           sessionOf({ ...waiting }),
           sessionOf({ id: 'w', name: 'harbor-api', state: 'working' }),
@@ -275,7 +275,7 @@ describe('App', () => {
   it('moves focus to the Sessions heading when the open session leaves the view', async () => {
     const user = userEvent.setup();
     const { send } = renderApp();
-    const other = { id: 'other', name: 'harbor-api' };
+    const other = { id: 'second', name: 'harbor-api' };
     send(viewOf({ sessions: [sessionOf({ ...waiting }), sessionOf(other)] }));
     await user.click(screen.getByRole('button', { name: /copper-lantern/ }));
     expect(screen.getByRole('dialog')).toBeTruthy();
