@@ -27,6 +27,7 @@ const (
 	s2 domain.SessionID = "s2"
 	s3 domain.SessionID = "s3"
 	s4 domain.SessionID = "s4"
+	s5 domain.SessionID = "s5"
 
 	opus   = "claude-opus-5-5"
 	sonnet = "claude-sonnet-5-5"
@@ -431,6 +432,11 @@ func TestSQLite_PruneRemovesOld(t *testing.T) {
 	undated := sessionAt(s4, domain.StateIdle, -100)
 	undated.StateAt = time.Time{}
 	must(t, s.UpsertSession(ctx, undated))
+	// s5 was last seen before the cut, but a poll that missed it ended it
+	// after: it ended since, so it stays.
+	lost := sessionAt(s5, domain.StateEnded, 10)
+	lost.LastSeenAt, lost.Lost, lost.EndReason = at(-40), true, "lost"
+	must(t, s.UpsertSession(ctx, lost))
 	for _, sec := range []int{-1, 0} {
 		must(t, s.AddLimitSample(ctx, dirA, domain.Limits{FiveHour: &domain.Window{UsedPct: 10}, ObservedAt: at(sec)}))
 	}
@@ -444,10 +450,13 @@ func TestSQLite_PruneRemovesOld(t *testing.T) {
 	if len(got.Accounts) != 1 || got.Accounts[0].Dir != dirB {
 		t.Errorf("accounts %+v, want %s kept", got.Accounts, dirB)
 	}
-	if len(got.Sessions) != 1 || got.Sessions[0].ID != s3 {
-		t.Errorf("sessions %+v, want only s3", got.Sessions)
+	if len(got.Sessions) != 2 || got.Sessions[0].ID != s3 || got.Sessions[1].ID != s5 {
+		t.Errorf("sessions %+v, want s3 and s5", got.Sessions)
 	}
-	wantTimelines := map[domain.SessionID][]domain.Transition{s3: {{At: at(10), State: domain.StateIdle}}}
+	wantTimelines := map[domain.SessionID][]domain.Transition{
+		s3: {{At: at(10), State: domain.StateIdle}},
+		s5: {{At: at(10), State: domain.StateEnded, Reason: "lost"}},
+	}
 	if !reflect.DeepEqual(got.Timelines, wantTimelines) {
 		t.Errorf("timelines %+v, want %+v", got.Timelines, wantTimelines)
 	}
