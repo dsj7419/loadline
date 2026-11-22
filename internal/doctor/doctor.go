@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -255,8 +256,9 @@ func checkToken(path string) ([]byte, Check) {
 }
 
 // checkSettings reports whether the settings file at path is wired to
-// target as install would wire it, and warns when its status line runs
-// through the PowerShell wrapper.
+// target as install would wire it, warns when its status line runs through
+// the PowerShell wrapper, and warns where the copy of the token it holds may
+// leak.
 func checkSettings(path string, target install.Options, shell func([]byte) install.Shell) []Check {
 	name := "settings " + path
 	settings, err := os.ReadFile(filepath.Clean(path))
@@ -268,11 +270,71 @@ func checkSettings(path string, target install.Options, shell func([]byte) insta
 	}
 
 	target.Shell = shell(settings)
-	checks := []Check{wiring(name, settings, target)}
+	wired := wiring(name, settings, target)
+	checks := []Check{wired}
 	if install.UsesPowerShellWrapper(settings, target.Exe) {
 		checks = append(checks, Check{Name: "status line " + path, Status: Warn, Detail: powerShellNote})
 	}
+	checks = append(checks, symlinked(path)...)
+	if wired.Status != Fail {
+		// Installing again would not edit the file, so would not narrow its
+		// mode either.
+		checks = append(checks, openToOthers(path)...)
+	}
 	return checks
+}
+
+// symlinked warns when the settings file at path is a symlink: install
+// writes the ingest token into the file it points to, which may sit in a
+// dotfiles repository that its owner publishes.
+func symlinked(path string) []Check {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		return nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return []Check{{Name: "token in " + path, Status: Warn, Detail: "the file is a symlink that cannot be followed: " + err.Error()}}
+	}
+	return []Check{{
+		Name:   "token in " + path,
+		Status: Warn,
+		Detail: "the file is a symlink to " + target + ", so install writes the ingest token there; " +
+			"keep that file out of any repository you share",
+	}}
+}
+
+// openToOthers warns, outside Windows, when the mode of the settings file at
+// path lets group or others in. Install takes those permissions off the
+// file it writes, but Claude Code rewrites the file when a setting changes,
+// with a mode of its own choosing. On Windows the file takes the access of
+// the folder it is in.
+func openToOthers(path string) []Check {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	mode := info.Mode().Perm()
+	var who string
+	switch group, others := mode&0o070 != 0, mode&0o007 != 0; {
+	case group && others:
+		who = "group and others"
+	case group:
+		who = "group"
+	case others:
+		who = "others"
+	default:
+		return nil
+	}
+	return []Check{{
+		Name:   "token in " + path,
+		Status: Warn,
+		Detail: fmt.Sprintf("its mode %#o lets %s in, and it holds the ingest token; a rewrite by Claude Code can leave it so; "+
+			"run chmod go-rwx %s", mode, who, path),
+	}}
 }
 
 // wiring turns what install would do to settings into their check: settings

@@ -779,3 +779,32 @@ func TestDoctor_DataDirThatCannotBeReadFails(t *testing.T) {
 		})
 	}
 }
+
+// install writes the token into the file a symlinked settings.json points
+// to, which may sit in a dotfiles repository that its owner publishes.
+func TestDoctor_SymlinkedSettingsWarn(t *testing.T) {
+	w := newWorld(t)
+	target := filepath.Join(t.TempDir(), "dotfiles", "settings.json")
+	w.install(target, `{}`, install.ShellBash)
+	link := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	w.deps.SettingsFiles = []string{link}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := w.run()
+
+	assertChecks(t, settingsChecks(t, got), []doctor.Check{
+		{Name: "settings " + link, Status: doctor.OK, Detail: "wired"},
+		{
+			Name:   "token in " + link,
+			Status: doctor.Warn,
+			Detail: "the file is a symlink to " + resolved + ", so install writes the ingest token there; " +
+				"keep that file out of any repository you share",
+		},
+	})
+}
