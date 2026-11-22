@@ -103,7 +103,10 @@ func isSet(flags *flag.FlagSet, name string) bool {
 // binary's planned path, and the existing token or a placeholder.
 func installOptions(paths config.Paths, port int) (install.Options, error) {
 	if port == 0 {
-		cfg, err := config.Load(paths.ConfigFile)
+		// Without a home directory, Load refuses only an account that names
+		// its config dir from home, and says so.
+		home, _ := os.UserHomeDir()
+		cfg, err := config.Load(paths.ConfigFile, home)
 		if err != nil {
 			return install.Options{}, err
 		}

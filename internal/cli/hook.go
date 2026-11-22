@@ -24,7 +24,8 @@ func runHookCommand(ctx context.Context, stdio IO) int {
 	if err != nil {
 		return exitOK
 	}
-	return RunHook(ctx, stdio.In, processEnv(), paths, loadConfig(paths))
+	env := processEnv()
+	return RunHook(ctx, stdio.In, env, paths, loadConfig(paths, env.Home))
 }
 
 // RunHook forwards the Claude Code hook event on in to the server and

@@ -69,8 +69,8 @@ func claudePID(getenv func(string) string) int {
 
 // loadConfig reads the config file, or gives the defaults when it cannot: a
 // broken config file must not cost Claude Code its hooks or status line.
-func loadConfig(paths config.Paths) config.Config {
-	cfg, err := config.Load(paths.ConfigFile)
+func loadConfig(paths config.Paths, home string) config.Config {
+	cfg, err := config.Load(paths.ConfigFile, home)
 	if err != nil {
 		return config.Defaults()
 	}

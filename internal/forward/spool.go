@@ -33,8 +33,14 @@ const (
 	maxSpoolFile = protocol.MaxPayloadBytes + 4<<10
 )
 
-// errUndecodable marks a spooled file that holds no valid envelope.
-var errUndecodable = errors.New("not a valid envelope")
+var (
+	// ErrUndeliverable is what a Drain function wraps to say that it can
+	// never take an event, as opposed to not taking it yet.
+	ErrUndeliverable = errors.New("the event can never be delivered")
+
+	// errUndecodable marks a spooled file that holds no valid envelope.
+	errUndecodable = errors.New("not a valid envelope")
+)
 
 // Spool keeps the hook events the server did not take, one file per event,
 // until a drain delivers them. Every hook is its own process, so several may
@@ -125,9 +131,10 @@ func (s Spool) trim() {
 
 // Drain hands the spooled events to fn, oldest first, and deletes each one
 // fn takes. It stops at the first error from fn and leaves that event and
-// the ones after it for the next drain. A file that holds no valid envelope
-// is moved to the bad directory, out of the way. Drain returns how many
-// events fn took.
+// the ones after it for the next drain, unless the error wraps
+// ErrUndeliverable. Such an event, like a file that holds no valid envelope,
+// is moved to the bad directory, out of the way, and the drain goes on.
+// Drain returns how many events fn took.
 func (s Spool) Drain(fn func(protocol.Envelope) error) (int, error) {
 	files, err := s.list()
 	if err != nil {
@@ -152,6 +159,12 @@ func (s Spool) Drain(fn func(protocol.Envelope) error) (int, error) {
 		}
 
 		if err := fn(env); err != nil {
+			if errors.Is(err, ErrUndeliverable) {
+				if err := s.quarantine(f.name); err != nil {
+					quarantineErrs = append(quarantineErrs, err)
+				}
+				continue
+			}
 			return drained, errors.Join(append(quarantineErrs, fmt.Errorf("deliver spooled event %s: %w", f.name, err))...)
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {

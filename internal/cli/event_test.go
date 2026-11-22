@@ -18,13 +18,14 @@ func TestLoadConfig_BadFileFallsBackToDefaults(t *testing.T) {
 		"not an object":   `[]`,
 		"an empty file":   ``,
 		"trailing values": `{"port":18299} {}`,
+		"a relative dir":  `{"accounts":[{"configDir":".claude-b"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := os.WriteFile(paths.ConfigFile, []byte(content), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
 
-			if got := loadConfig(paths); !reflect.DeepEqual(got, config.Defaults()) {
+			if got := loadConfig(paths, t.TempDir()); !reflect.DeepEqual(got, config.Defaults()) {
 				t.Errorf("loadConfig = %+v, want the defaults", got)
 			}
 		})
@@ -37,7 +38,7 @@ func TestLoadConfig_ReadsAGoodFile(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if got := loadConfig(paths); got.Port != 18299 {
+	if got := loadConfig(paths, t.TempDir()); got.Port != 18299 {
 		t.Errorf("loadConfig port = %d, want the file's 18299", got.Port)
 	}
 }
@@ -45,7 +46,7 @@ func TestLoadConfig_ReadsAGoodFile(t *testing.T) {
 func TestLoadConfig_MissingFileGivesDefaults(t *testing.T) {
 	paths := config.Paths{ConfigFile: filepath.Join(t.TempDir(), "absent", "config.json")}
 
-	if got := loadConfig(paths); !reflect.DeepEqual(got, config.Defaults()) {
+	if got := loadConfig(paths, t.TempDir()); !reflect.DeepEqual(got, config.Defaults()) {
 		t.Errorf("loadConfig = %+v, want the defaults", got)
 	}
 }

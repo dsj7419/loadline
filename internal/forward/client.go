@@ -1,6 +1,7 @@
 // Package forward carries envelopes from loadline hook and loadline tap to
 // the server on the loopback interface, and keeps the hook events the server
-// could not take in a spool until it can.
+// could not take in a spool until it can. Its client also reads the server's
+// API for the commands that report on it.
 package forward
 
 import (
@@ -90,6 +91,33 @@ func (c Client) Send(ctx context.Context, path string, env protocol.Envelope) er
 		return fmt.Errorf("post envelope to %s: the server answered %s", path, resp.Status)
 	}
 	return nil
+}
+
+// Get fetches path with the token and returns the answer, which must be a
+// 200 of at most limit bytes. The context bounds the whole exchange.
+func (c Client) Get(ctx context.Context, path string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set(tokenHeader, string(c.Token))
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get %s: the server answered %s", path, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("get %s: %w", path, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("get %s: the answer is over %d bytes", path, limit)
+	}
+	return body, nil
 }
 
 // Healthy reports whether a Loadline server answers at BaseURL. It gives up

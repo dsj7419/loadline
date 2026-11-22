@@ -284,3 +284,64 @@ func TestLoopbackURL(t *testing.T) {
 		t.Errorf("LoopbackURL(8289) = %q, want http://127.0.0.1:8289", got)
 	}
 }
+
+func TestClient_GetSendsTheTokenAndReturnsTheAnswer(t *testing.T) {
+	rec := &recorder{status: http.StatusOK}
+	client := forward.Client{BaseURL: startServer(t, rec), Token: testToken}
+
+	body, err := client.Get(t.Context(), "/api/snapshot", 1<<10)
+
+	if err != nil || string(body) != "{}" {
+		t.Fatalf("Get = %q, %v; want the answer", body, err)
+	}
+	seen := rec.seen()
+	if len(seen) != 1 || seen[0].method != http.MethodGet || seen[0].path != "/api/snapshot" {
+		t.Fatalf("server saw %+v, want one GET of /api/snapshot", seen)
+	}
+	if got := seen[0].header.Get(tokenHeader); got != string(testToken) {
+		t.Errorf("token header = %q, want the token", got)
+	}
+}
+
+func TestClient_GetFailsUnlessTheServerAnswers200(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusNoContent} {
+		client := forward.Client{BaseURL: startServer(t, &recorder{status: status}), Token: testToken}
+
+		if body, err := client.Get(t.Context(), "/api/snapshot", 1<<10); err == nil {
+			t.Errorf("Get against a %d = %q, want an error", status, body)
+		}
+	}
+}
+
+func TestClient_GetRefusesAnAnswerOverTheLimit(t *testing.T) {
+	big := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1<<10+1))
+	})
+	client := forward.Client{BaseURL: startServer(t, big), Token: testToken}
+
+	if _, err := client.Get(t.Context(), "/api/snapshot", 1<<10); err == nil || !strings.Contains(err.Error(), "1024 bytes") {
+		t.Errorf("Get = %v, want an error naming the 1024 byte limit", err)
+	}
+	exact := forward.Client{BaseURL: startServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1<<10))
+	})), Token: testToken}
+	if body, err := exact.Get(t.Context(), "/api/snapshot", 1<<10); err != nil || len(body) != 1<<10 {
+		t.Errorf("Get of exactly the limit = %d bytes, %v; want it all", len(body), err)
+	}
+}
+
+func TestClient_GetDoesNotFollowRedirects(t *testing.T) {
+	elsewhere := &recorder{status: http.StatusOK}
+	target := startServer(t, elsewhere)
+	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target+"/api/snapshot", http.StatusFound)
+	})
+	client := forward.Client{BaseURL: startServer(t, redirect), Token: testToken}
+
+	if _, err := client.Get(t.Context(), "/api/snapshot", 1<<10); err == nil {
+		t.Error("Get succeeded through a redirect, want an error")
+	}
+	if n := len(elsewhere.seen()); n != 0 {
+		t.Errorf("the redirect target saw %d requests, want none", n)
+	}
+}

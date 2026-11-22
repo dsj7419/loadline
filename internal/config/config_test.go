@@ -1,14 +1,33 @@
 package config_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/config"
 )
+
+// home is the home directory every test loads its config against.
+var home = filepath.Join(os.TempDir(), "loadline-config-test", "home")
+
+// abs returns an absolute config dir under home, spelled with forward
+// slashes as a hand-written config file would spell it.
+func abs(name string) string { return filepath.ToSlash(filepath.Join(home, name)) }
+
+// q returns s as a JSON string.
+func q(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal %q: %v", s, err)
+	}
+	return string(b)
+}
 
 func writeConfig(t *testing.T, contents string) string {
 	t.Helper()
@@ -23,7 +42,7 @@ func writeConfig(t *testing.T, contents string) string {
 func mustLoad(t *testing.T, contents string) config.Config {
 	t.Helper()
 
-	cfg, err := config.Load(writeConfig(t, contents))
+	cfg, err := config.Load(writeConfig(t, contents), home)
 	if err != nil {
 		t.Fatalf("Load(%s): %v", contents, err)
 	}
@@ -61,7 +80,7 @@ func TestOpenModeValues(t *testing.T) {
 func TestLoad_MissingFileGivesDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent", "config.json")
 
-	got, err := config.Load(path)
+	got, err := config.Load(path, home)
 	if err != nil {
 		t.Fatalf("Load of a missing file: %v", err)
 	}
@@ -87,8 +106,8 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		"claudePath": "C:/tools/claude.exe",
 		"alerts": {"weeklyPct": 75.5, "contextPct": 60, "needsYouSeconds": 45},
 		"accounts": [
-			{"configDir": "C:/Users/me/.claude", "label": "Main"},
-			{"configDir": "C:/Users/me/.claude-b", "label": "B", "dailyBudgetUSD": 25.5}
+			{"configDir": `+q(t, abs(".claude"))+`, "label": "Main"},
+			{"configDir": `+q(t, abs(".claude-b"))+`, "label": "B", "dailyBudgetUSD": 25.5}
 		]
 	}`)
 
@@ -102,8 +121,8 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		ClaudePath:      "C:/tools/claude.exe",
 		Alerts:          config.AlertSettings{WeeklyPct: 75.5, ContextPct: 60, NeedsYouSeconds: 45},
 		Accounts: []config.AccountSetting{
-			{ConfigDir: "C:/Users/me/.claude", Label: "Main"},
-			{ConfigDir: "C:/Users/me/.claude-b", Label: "B", DailyBudgetUSD: 25.5},
+			{ConfigDir: abs(".claude"), Label: "Main"},
+			{ConfigDir: abs(".claude-b"), Label: "B", DailyBudgetUSD: 25.5},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -112,11 +131,11 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 }
 
 func TestLoad_PartialFileOverridesOnlySetKeys(t *testing.T) {
-	got := mustLoad(t, `{"accounts":[{"configDir":"C:/Users/me/.claude","label":"Main"}],"browser":"brave","appWindow":true}`)
+	got := mustLoad(t, `{"accounts":[{"configDir":`+q(t, abs(".claude"))+`,"label":"Main"}],"browser":"brave","appWindow":true}`)
 
 	want := config.Defaults()
 	want.Browser = "brave"
-	want.Accounts = []config.AccountSetting{{ConfigDir: "C:/Users/me/.claude", Label: "Main"}}
+	want.Accounts = []config.AccountSetting{{ConfigDir: abs(".claude"), Label: "Main"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v, want %+v", got, want)
 	}
@@ -153,7 +172,7 @@ func TestLoad_AcceptsBoundaryValues(t *testing.T) {
 		"alert thresholds max": `{"alerts":{"weeklyPct":100,"contextPct":100}}`,
 		"open always":          `{"openOnStart":"always"}`,
 		"open once per login":  `{"openOnStart":"once_per_login"}`,
-		"zero daily budget":    `{"accounts":[{"configDir":"/home/me/.claude","dailyBudgetUSD":0}]}`,
+		"zero daily budget":    `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `,"dailyBudgetUSD":0}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			mustLoad(t, contents)
@@ -168,7 +187,7 @@ func TestLoad_RejectsUnknownKey(t *testing.T) {
 		"inside accounts": {`{"accounts":[{"configDir":"/x","lable":"X"}]}`, "lable"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := config.Load(writeConfig(t, tc.contents))
+			_, err := config.Load(writeConfig(t, tc.contents), home)
 			if err == nil {
 				t.Fatal("Load accepted an unknown key")
 			}
@@ -194,12 +213,12 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"unknown open mode":       {`{"openOnStart":"sometimes"}`, `openOnStart "sometimes" is not one of`},
 		"empty open mode":         {`{"openOnStart":""}`, `openOnStart "" is not one of`},
 		"empty browser":           {`{"browser":""}`, "browser must not be empty"},
-		"account without dir":     {`{"accounts":[{"configDir":"/a"},{"label":"B"}]}`, "accounts[1].configDir must not be empty"},
+		"account without dir":     {`{"accounts":[{"configDir":` + q(t, abs("a")) + `},{"label":"B"}]}`, "accounts[1].configDir must not be empty"},
 		"account with blank dir":  {`{"accounts":[{"configDir":"  "}]}`, "accounts[0].configDir must not be empty"},
-		"account negative budget": {`{"accounts":[{"configDir":"/a","dailyBudgetUSD":-1}]}`, "accounts[0].dailyBudgetUSD -1 is below"},
+		"account negative budget": {`{"accounts":[{"configDir":` + q(t, abs("a")) + `,"dailyBudgetUSD":-1}]}`, "accounts[0].dailyBudgetUSD -1 is below"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := config.Load(writeConfig(t, tc.contents))
+			_, err := config.Load(writeConfig(t, tc.contents), home)
 			if err == nil {
 				t.Fatal("Load accepted an invalid config")
 			}
@@ -223,7 +242,7 @@ func TestLoad_RejectsMalformedFiles(t *testing.T) {
 		"trailing garbage":    `{"port":8289} nope`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := config.Load(writeConfig(t, contents)); err == nil {
+			if _, err := config.Load(writeConfig(t, contents), home); err == nil {
 				t.Fatalf("Load accepted %q", contents)
 			}
 		})
@@ -233,7 +252,7 @@ func TestLoad_RejectsMalformedFiles(t *testing.T) {
 func TestLoad_ErrorsNameTheFile(t *testing.T) {
 	path := writeConfig(t, `{"port":80}`)
 
-	_, err := config.Load(path)
+	_, err := config.Load(path, home)
 	if err == nil {
 		t.Fatal("Load accepted an invalid config")
 	}
@@ -243,7 +262,7 @@ func TestLoad_ErrorsNameTheFile(t *testing.T) {
 }
 
 func TestLoad_UnreadableFileIsAnError(t *testing.T) {
-	if _, err := config.Load(t.TempDir()); err == nil {
+	if _, err := config.Load(t.TempDir(), home); err == nil {
 		t.Fatal("Load of a directory succeeded, want a read error rather than defaults")
 	}
 }
@@ -259,5 +278,89 @@ func TestValidatePort(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "outside 1024-65535") {
 			t.Errorf("ValidatePort(%d) = %v, want an out-of-range error", port, err)
 		}
+	}
+}
+
+// Windows editors save files with a byte-order mark.
+func TestLoad_StripsALeadingByteOrderMark(t *testing.T) {
+	got := mustLoad(t, "\xef\xbb\xbf"+`{"port":9000}`)
+
+	if got.Port != 9000 {
+		t.Errorf("Load after a byte-order mark gave port %d, want 9000", got.Port)
+	}
+}
+
+func TestLoad_AccountDirsMayStartWithTheHomeDir(t *testing.T) {
+	cfg := mustLoad(t, `{"accounts":[{"configDir":"~/.claude-b"},{"configDir":`+q(t, `~\.claude-work`)+`}]}`)
+
+	for i, tc := range []struct{ spelled, under string }{
+		{spelled: "~/.claude-b", under: ".claude-b"},
+		{spelled: `~\.claude-work`, under: ".claude-work"},
+	} {
+		account := cfg.Accounts[i]
+		if account.ConfigDir != tc.spelled {
+			t.Errorf("accounts[%d].ConfigDir = %q, want it kept as written, %q", i, account.ConfigDir, tc.spelled)
+		}
+		want := config.ResolveConfigDir(filepath.Join(home, tc.under), home)
+		if got := account.Dir(home); got != want {
+			t.Errorf("accounts[%d].Dir = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestAccountSetting_DirIsTheNormalizedKey(t *testing.T) {
+	account := config.AccountSetting{ConfigDir: abs(".claude-b/")}
+
+	if got, want := account.Dir(home), config.ResolveConfigDir(abs(".claude-b"), home); got != want {
+		t.Errorf("Dir = %q, want %q", got, want)
+	}
+}
+
+func TestLoad_RejectsARelativeAccountDir(t *testing.T) {
+	relative := []string{".claude-b", "claude/b", "./x", "../x", "~", "~user/.claude", "~.claude"}
+	if runtime.GOOS == "windows" {
+		relative = append(relative, "/Users/me/.claude", `\Users\me\.claude`, "C:.claude")
+	}
+	for _, dir := range relative {
+		t.Run(dir, func(t *testing.T) {
+			contents := `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `},{"configDir":` + q(t, dir) + `}]}`
+
+			_, err := config.Load(writeConfig(t, contents), home)
+			if err == nil || !strings.Contains(err.Error(), "accounts[1].configDir") {
+				t.Errorf("Load = %v, want an error naming accounts[1].configDir", err)
+			}
+		})
+	}
+}
+
+func TestLoad_HomeDirAccountNeedsAKnownHome(t *testing.T) {
+	_, err := config.Load(writeConfig(t, `{"accounts":[{"configDir":"~/.claude-b"}]}`), "")
+
+	if err == nil || !strings.Contains(err.Error(), "accounts[0].configDir") {
+		t.Errorf("Load with no home = %v, want an error naming accounts[0].configDir", err)
+	}
+}
+
+func TestLoad_RejectsTwoAccountsForOneDir(t *testing.T) {
+	cases := map[string][2]string{
+		"same spelling":      {abs(".claude-b"), abs(".claude-b")},
+		"trailing separator": {abs(".claude-b"), abs(".claude-b") + "/"},
+		"dot segments":       {abs(".claude-b"), abs("x/../.claude-b")},
+		"home dir spelling":  {abs(".claude-b"), "~/.claude-b"},
+	}
+	if runtime.GOOS == "windows" {
+		cases["letter case"] = [2]string{abs(".claude-b"), strings.ToUpper(abs(".claude-b"))}
+		cases["backslashes"] = [2]string{abs(".claude-b"), filepath.FromSlash(abs(".claude-b"))}
+	}
+	for name, dirs := range cases {
+		t.Run(name, func(t *testing.T) {
+			contents := `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `},{"configDir":` + q(t, dirs[0]) +
+				`},{"configDir":` + q(t, dirs[1]) + `}]}`
+
+			_, err := config.Load(writeConfig(t, contents), home)
+			if err == nil || !strings.Contains(err.Error(), "accounts[2].configDir duplicates accounts[1]") {
+				t.Errorf("Load = %v, want accounts[2].configDir duplicates accounts[1]", err)
+			}
+		})
 	}
 }

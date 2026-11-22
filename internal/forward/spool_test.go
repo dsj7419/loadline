@@ -246,6 +246,46 @@ func TestSpool_CorruptFileMovedToBad(t *testing.T) {
 	}
 }
 
+// An envelope can be well formed and still hold nothing the server can ever
+// take, such as a payload without a session. It must not stall the spool.
+func TestSpool_EventFnCanNeverTakeIsMovedToBad(t *testing.T) {
+	s := newSpool(t, 0)
+	for i := 1; i <= 3; i++ {
+		put(t, s, envelopeAt(i, t0.Add(time.Duration(i)*time.Second)))
+	}
+	var delivered []string
+
+	n, err := s.Drain(func(env protocol.Envelope) error {
+		if env.ID == id(2) {
+			return fmt.Errorf("payload has no session: %w", forward.ErrUndeliverable)
+		}
+		delivered = append(delivered, env.ID)
+		return nil
+	})
+
+	if n != 2 || err != nil {
+		t.Errorf("Drain = %d, %v; want the two others and no error", n, err)
+	}
+	if want := []string{id(1), id(3)}; !slices.Equal(delivered, want) {
+		t.Errorf("delivered %v, want %v", delivered, want)
+	}
+	if files := names(t, s.Dir); len(files) != 0 {
+		t.Errorf("spool holds %v after draining, want nothing", files)
+	}
+	bad := names(t, filepath.Join(s.Dir, "bad"))
+	if len(bad) != 1 {
+		t.Fatalf("bad/ holds %v, want the one undeliverable event", bad)
+	}
+	data, err := os.ReadFile(filepath.Join(s.Dir, "bad", bad[0]))
+	if err != nil {
+		t.Fatalf("read bad file: %v", err)
+	}
+	var env protocol.Envelope
+	if err := json.Unmarshal(data, &env); err != nil || env.ID != id(2) {
+		t.Errorf("bad/ holds %s (%v), want event %s", data, err, id(2))
+	}
+}
+
 func TestSpool_DrainIgnoresOtherFiles(t *testing.T) {
 	s := newSpool(t, 0)
 	put(t, s, envelopeAt(1, t0))

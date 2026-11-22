@@ -98,7 +98,8 @@ func runTapCommand(ctx context.Context, args []string, stdio IO) int {
 		// the tap only passes its input through.
 		paths = config.Paths{}
 	}
-	return RunTap(ctx, stdio.In, stdio.Out, processEnv(), paths, loadConfig(paths), mode)
+	env := processEnv()
+	return RunTap(ctx, stdio.In, stdio.Out, env, paths, loadConfig(paths, env.Home), mode)
 }
 
 // parseTapArgs reads the tap command's arguments: none, --print, --run

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/otlp"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
@@ -28,14 +29,9 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	in, err := protocol.ReadHookInput(bytes.NewReader(env.Payload))
-	if err != nil {
-		s.reject(w, r, http.StatusBadRequest, "malformed payload")
-		return
-	}
-	hook, err := protocol.HookEvent(env, in)
-	if err != nil {
-		s.reject(w, r, http.StatusBadRequest, "payload has no session")
+	hook, refusal := hookEvent(env)
+	if refusal != "" {
+		s.reject(w, r, http.StatusBadRequest, refusal)
 		return
 	}
 	s.accept(w, r, feedHook, env.ID, func() {
@@ -43,6 +39,45 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		s.onDir(hook.Dir)
 		s.kick()
 	})
+}
+
+// ApplySpooledHook applies a hook event that a hook spooled because the
+// server did not take it, held to the hook route's checks. Like the route,
+// it applies an event once however often its ID comes back: the hook may
+// have spooled an event the server took but answered too late. It notes the
+// event's config dir but does not kick, so that a drain can kick once for
+// its whole batch, and it counts nothing toward the hook feed, which tells
+// whether hooks arrive now. An error means env can never be applied; it
+// quotes nothing of env.
+func (s *Server) ApplySpooledHook(env protocol.Envelope) error {
+	if refusal := checkEnvelope(env, protocol.KindHook); refusal != "" {
+		return errors.New(refusal)
+	}
+	hook, refusal := hookEvent(env)
+	if refusal != "" {
+		return errors.New(refusal)
+	}
+	if s.recent.add(env.ID) {
+		applyOnce(s.recent, env.ID, func() {
+			s.state.Apply(hook)
+			s.onDir(hook.Dir)
+		})
+	}
+	return nil
+}
+
+// hookEvent maps a hook envelope's payload to its event, or returns the
+// reason it holds none.
+func hookEvent(env protocol.Envelope) (hook domain.Hook, refusal string) {
+	in, err := protocol.ReadHookInput(bytes.NewReader(env.Payload))
+	if err != nil {
+		return domain.Hook{}, "malformed payload"
+	}
+	hook, err = protocol.HookEvent(env, in)
+	if err != nil {
+		return domain.Hook{}, "payload has no session"
+	}
+	return hook, ""
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -105,19 +140,30 @@ func (s *Server) readEnvelope(w http.ResponseWriter, r *http.Request, kind proto
 	}
 
 	env, err := decodeEnvelope(body)
-	switch {
-	case err != nil:
+	if err != nil {
 		s.reject(w, r, http.StatusBadRequest, "malformed envelope")
-	case env.Validate() != nil:
-		s.reject(w, r, http.StatusBadRequest, "invalid envelope")
-	case env.Kind != kind:
-		s.reject(w, r, http.StatusBadRequest, "envelope kind does not match the route")
-	case isEmpty(env.Payload):
-		s.reject(w, r, http.StatusBadRequest, "envelope has no payload")
-	default:
-		return env, true
+		return protocol.Envelope{}, false
 	}
-	return protocol.Envelope{}, false
+	if refusal := checkEnvelope(env, kind); refusal != "" {
+		s.reject(w, r, http.StatusBadRequest, refusal)
+		return protocol.Envelope{}, false
+	}
+	return env, true
+}
+
+// checkEnvelope returns the reason env cannot be taken as an envelope of
+// kind, or "" when it can.
+func checkEnvelope(env protocol.Envelope, kind protocol.Kind) (refusal string) {
+	switch {
+	case env.Validate() != nil:
+		return "invalid envelope"
+	case env.Kind != kind:
+		return "envelope kind does not match the route"
+	case isEmpty(env.Payload):
+		return "envelope has no payload"
+	default:
+		return ""
+	}
 }
 
 // decodeEnvelope decodes exactly one envelope. Only Loadline writes them, so

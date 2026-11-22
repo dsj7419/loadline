@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,6 +107,32 @@ func TestRun_Help(t *testing.T) {
 				t.Errorf("stderr = %q, want empty", got.stderr)
 			}
 		})
+	}
+}
+
+func TestRun_HelpListsServeAndStatus(t *testing.T) {
+	got := run(t, "help")
+
+	for _, command := range []string{"\n  serve ", "\n  status "} {
+		if !strings.Contains(got.stdout, command) {
+			t.Errorf("usage %q does not list %q", got.stdout, strings.TrimSpace(command))
+		}
+	}
+}
+
+func TestRun_DispatchesServeAndStatus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LOADLINE_HOME", home)
+	contents := fmt.Sprintf(`{"port":%d}`, freePort(t))
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if got := run(t, "serve", "--port", "80"); got.code != 2 || !strings.Contains(got.stderr, "--port") {
+		t.Errorf("serve --port 80 = %d, stderr %q; want serve's usage error", got.code, got.stderr)
+	}
+	if got := run(t, "status"); got.code != 1 || got.stderr != "loadline is not running\n" {
+		t.Errorf("status = %d, stderr %q; want the status command's answer", got.code, got.stderr)
 	}
 }
 

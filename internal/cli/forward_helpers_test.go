@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
@@ -27,12 +29,13 @@ import (
 
 // The hook and tap start the server as "<executable> serve". In these tests
 // the executable is the test binary, which must then exit at once instead
-// of running the tests again.
+// of running the tests again. Otherwise every server a test starts must be
+// gone, goroutines and all, by the end of the run.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	goleak.VerifyTestMain(m)
 }
 
 // canary is planted in every content field of the test payloads. It must

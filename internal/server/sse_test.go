@@ -312,6 +312,30 @@ func TestSSE_EndsWhenTheServerShutsDown(t *testing.T) {
 	assertStreamEnded(t, h, s)
 }
 
+// The read timeout that guards the server against slow requests bounds the
+// whole request read. A stream reads nothing after its request, so the
+// timeout must not end it.
+func TestSSE_OutlivesTheServersReadTimeout(t *testing.T) {
+	const readTimeout = 100 * time.Millisecond
+	h, ts := newStreamServer(t, func(_ *server.Server, hs *http.Server) { hs.ReadTimeout = readTimeout })
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	time.Sleep(3 * readTimeout)
+	h.sink.publish(tracker.View{GeneratedAt: t0.Add(time.Minute)})
+
+	var got tracker.View
+	if err := json.Unmarshal([]byte(s.nextView(t)), &got); err != nil {
+		t.Fatalf("decode view: %v", err)
+	}
+	if !got.GeneratedAt.Equal(t0.Add(time.Minute)) {
+		t.Errorf("view generated at %v, want the one published after the read timeout", got.GeneratedAt)
+	}
+	if h.srv.Clients() != 1 {
+		t.Errorf("Clients = %d, want the stream still open", h.srv.Clients())
+	}
+}
+
 func TestSSE_EndsWhenTheSubscriptionCloses(t *testing.T) {
 	h, ts := newStreamServer(t, nil)
 	s := openStream(t, ts)
