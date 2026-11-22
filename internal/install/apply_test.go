@@ -235,3 +235,21 @@ func TestApply_WritesThroughASymlink(t *testing.T) {
 		t.Errorf("link target's dir holds %q, want only settings.json", got)
 	}
 }
+
+func TestApply_RefusesWhenFileWasDeletedSincePlan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := readFile(t, "testdata/settings_owner.in.json")
+
+	backup, err := install.Apply(path, original, readFile(t, "testdata/settings_owner.out.json"), applyTime)
+
+	if !errors.Is(err, install.ErrChangedSincePlan) {
+		t.Fatalf("err = %v, want ErrChangedSincePlan for a file deleted after the plan", err)
+	}
+	if backup != "" {
+		t.Errorf("backup = %q, want none", backup)
+	}
+	if got := dirEntries(t, dir); len(got) != 0 {
+		t.Errorf("dir holds %q, want the deleted settings file left deleted", got)
+	}
+}

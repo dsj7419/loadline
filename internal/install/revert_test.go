@@ -302,3 +302,59 @@ func TestRevert_RejectsInvalidJSON(t *testing.T) {
 		}
 	}
 }
+
+// Revert removes the containers it empties, not the ones the user left
+// empty.
+func TestRevert_LeavesTheUsersOwnEmptyHooks(t *testing.T) {
+	own := `{"type": "command", "command": "/opt/loadline/bin/loadline", "args": ["hook"]}`
+	tests := map[string]struct{ settings, want string }{
+		"an empty hooks object, with a status line to revert": {
+			settings: `{"hooks": {}, "statusLine": {"type": "command", "command": "\"/opt/loadline/bin/loadline\" tap | status.sh"}}`,
+			want:     `{"hooks": {}, "statusLine": {"type": "command", "command": "status.sh"}}`,
+		},
+		"an empty event beside one Loadline empties": {
+			settings: `{"hooks": {"Stop": [], "SessionStart": [{"hooks": [` + own + `]}]}}`,
+			want:     `{"hooks": {"Stop": []}}`,
+		},
+		"an empty event and nothing of Loadline's": {
+			settings: `{"hooks": {"Stop": []}}`,
+			want:     `{"hooks": {"Stop": []}}`,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, _ := revert(t, []byte(tt.settings), "")
+
+			if string(got) != tt.want {
+				t.Errorf("Revert = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// Only headers that start with Loadline's own make the telemetry settings
+// Loadline's, however else they mention it.
+func TestPlanAndRevert_LeaveHeadersThatOnlyMentionLoadline(t *testing.T) {
+	for _, headers := range []string{
+		"authorization=Bearer abc,x-loadline-token=abc",
+		"x-api-key=loadline-dashboard",
+		"x-loadline-token",
+	} {
+		t.Run(headers, func(t *testing.T) {
+			settings := []byte(`{"env": {"OTEL_EXPORTER_OTLP_LOGS_HEADERS": ` + jsonQuote(t, headers) + `, "OTEL_LOGS_EXPORTER": "otlp"}}`)
+
+			installed, changes, warnings := plan(t, settings, options(install.ShellBash))
+
+			if got, want := gjson.GetBytes(installed, "env").Raw, gjson.GetBytes(settings, "env").Raw; got != want {
+				t.Errorf("Plan changed env to %s, want the user's %s", got, want)
+			}
+			if !hasChange(changes, "env", install.ActionSkip) || len(warnings) != 1 {
+				t.Errorf("Plan changes %+v and warnings %q, want env skipped with a warning", changes, warnings)
+			}
+			reverted, removed := revert(t, settings, goldenExe)
+			if !bytes.Equal(reverted, settings) || len(removed) != 0 {
+				t.Errorf("Revert = %s with %+v, want the user's telemetry untouched", reverted, removed)
+			}
+		})
+	}
+}
