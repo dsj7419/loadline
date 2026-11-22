@@ -27,6 +27,8 @@ const (
 const usage = `Usage: loadline <command>
 
 Commands:
+  hook       Forward the Claude Code hook event on stdin; prints nothing
+  tap        Pass a status line's input through and forward it
   install    Wire Loadline into Claude Code's settings
   uninstall  Remove Loadline from Claude Code's settings
   version    Print the version
@@ -35,13 +37,17 @@ Commands:
 
 // Run executes the command named by args[0] and returns the process exit
 // code: 0 on success, 1 on failure and 2 for a usage error.
-func Run(_ context.Context, args []string, stdio IO) int {
+func Run(ctx context.Context, args []string, stdio IO) int {
 	if len(args) == 0 {
 		_, _ = io.WriteString(stdio.Err, usage)
 		return exitUsage
 	}
 
 	switch args[0] {
+	case "hook":
+		return runHookCommand(ctx, stdio)
+	case "tap":
+		return runTapCommand(ctx, args[1:], stdio)
 	case "install":
 		return runInstall(args[1:], stdio)
 	case "uninstall":

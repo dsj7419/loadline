@@ -1,0 +1,138 @@
+// Package forward carries envelopes from loadline hook and loadline tap to
+// the server on the loopback interface, and keeps the hook events the server
+// could not take in a spool until it can.
+package forward
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/dsj7419/loadline/internal/protocol"
+)
+
+const (
+	// HookPath is the server's ingest route for hook envelopes.
+	HookPath = "/ingest/hook"
+	// StatusPath is the server's ingest route for status-line envelopes.
+	StatusPath = "/ingest/status"
+
+	tokenHeader = "X-Loadline-Token" //nolint:gosec // G101: the name of the header, not a credential
+	healthPath  = "/healthz"
+	appName     = "loadline"
+
+	// maxAnswer is as much of an answer as the client reads. The server's
+	// answers to it are a few dozen bytes.
+	maxAnswer = 4 << 10
+	// healthTimeout bounds Healthy. A server on the loopback interface that
+	// is up answers in well under a millisecond.
+	healthTimeout = 150 * time.Millisecond
+)
+
+// direct is the HTTP client used when a Client names none. It never goes
+// through a proxy, so the token and the events stay on the loopback
+// interface whatever HTTP_PROXY says, and it follows no redirect, which
+// would carry the token to wherever it points.
+var direct = &http.Client{
+	Transport: &http.Transport{
+		Proxy:               nil,
+		DialContext:         (&net.Dialer{}).DialContext,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+		DisableCompression:  true,
+	},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// Client posts envelopes to a Loadline server.
+type Client struct {
+	// BaseURL is the server's address, such as LoopbackURL(port).
+	BaseURL string
+	// Token is the ingest token. Healthy does not need it.
+	Token []byte
+	// HTTP sends the requests. Nil means a client that never uses a proxy
+	// and follows no redirect.
+	HTTP *http.Client
+}
+
+// LoopbackURL returns the base URL of a server listening on port of the
+// loopback interface.
+func LoopbackURL(port int) string {
+	return "http://127.0.0.1:" + strconv.Itoa(port)
+}
+
+// Send posts env to the ingest route at path and reports an error unless the
+// server takes it with a 2xx answer. The context bounds the whole exchange.
+func (c Client) Send(ctx context.Context, path string, env protocol.Envelope) error {
+	body, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("encode envelope: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(tokenHeader, string(c.Token))
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("post envelope: %w", err)
+	}
+	defer closeAnswer(resp)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("post envelope to %s: the server answered %s", path, resp.Status)
+	}
+	return nil
+}
+
+// Healthy reports whether a Loadline server answers at BaseURL. It gives up
+// after 150 ms, or sooner when ctx ends, and anything but a 200 whose body,
+// within its first 4 KiB, names the app counts as no.
+func (c Client) Healthy(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+healthPath, http.NoBody)
+	if err != nil {
+		return false
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+	if err != nil {
+		return false
+	}
+	var health struct {
+		App string `json:"app"`
+	}
+	if err := json.Unmarshal(answer, &health); err != nil {
+		return false
+	}
+	return health.App == appName
+}
+
+func (c Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return direct
+}
+
+// closeAnswer reads what is left of a short answer, so that its connection
+// can carry the next request, and closes it.
+func closeAnswer(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxAnswer))
+	_ = resp.Body.Close()
+}
