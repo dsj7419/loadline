@@ -18,17 +18,22 @@ import (
 // same file gets the same status line.
 //
 //	bash, a plain command: "<exe>" tap | <original>
-//	bash, anything else:   "<exe>" tap | { <original>
-//	                       }
+//	bash, anything else:   "<exe>" tap | ( ( <original>
+//	                       ) )
 //	PowerShell:            & "<exe>" tap --run-b64 '<original as unpadded base64url>'
 //	no status line of the user's own: "<exe>" tap --print, after & in PowerShell
 //
-// The group keeps the meaning of a list, a script of several lines or a
+// The subshells keep the meaning of a list, a script of several lines or a
 // command that starts with a reserved word: the pipe feeds all of it, as the
-// status-line JSON fed all of the original. The closing brace goes on a line
-// of its own so a trailing comment cannot swallow it; an original that a
-// group would still break is left alone. PowerShell gets the original out of
-// band, because it would re-encode JSON piped between commands and its
+// status-line JSON fed all of the original. A group would too, but bash 3.2,
+// macOS's /bin/bash and /bin/sh, runs an EXIT trap set in a group that is
+// part of a pipeline only if the group ends in exit. The inner subshell has
+// no pipe of its own, so a command in it run in the background reads
+// /dev/null, as it does in the original on its own; bash 4.4 and later give
+// it the pipe instead within the outer one. The closing parentheses go on a
+// line of their own so a trailing comment cannot swallow them; an original
+// that the wrap would still break is left alone. PowerShell gets the original
+// out of band, because it would re-encode JSON piped between commands and its
 // quoting of native arguments differs between versions; tap decodes the
 // original and runs it.
 const (
@@ -38,12 +43,20 @@ const (
 
 	powerShellCall = "& "
 	tapPipe        = " tap | "
-	groupOpen      = "{ "
-	groupClose     = "\n}"
+	wrapOpen       = "( ( "
+	wrapClose      = "\n) )"
 	runB64Open     = " tap --run-b64 '"
 	runB64Close    = "'"
 	printSuffix    = " tap --print"
 )
+
+// wraps are the ways a bash form can enclose an original that is not a plain
+// command: install's own, then the group earlier builds wrote, which
+// uninstall still restores and install replaces.
+var wraps = [...]struct{ open, close string }{
+	{wrapOpen, wrapClose},
+	{"{ ", "\n}"},
+}
 
 // reservedWords start a compound command. After a pipe, some of them, such
 // as time and !, mean something else or nothing at all.
@@ -82,7 +95,7 @@ const (
 )
 
 // literal returns the command for shell as a JSON string literal; a blank
-// original gets the print form, never an empty group. When the command
+// original gets the print form, never an empty wrap. When the command
 // cannot be built it returns instead why, as a phrase that follows
 // "statusLine.command".
 func (t tapCommand) literal(exe string, shell Shell) (string, string) {
@@ -97,7 +110,7 @@ func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 	case t.print || strings.TrimSpace(original) == "":
 		body = escapeJSON(launcher + printSuffix)
 	case hasNoCommand(original):
-		// Only an earlier build wrapped such an original: a group of nothing
+		// Only an earlier build wrapped such an original: a wrap of nothing
 		// but comments does not parse, and the print form would lose the
 		// user's lines, so it stays as it is for uninstall to restore.
 		return "", "holds only comments, which Loadline no longer wraps; uninstall restores them"
@@ -118,7 +131,7 @@ func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 		return "", "holds a here-document, which would take the line Loadline adds after it as its own " +
 			"unless it is terminated"
 	default:
-		body = escapeJSON(launcher+tapPipe+groupOpen) + raw(t.original) + escapeJSON(groupClose)
+		body = escapeJSON(launcher+tapPipe+wrapOpen) + raw(t.original) + escapeJSON(wrapClose)
 	}
 	return `"` + body + `"`, ""
 }
@@ -240,15 +253,20 @@ func parsePipe(rest []char) (tapCommand, tapMatch) {
 	if !ok {
 		return tapCommand{}, edited
 	}
-	inner, grouped := cutText(after, groupOpen)
-	if !grouped {
-		return tappedOriginal(after)
+	// No plain command starts like a wrap: each opening holds a character a
+	// plain command cannot.
+	for _, wrap := range wraps {
+		inner, opened := cutText(after, wrap.open)
+		if !opened {
+			continue
+		}
+		original, closed := cutSuffix(inner, wrap.close)
+		if !closed {
+			return tapCommand{}, edited
+		}
+		return tappedOriginal(original)
 	}
-	original, closed := cutSuffix(inner, groupClose)
-	if !closed {
-		return tapCommand{}, edited
-	}
-	return tappedOriginal(original)
+	return tappedOriginal(after)
 }
 
 // tappedOriginal is a tapped command with the user's own original. Nothing

@@ -18,7 +18,7 @@ import (
 // The forms install gives a user's status-line command under bash.
 const (
 	plainForm   = iota // after the pipe as it is
-	groupedForm        // in a group, so the pipe still feeds all of it
+	wrappedForm        // in a subshell within one, so the pipe still feeds all of it
 	leftAlone          // not tapped at all
 )
 
@@ -30,50 +30,60 @@ var bashFormCases = []struct {
 	{"cat", plainForm},
 	{"   cat", plainForm},
 	{"bash ~/.claude/statusline.sh", plainForm},
-	{`printf '%s' "$(cat)"`, groupedForm},
-	{"cd / && cat", groupedForm},
-	{"cat | tr a-z A-Z", groupedForm},
-	{"{ cat; echo; }", groupedForm},
-	{`FOO=bar bash -c 'echo "$FOO $(cat)"'`, groupedForm},
-	{"read line; echo \"got $line\"", groupedForm},
-	{"read line\necho \"got $line\"", groupedForm},
-	{"export GREETING=hi; cat; echo $GREETING", groupedForm},
-	{"! false && cat", groupedForm},
-	{"time cat", groupedForm},
-	{"if true; then cat; fi", groupedForm},
-	{"cat # a trailing comment", groupedForm},
-	{"cat #", groupedForm},
-	{"for word in a b; do echo $word; done; cat", groupedForm},
-	{`cat <<< "a here-string"`, groupedForm},
-	{"cat; exit 4", groupedForm},
+	{`printf '%s' "$(cat)"`, wrappedForm},
+	{"cd / && cat", wrappedForm},
+	{"cat | tr a-z A-Z", wrappedForm},
+	{"{ cat; echo; }", wrappedForm},
+	{"(cat; echo)", wrappedForm},
+	{`FOO=bar bash -c 'echo "$FOO $(cat)"'`, wrappedForm},
+	{"read line; echo \"got $line\"", wrappedForm},
+	{"read line\necho \"got $line\"", wrappedForm},
+	{"export GREETING=hi; cat; echo $GREETING", wrappedForm},
+	{"! false && cat", wrappedForm},
+	{"time cat", wrappedForm},
+	{"if true; then cat; fi", wrappedForm},
+	{"cat # a trailing comment", wrappedForm},
+	{"cat #", wrappedForm},
+	{"for word in a b; do echo $word; done; cat", wrappedForm},
+	{`cat <<< "a here-string"`, wrappedForm},
+	{"cat; exit 4", wrappedForm},
 	{"exit 3", plainForm},
 	{"exec cat", plainForm},
 	{"FOO=1 cat", plainForm},
 	{"cat\n", plainForm},
 	{"echo 'a\"b'", plainForm},
-	{`echo a\ `, groupedForm},
-	{"true \\\n&& cat", groupedForm},
-	{"case x in x) cat;; esac", groupedForm},
-	{"cat 2>&1 1>/dev/null; echo done", groupedForm},
-	{"set -o pipefail; false | cat", groupedForm},
-	{"trap 'echo bye' EXIT; cat", groupedForm},
-	{`printf '%s\n' 'a\\b'`, groupedForm},
-	// A here-document would take the group's closing line as its own when
-	// it is not terminated, so none is grouped.
+	{`echo a\ `, wrappedForm},
+	{"true \\\n&& cat", wrappedForm},
+	{"case x in x) cat;; esac", wrappedForm},
+	{"cat 2>&1 1>/dev/null; echo done", wrappedForm},
+	{"set -o pipefail; false | cat", wrappedForm},
+	{`printf '%s\n' 'a\\b'`, wrappedForm},
+	// An EXIT trap the original sets runs when the original ends. bash 3.2,
+	// macOS's /bin/bash and /bin/sh, skips it for a group in a pipeline.
+	{"trap 'echo bye' EXIT; cat", wrappedForm},
+	{"trap 'echo bye' 0; cat", wrappedForm},
+	{"cleanup() { trap 'echo bye' EXIT; }; cleanup; cat", wrappedForm},
+	{"trap 'echo bye' EXIT; cat; exit 3", wrappedForm},
+	{"trap 'echo bye' EXIT; trap - EXIT; cat", wrappedForm},
+	// On its own, a background command reads its input from /dev/null; bash
+	// 4.4 and later give it the pipe instead inside a subshell the pipe feeds.
+	{"trap 'echo bye' EXIT; cat &\nwait", wrappedForm},
+	// A here-document would take the wrap's closing line as its own when it
+	// is not terminated, so none is wrapped.
 	{"cat <<'EOF'\nfrom a here-document\nEOF", leftAlone},
 	{"cat <<EOF\nan unterminated here-document", leftAlone},
 	{"cat <<-EOF\n\tindented\n\tEOF", leftAlone},
-	// Nothing to run, and an empty group is a syntax error.
+	// Nothing to run, and an empty subshell is a syntax error.
 	{"# just a comment", leftAlone},
 	{"\n  # one\n\n\t# two\n", leftAlone},
-	// A trailing backslash, escaped or not, can turn the group's closing
-	// line into a continuation once Windows and Git Bash have passed the
-	// command along.
+	// A trailing backslash, escaped or not, can turn the wrap's closing line
+	// into a continuation once Windows and Git Bash have passed the command
+	// along.
 	{`echo a\`, leftAlone},
 	{`echo a\\`, leftAlone},
 }
 
-func TestBashForm_GroupsAllButPlainCommands(t *testing.T) {
+func TestBashForm_WrapsAllButPlainCommands(t *testing.T) {
 	for _, tc := range bashFormCases {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, tc.original) + `}}`)
 
@@ -81,7 +91,7 @@ func TestBashForm_GroupsAllButPlainCommands(t *testing.T) {
 
 		want := map[int]string{
 			plainForm:   `"` + goldenExe + `" tap | ` + tc.original,
-			groupedForm: `"` + goldenExe + `" tap | { ` + tc.original + "\n}",
+			wrappedForm: `"` + goldenExe + `" tap | ( ( ` + tc.original + "\n) )",
 			leftAlone:   tc.original,
 		}[tc.form]
 		if got := statusCommand(t, out); got != want {
@@ -127,12 +137,12 @@ func TestUsesPowerShellWrapper(t *testing.T) {
 // copies stdin to stdout as tap does, and expects the same output. Starting
 // a shell per case is slow, so with the race detector on, which these
 // shells do not run under anyway, or with -short, it runs one shell and
-// every third case; TestBashForm_GroupsAllButPlainCommands still checks
+// every third case; TestBashForm_WrapsAllButPlainCommands still checks
 // every command.
 func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 	shellPaths := availableShells()
 	if len(shellPaths) == 0 {
-		t.Skip("no POSIX shell here; TestBashForm_GroupsAllButPlainCommands checks the commands")
+		t.Skip("no POSIX shell here; TestBashForm_WrapsAllButPlainCommands checks the commands")
 	}
 	shellPaths = shellPaths[:scaled(len(shellPaths), 1)]
 	tapStandIn := filepath.Join(t.TempDir(), "loadline")
@@ -222,6 +232,9 @@ func runShell(t *testing.T, shell string, env []string, command string) (string,
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // G204: runs the shell under test on a command the test built
+	// A background command can outlive a shell killed at the timeout and
+	// hold its output open; this stops Wait from waiting on it.
+	cmd.WaitDelay = time.Second
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader("{\"model\":\"opus\"}\n")
 	var stdout bytes.Buffer

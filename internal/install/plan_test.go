@@ -337,22 +337,22 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `"` + goldenExe + `" tap | FOO=bar npx -y ccstatusline@latest --theme "dark mode" ~/x,y:1+2%`,
 		},
 		{
-			name:     "a list is grouped so the pipe feeds all of it",
+			name:     "a list is wrapped so the pipe feeds all of it",
 			settings: `{"statusLine": {"type": "command", "command": "jq -r '.model' 2>/dev/null && echo \"ok\" | tr a-z A-Z"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { jq -r '.model' 2>/dev/null && echo "ok" | tr a-z A-Z` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( jq -r '.model' 2>/dev/null && echo "ok" | tr a-z A-Z` + "\n) )",
 		},
 		{
-			name:     "a reserved first word is grouped",
+			name:     "a reserved first word is wrapped",
 			settings: `{"statusLine": {"type": "command", "command": "time status.sh"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { time status.sh` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( time status.sh` + "\n) )",
 		},
 		{
-			name:     "a script of several lines is grouped",
+			name:     "a script of several lines is wrapped",
 			settings: `{"statusLine": {"type": "command", "command": "read line\necho \"$line\""}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { read line` + "\n" + `echo "$line"` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( read line` + "\n" + `echo "$line"` + "\n) )",
 		},
 		{
 			name:     "an old plain prefix is replaced, not doubled",
@@ -361,16 +361,22 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `"` + goldenExe + `" tap | my-status`,
 		},
 		{
-			name:     "an old grouped prefix is replaced, not doubled",
-			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | { a && b\n}"}}`,
+			name:     "an old wrapped prefix is replaced, not doubled",
+			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | ( ( a && b\n) )"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { a && b` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( a && b` + "\n) )",
 		},
 		{
-			name:     "a list behind an old plain prefix gets grouped",
+			name:     "an earlier build's group becomes the wrap",
+			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | { a && b\n}"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | ( ( a && b` + "\n) )",
+		},
+		{
+			name:     "a list behind an old plain prefix gets wrapped",
 			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | a && b"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { a && b` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( a && b` + "\n) )",
 		},
 		{
 			name:     "a bash prefix becomes the PowerShell form",
@@ -382,7 +388,7 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			name:     "the PowerShell form becomes the bash prefix",
 			settings: `{"statusLine": {"type": "command", "command": "& \"D:/old/loadline.exe\" tap --run-b64 '` + b64("echo it's; x") + `'"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | { echo it's; x` + "\n}",
+			want:     `"` + goldenExe + `" tap | ( ( echo it's; x` + "\n) )",
 		},
 		{
 			name:     "an old print command keeps printing",
@@ -492,13 +498,36 @@ func TestPlan_SkipsAHereDocumentAGroupWouldBreak(t *testing.T) {
 
 func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 
-func TestPlan_GroupsWithAReadableNewline(t *testing.T) {
+func TestPlan_WrapsWithAReadableNewline(t *testing.T) {
 	settings := []byte(`{"statusLine": {"type": "command", "command": "a && b"}}`)
 
 	out, _, _ := plan(t, settings, options(install.ShellBash))
 
-	if raw := gjson.GetBytes(out, "statusLine.command").Raw; !strings.HasSuffix(raw, `{ a && b\n}"`) {
-		t.Errorf("statusLine.command = %s, want the group closed by an escaped \\n", raw)
+	if raw := gjson.GetBytes(out, "statusLine.command").Raw; !strings.HasSuffix(raw, `( ( a && b\n) )"`) {
+		t.Errorf("statusLine.command = %s, want the wrap closed after an escaped \\n", raw)
+	}
+}
+
+// Earlier builds wrapped originals in a group, which bash 3.2 runs without
+// the EXIT trap the original sets. Installing again moves the original into
+// the wrap install writes now, keeping its bytes for uninstall.
+func TestPlan_UpgradesAnEarlierBuildsGroup(t *testing.T) {
+	// As the file encodes it, with an escape few encoders write.
+	const original = `trap 'echo bye' EXIT; printf '%s\u0021' \"$(cat)\"`
+	settings := []byte(`{"statusLine": {"type": "command", "command": "\"` + goldenExe + `\" tap | { ` + original + `\n}"}}`)
+
+	out, changes, _ := plan(t, settings, options(install.ShellBash))
+
+	want := `"` + goldenExe + `" tap | ( ( trap 'echo bye' EXIT; printf '%s!' "$(cat)"` + "\n) )"
+	if got := statusCommand(t, out); got != want {
+		t.Errorf("status line = %q, want %q", got, want)
+	}
+	if !hasChange(changes, "statusLine.command", install.ActionUpdate) {
+		t.Errorf("changes = %+v, want statusLine.command updated", changes)
+	}
+	restored, _ := revert(t, out, goldenExe)
+	if got := gjson.GetBytes(restored, "statusLine.command").Raw; got != `"`+original+`"` {
+		t.Errorf("uninstall restored %s, want the original's own bytes", got)
 	}
 }
 
@@ -507,6 +536,8 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 		`"C:/x/loadline.exe" tap|foo`,
 		`"C:/x/loadline.exe" tap --print --wide`,
 		`"C:/x/loadline.exe" tap | { foo`,
+		`"C:/x/loadline.exe" tap | ( ( foo`,
+		`"C:/x/loadline.exe" tap | ( ( foo ) )`,
 		`& "C:/x/loadline.exe" tap | foo`,
 		`& "C:/x/loadline.exe" tap --run 'foo'`,
 		`& "C:/x/loadline.exe" tap --run-b64 'not*base64'`,
@@ -557,6 +588,7 @@ func TestPlan_AnEmptyCommandBehindTheTapPrefixPrints(t *testing.T) {
 		`"D:/old/loadline.exe" tap | `,
 		`"D:/old/loadline.exe" tap |    `,
 		"\"D:/old/loadline.exe\" tap | { \t \n}",
+		"\"D:/old/loadline.exe\" tap | ( ( \t \n) )",
 		`& "D:/old/loadline.exe" tap --run-b64 ''`,
 		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("  \n ") + `'`,
 	} {
