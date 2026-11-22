@@ -164,6 +164,9 @@ type child struct {
 	// opened is set once the test has opened the child as its browser
 	// through Open, which says nothing of its reaper.
 	opened bool
+	// reapWaited is set once waitReaped has run, so that the test's end
+	// does not wait, and report a failure, a second time.
+	reapWaited bool
 	// pid is the child's process ID, once the test has read its report.
 	pid int
 }
@@ -185,7 +188,9 @@ func expectChild(t *testing.T, hold bool) *child {
 	t.Cleanup(func() {
 		c.release(t)
 		c.waitExit(t)
-		c.waitReaped(t)
+		if !c.reapWaited {
+			c.waitReaped(t)
+		}
 	})
 	return c
 }
@@ -251,6 +256,7 @@ func (c *child) waitExit(t *testing.T) {
 // package's tests are done.
 func (c *child) waitReaped(t *testing.T) bool {
 	t.Helper()
+	c.reapWaited = true
 	limit := reapLimit()
 	switch {
 	case c.reaped != nil:
@@ -263,6 +269,9 @@ func (c *child) waitReaped(t *testing.T) bool {
 	case c.opened:
 		// Open gives no word of its reaper, so the wait is for goleak to find
 		// no goroutine left, which Find retries for a while on each call.
+		// That holds only because this package's tests run one at a time:
+		// Find cannot tell one test's goroutines from another's, so beside a
+		// parallel test it would wait on goroutines that are not the reaper.
 		deadline := time.Now().Add(limit)
 		for err := goleak.Find(); err != nil; err = goleak.Find() {
 			if time.Now().After(deadline) {
