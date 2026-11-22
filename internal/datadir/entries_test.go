@@ -68,3 +68,18 @@ func TestSecure_TakesAFolderWithTheSystemsOwnFiles(t *testing.T) {
 		t.Errorf("Secure = %v, want it to take the folder", err)
 	}
 }
+
+// The creation of the token prepares its folder without judging the folders
+// above it, and refuses one that is not Loadline's just the same.
+func TestMake_RefusesAFolderThatHoldsOtherThings(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tools")
+	if err := os.MkdirAll(filepath.Join(home, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Make(home)
+
+	if err == nil || !strings.HasPrefix(err.Error(), home+" holds shared, which is not Loadline's") {
+		t.Errorf("Make = %v, want it refused, naming shared", err)
+	}
+}
