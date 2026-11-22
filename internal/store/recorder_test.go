@@ -113,7 +113,9 @@ func requestsKept(t *testing.T, s *store.SQLite) int {
 
 // The tracker calls the recorder with its lock held, so a database that is
 // slow or locked must never hold it up: what does not fit is dropped and
-// counted.
+// counted. The database stays locked throughout and Close gives up what is
+// queued, so that nothing here waits on how fast the database writes; each
+// call is then kept, dropped or counted as lost, exactly once.
 func TestAsyncRecorder_NeverBlocksWhenFull(t *testing.T) {
 	s, path := openStore(t)
 	release := holdWriteLock(t, path)
@@ -137,11 +139,20 @@ func TestAsyncRecorder_NeverBlocksWhenFull(t *testing.T) {
 	if dropped := rec.Dropped(); dropped < total-queueSize-batchSize || dropped > total-queueSize {
 		t.Errorf("dropped %d of %d, want between %d and %d", dropped, total, total-queueSize-batchSize, total-queueSize)
 	}
+	givenUp, giveUp := context.WithCancel(t.Context())
+	giveUp()
+	if err := rec.Close(givenUp); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close = %v, want it to give up what is queued", err)
+	}
+	// A second Close waits, with no deadline, for the writer to count what
+	// it gave up.
+	if err := rec.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	release()
-	closeRecorder(t, rec)
-	if kept := requestsKept(t, s); int64(kept)+rec.Dropped() != total || rec.Errors() != 0 {
-		t.Errorf("kept %d and dropped %d of %d with %d errors, want every call either kept or dropped",
-			kept, rec.Dropped(), total, rec.Errors())
+	if kept := requestsKept(t, s); int64(kept)+rec.Dropped()+rec.Errors() != total {
+		t.Errorf("kept %d, dropped %d and lost %d of %d, want every call counted once",
+			kept, rec.Dropped(), rec.Errors(), total)
 	}
 }
 
