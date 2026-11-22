@@ -461,3 +461,102 @@ func TestTracker_AResetThatKeepsItsResetTimeEndsTheStretchOnCredits(t *testing.T
 		t.Errorf("spans %v of the samples recorded, want one from %v to %v", spans, at(1), at(61))
 	}
 }
+
+// A session ID can belong to two live processes at once: Claude Code keeps
+// it when a session is resumed, and the first terminal may still be open.
+// Each process counts its own API time, so the idle one's high count going up
+// from the busy one's low count says nothing of a new response.
+func TestTracker_TwoProcessesOfOneSessionDoNotFlipTheWindow(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	shared := s1
+	shownWeekly(h, withAPITime(weeklyFrom(0, shared, 97), 50_000))
+	below, views := 0, 0
+	api := int64(1200)
+	for sec := 10; sec < 300; sec += 5 {
+		api += 100
+		shownWeekly(h, withAPITime(weeklyFrom(sec, shared, 100), api))
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec+2, shared, 97), 50_000)); got < 100 {
+			below++
+		}
+		views++
+	}
+	if below > 0 {
+		t.Errorf("weekly window fell back to 97%% after %d of %d lines from the idle process, want none", below, views)
+	}
+}
+
+// onAccountB is st sent from account B, its weekly window that account's.
+func onAccountB(st domain.Status) domain.Status {
+	st.Dir = dirB
+	st.Limits.SevenDay = window(10, weekResets.Add(48*time.Hour))
+	return st
+}
+
+// A session resumed on another account while its first process still runs,
+// idle, on the first: the resumed process works on account B, while on
+// account A s3 works at the limit and the old process goes on reporting A's
+// older 97%. Neither B's responses nor the resumed process's API time say
+// anything of how fresh the old process's reading of A is.
+func TestTracker_AResumeOnAnotherAccountDoesNotFlipTheFirstAccount(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts}, dirA, dirB)
+	moved, busyA := s1, s3
+	h.tr.RecordAPI(request(at(0), moved, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(1, moved, 97), 50_000))
+	h.tr.RecordAPI(request(at(5), busyA, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(6, busyA, 100), 2000))
+
+	below, views := 0, 0
+	sinces := map[int64]bool{}
+	for sec := 10; sec < 310; sec += 10 {
+		h.tr.RecordAPI(request(at(sec), moved, "Opus 5.5", 0.1))
+		h.clock.Set(at(sec + 1))
+		h.tr.Apply(withAPITime(onAccountB(statusLine(sec+1, moved)), 1000+int64(sec)))
+		h.tr.RecordAPI(request(at(sec+3), busyA, "Opus 5.5", 0.5))
+		shownWeekly(h, withAPITime(weeklyFrom(sec+4, busyA, 100), 2000+int64(sec)))
+		h.clock.Set(at(sec + 6))
+		h.tr.Apply(withAPITime(weeklyFrom(sec+6, moved, 97), 50_000))
+		v := h.tr.Snapshot()
+		for _, a := range v.Accounts {
+			if a.Dir == dirA && (a.SevenDay == nil || a.SevenDay.UsedPct < 100) {
+				below++
+			}
+		}
+		for _, a := range alertsOfKind(v, domain.AlertCreditsActive) {
+			if a.Dir == dirA {
+				sinces[a.Since.UnixMilli()] = true
+			}
+		}
+		views++
+	}
+	if below > 0 || len(sinces) != 1 {
+		t.Errorf("account A shown below 100%% in %d of %d views, on credits with %d different since times; want none and 1: the old process's reading is older news", below, views, len(sinces))
+	}
+}
+
+// As above with no help from API time, the old process's staying below the
+// resumed one's: only the resumed process's calls, which are on B, could make
+// the old process's reading of A look fresh, and they must not.
+func TestTracker_AResumedProcesssCallsDoNotFreshenTheOldOnesReading(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts}, dirA, dirB)
+	moved, busyA := s1, s3
+	h.tr.RecordAPI(request(at(0), moved, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(1, moved, 97), 500))
+	h.tr.RecordAPI(request(at(5), busyA, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(6, busyA, 100), 2000))
+
+	below, views := 0, 0
+	for sec := 10; sec < 310; sec += 10 {
+		h.tr.RecordAPI(request(at(sec+1), busyA, "Opus 5.5", 0.5))
+		shownWeekly(h, withAPITime(weeklyFrom(sec+2, busyA, 100), 2000+int64(sec)))
+		h.tr.RecordAPI(request(at(sec+3), moved, "Opus 5.5", 0.1))
+		h.clock.Set(at(sec + 4))
+		h.tr.Apply(withAPITime(onAccountB(statusLine(sec+4, moved)), 1000+int64(sec)))
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec+6, moved, 97), 500)); got < 100 {
+			below++
+		}
+		views++
+	}
+	if below > 0 {
+		t.Errorf("account A shown below 100%% in %d of %d views, want none: the resumed process's calls on B say nothing of the old process's reading of A", below, views)
+	}
+}

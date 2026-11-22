@@ -261,6 +261,66 @@ func TestTracker_ClockSetBackKeepsAReportToItsHour(t *testing.T) {
 	}
 }
 
+// A call that no status line has placed on an account by the step moves with
+// it, so the line that places it after the step is not dated ahead.
+func TestTracker_ClockSetBackMovesACallNoLineHasPlaced(t *testing.T) {
+	h, _ := newSteppingHarness(t)
+	busy, other := s1, s2
+	h.clock.Set(at(hour))
+	h.tr.RecordAPI(request(at(hour), busy, "Opus 5.5", 0.1))
+	h.tr.Apply(withWindows(statusLine(hour, busy), nil, window(95, weekResets)))
+	h.tr.RecordAPI(request(at(hour), busy, "Opus 5.5", 0.1))
+
+	h.clock.Set(at(0))
+	h.tr.Snapshot()
+	h.tr.RecordAPI(request(at(5), other, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(6, other, 0))
+
+	if got := shownWeekly(h, weeklyFrom(11, busy, 95)); got != 0 {
+		t.Errorf("shown %v%%, want the 0%% of the response after the step: the busy session's last call came before it", got)
+	}
+}
+
+// The clock is set back two hours while a batch of call events is on its way:
+// a call the idle session made just before the step arrives after it,
+// stamped by the clock before the step. The busy session's calls after the
+// step came later, so its readings are the fresher ones.
+func TestTracker_ACallStampedBeforeTheStepDoesNotFreshenItsSessionForHours(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	busy, idle := s1, s2
+	h.clock.Set(at(7000))
+	h.tr.RecordAPI(request(at(7000), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(7001, idle, 97), 1000))
+	h.tr.RecordAPI(request(at(7095), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(7096, idle, 97), 1100))
+	h.tr.RecordAPI(request(at(7100), busy, "Opus 5.5", 0.1))
+	if got := shownWeekly(h, withAPITime(weeklyFrom(7101, busy, 100), 500)); got != 100 {
+		t.Fatalf("shown %v%% before the step, want 100%%", got)
+	}
+
+	h.clock.Set(at(-100))
+	h.tr.RecordAPI(request(at(7098), idle, "Opus 5.5", 0.1))
+
+	below, views := 0, 0
+	for sec := 0; sec < 600; sec += 10 {
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec, idle, 97), 1100)); got < 100 {
+			below++
+		}
+		h.tr.RecordAPI(request(at(sec+3), busy, "Opus 5.5", 0.5))
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec+4, busy, 100), 500+int64(sec+4))); got < 100 {
+			below++
+		}
+		views += 2
+	}
+	if below > 0 {
+		t.Errorf("weekly window shown below 100%% in %d of %d views over the 10 minutes after the step, want none", below, views)
+	}
+	h.clock.Set(at(600))
+	if got := h.account(dirA).Credits; got == nil || !got.Active || got.SpentUSD < 30 {
+		t.Errorf("credits %+v, want active, with the $30 the busy session spent at the limit after the step", got)
+	}
+}
+
 // The two hooks /clear fires can arrive either side of the step.
 func TestTracker_ClockSetBackStillLinksAClear(t *testing.T) {
 	h, _ := newSteppingHarness(t)
