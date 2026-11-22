@@ -135,14 +135,15 @@ type AlertView struct {
 }
 
 // Timestamp is a moment that may be unknown. It encodes as an RFC 3339 time
-// in UTC, or as null for the zero time. The view's fields of this type may be
-// null; its time.Time fields are always set.
+// in UTC, or as null for the zero time and for a time outside the years JSON
+// can hold, which only a broken clock gives. The view's fields of this type
+// may be null; its time.Time fields are always set.
 type Timestamp time.Time
 
 // MarshalJSON implements json.Marshaler.
 func (ts Timestamp) MarshalJSON() ([]byte, error) {
 	t := time.Time(ts)
-	if t.IsZero() {
+	if t.IsZero() || !encodable(t) {
 		return []byte("null"), nil
 	}
 	return t.UTC().MarshalJSON()
@@ -160,6 +161,32 @@ func (ts *Timestamp) UnmarshalJSON(data []byte) error {
 	}
 	*ts = Timestamp(t)
 	return nil
+}
+
+// earliestEncodable and latestEncodable bound the times JSON can hold:
+// time.Time refuses to marshal one whose year, in UTC as the view shows it,
+// falls outside 0 to 9999.
+var (
+	earliestEncodable = time.Date(0, time.January, 1, 0, 0, 0, 0, time.UTC)
+	latestEncodable   = time.Date(9999, time.December, 31, 23, 59, 59, 999999999, time.UTC)
+)
+
+func encodable(t time.Time) bool {
+	return !t.Before(earliestEncodable) && !t.After(latestEncodable)
+}
+
+// viewTime is t in UTC for a view field that is always set, held within the
+// years JSON can hold. Only a broken clock gives a time outside them, and one
+// such time must not keep the whole view from encoding.
+func viewTime(t time.Time) time.Time {
+	switch t = t.UTC(); {
+	case t.Before(earliestEncodable):
+		return earliestEncodable
+	case t.After(latestEncodable):
+		return latestEncodable
+	default:
+		return t
+	}
 }
 
 // stateOrder is the order sessions are listed in: those that need the user
@@ -210,7 +237,7 @@ func (t *Tracker) buildView(now time.Time) View {
 	}
 
 	return View{
-		GeneratedAt: now.UTC(),
+		GeneratedAt: viewTime(now),
 		Accounts:    accounts,
 		Sessions:    sessions,
 		Models:      usage.today.totals(),
@@ -289,7 +316,7 @@ func sessionView(e *sessionEntry, account string, share float64, models []ModelT
 	}
 	timeline := make([]TransitionView, len(e.timeline))
 	for i, tr := range e.timeline {
-		timeline[i] = TransitionView{At: tr.At.UTC(), State: tr.State, Reason: tr.Reason}
+		timeline[i] = TransitionView{At: viewTime(tr.At), State: tr.State, Reason: tr.Reason}
 	}
 	return SessionView{
 		ID:            s.ID,
@@ -301,9 +328,9 @@ func sessionView(e *sessionEntry, account string, share float64, models []ModelT
 		Name:          s.Name,
 		Project:       s.ProjectDir,
 		PID:           s.PID,
-		StartedAt:     s.StartedAt.UTC(),
-		StateAt:       s.StateAt.UTC(),
-		LastSeenAt:    s.LastSeenAt.UTC(),
+		StartedAt:     viewTime(s.StartedAt),
+		StateAt:       viewTime(s.StateAt),
+		LastSeenAt:    viewTime(s.LastSeenAt),
 		Subagents:     s.Subagents,
 		Model:         cmp.Or(m.Model, m.ModelID),
 		Effort:        m.Effort,
@@ -324,7 +351,7 @@ func sessionView(e *sessionEntry, account string, share float64, models []ModelT
 func alertViews(alerts []domain.Alert) []AlertView {
 	views := make([]AlertView, len(alerts))
 	for i, a := range alerts {
-		views[i] = AlertView{Kind: a.Kind, Dir: a.Dir, Session: a.Session, Since: a.Since.UTC(), Message: a.Message}
+		views[i] = AlertView{Kind: a.Kind, Dir: a.Dir, Session: a.Session, Since: viewTime(a.Since), Message: a.Message}
 	}
 	return views
 }

@@ -365,6 +365,89 @@ func TestTimestamp_JSON(t *testing.T) {
 	}
 }
 
+// A time outside the years JSON can hold never comes through the ingest
+// routes, which refuse it, but the view encodes whatever the state holds:
+// one bad time must not cost every client its dashboard. A time the view
+// always sets is held at the nearest year it can show; one that may be
+// unknown shows as unknown.
+func TestView_TimesOutsideTheEncodableYearsStillEncode(t *testing.T) {
+	h := newHarness(t, tracker.Config{Alerts: defaultAlerts})
+	pastYear9999 := time.Date(9999, 12, 31, 23, 59, 59, 0, time.FixedZone("", -3600))
+	beforeYear0 := time.Date(0, 1, 1, 0, 0, 0, 0, time.FixedZone("", 3600))
+	h.tr.Apply(domain.Hook{At: pastYear9999, Dir: dirA, Session: s1, PID: pidA, Name: "PermissionRequest"})
+	h.tr.Apply(domain.Hook{At: beforeYear0, Dir: dirA, Session: s2, PID: pidA, Name: "UserPromptSubmit"})
+	status := statusLine(1, s3)
+	status.Limits = domain.Limits{FiveHour: window(40, pastYear9999), ObservedAt: pastYear9999}
+	h.tr.Apply(status)
+
+	for _, clock := range []time.Time{t0, pastYear9999} {
+		h.clock.Set(clock)
+		data, err := json.Marshal(h.tr.Snapshot())
+		if err != nil {
+			t.Fatalf("with the clock at %v, the view does not encode: %v", clock, err)
+		}
+		var got struct {
+			GeneratedAt string `json:"generatedAt"`
+			Sessions    []struct {
+				ID         domain.SessionID `json:"id"`
+				StartedAt  string           `json:"startedAt"`
+				StateAt    string           `json:"stateAt"`
+				LastSeenAt string           `json:"lastSeenAt"`
+				Timeline   []struct {
+					At string `json:"at"`
+				} `json:"timeline"`
+			} `json:"sessions"`
+			Accounts []struct {
+				FiveHour *struct {
+					ResetsAt   *string `json:"resetsAt"`
+					ObservedAt *string `json:"observedAt"`
+				} `json:"fiveHour"`
+			} `json:"accounts"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("decode the view: %v", err)
+		}
+
+		const latest, earliest = "9999-12-31T23:59:59.999999999Z", "0000-01-01T00:00:00Z"
+		if clock.Equal(pastYear9999) && got.GeneratedAt != latest {
+			t.Errorf("generatedAt = %s, want %s", got.GeneratedAt, latest)
+		}
+		want := map[domain.SessionID]string{s1: latest, s2: earliest}
+		for _, s := range got.Sessions {
+			at, ok := want[s.ID]
+			if !ok {
+				continue
+			}
+			if s.StateAt != at || s.LastSeenAt != at || s.StartedAt != at || len(s.Timeline) != 1 || s.Timeline[0].At != at {
+				t.Errorf("session %s shows startedAt %s, stateAt %s, lastSeenAt %s, timeline %+v; want each at %s",
+					s.ID, s.StartedAt, s.StateAt, s.LastSeenAt, s.Timeline, at)
+			}
+		}
+		if !clock.Equal(t0) {
+			// The window has reset by then.
+			continue
+		}
+		if len(got.Accounts) != 1 || got.Accounts[0].FiveHour == nil {
+			t.Fatalf("accounts %s, want one with its five-hour window", data)
+		}
+		if w := got.Accounts[0].FiveHour; w.ResetsAt != nil || w.ObservedAt != nil {
+			t.Errorf("five-hour window resets at %v, observed at %v; want both null", w.ResetsAt, w.ObservedAt)
+		}
+	}
+}
+
+func TestTimestamp_OutsideTheEncodableYearsIsNull(t *testing.T) {
+	for _, at := range []time.Time{
+		time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(-1, 12, 31, 23, 59, 59, 0, time.UTC),
+	} {
+		got, err := json.Marshal(tracker.Timestamp(at))
+		if err != nil || string(got) != "null" {
+			t.Errorf("marshal %v = %s, %v; want null", at, got, err)
+		}
+	}
+}
+
 func TestView_DecodesFromItsJSON(t *testing.T) {
 	v := goldenScenario(t).Snapshot()
 	data, err := json.Marshal(v)
