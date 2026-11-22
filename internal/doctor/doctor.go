@@ -85,8 +85,9 @@ type Deps struct {
 	DataDir string
 	// CheckDataDir reports, in a sentence that says what to do, what keeps
 	// the data directory from being the user's alone, as datadir.Check does,
-	// or "" when nothing does. A missing directory is an error that matches
-	// fs.ErrNotExist.
+	// or "" when nothing does. A missing directory that install would make
+	// is an error that matches fs.ErrNotExist; one it would refuse to make
+	// is reported with why.
 	CheckDataDir func(dir string) (string, error)
 	// Now reads the time. Nil means time.Now.
 	Now func() time.Time

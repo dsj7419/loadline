@@ -172,11 +172,13 @@ func Verify(dir, top string) error {
 // Check reports, in a sentence that says what to do, the first thing that
 // keeps dir from being the user's alone: what Verify refuses, or access that
 // others have to dir or to one of Loadline's files in it. It returns "" when
-// there is none. A missing dir is an error that matches fs.ErrNotExist.
+// there is none. A dir that does not exist yet is reported with what install
+// would refuse to make it for, judged from the folders above it that exist,
+// or, when install would make it, is an error that matches fs.ErrNotExist.
 func Check(dir, top string) (string, error) {
 	dir = filepath.Clean(dir)
-	if _, err := os.Stat(dir); err != nil {
-		return "", fmt.Errorf("read the data directory: %w", err)
+	if _, err := os.Lstat(dir); err != nil {
+		return notMadeYet(dir, top, err)
 	}
 	if problem, err := refusal(dir, top); err != nil || problem != "" {
 		return problem, err
@@ -197,6 +199,25 @@ func Check(dir, top string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// notMadeYet reports what install would refuse to make dir for, which could
+// not be read (unread), or returns unread when dir is there but unreadable,
+// or missing and install would make it. A server refuses such a dir before
+// it makes anything there, so doctor finds none to judge, and says why here.
+func notMadeYet(dir, top string, unread error) (string, error) {
+	unread = fmt.Errorf("read the data directory: %w", unread)
+	if !errors.Is(unread, fs.ErrNotExist) {
+		return "", unread
+	}
+	problem, err := refusal(dir, top)
+	switch {
+	case err != nil:
+		return "", err
+	case problem == "":
+		return "", unread
+	}
+	return dir + " does not exist yet, and loadline install would refuse to make it: " + problem, nil
 }
 
 // entryProblem reports path, one of Loadline's files or folders in the data

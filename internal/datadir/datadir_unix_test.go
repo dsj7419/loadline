@@ -97,6 +97,30 @@ func TestSecure_RefusesADataDirectoryThatIsASymlink(t *testing.T) {
 	}
 }
 
+// Doctor says why install would refuse to make a data directory that does
+// not exist yet, in the words install would use.
+func TestCheck_SaysWhyInstallWouldRefuseADataDirectoryNotMadeYet(t *testing.T) {
+	top := t.TempDir()
+	shared := filepath.Join(top, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(shared, "apps", "loadline")
+	refused := datadir.Secure(home, top)
+	if refused == nil {
+		t.Fatalf("Secure(%s) succeeded, want it refused", home)
+	}
+
+	got, err := datadir.Check(home, top)
+
+	if want := home + " does not exist yet, and loadline install would refuse to make it: " + refused.Error(); err != nil || got != want {
+		t.Errorf("Check = %q, %v; want %q", got, err, want)
+	}
+}
+
 // A file of Loadline's with a second name elsewhere is refused like a link.
 func TestSecure_RefusesAFileOfLoadlinesWithAnotherName(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "loadline")

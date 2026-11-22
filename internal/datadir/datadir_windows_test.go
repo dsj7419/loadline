@@ -143,11 +143,42 @@ func TestCheck_APrivateDataDirectoryPasses(t *testing.T) {
 	}
 }
 
+// A missing data directory that install would make, below folders nobody
+// else can move aside, is an error.
 func TestCheck_AMissingDataDirectoryIsAnError(t *testing.T) {
-	_, err := datadir.Check(filepath.Join(t.TempDir(), "missing"), "")
+	top := privateTop(t)
 
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("Check = %v, want an error that matches fs.ErrNotExist", err)
+	got, err := datadir.Check(filepath.Join(top, "tools", "loadline"), top)
+
+	if got != "" || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Check = %q, %v; want an error that matches fs.ErrNotExist", got, err)
+	}
+}
+
+// A server refuses a data directory below a folder others can move aside
+// before it makes anything there, so doctor finds none. It says why install
+// would refuse to make it, judging the folders above it that exist, in the
+// words install would use.
+func TestCheck_SaysWhyInstallWouldRefuseADataDirectoryNotMadeYet(t *testing.T) {
+	top := driveRoot(t)
+	tools := filepath.Join(top, "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, home := range []string{filepath.Join(tools, "loadline"), filepath.Join(tools, "apps", "loadline")} {
+		refused := datadir.Secure(home, top)
+		if refused == nil {
+			t.Fatalf("Secure(%s) succeeded, want it refused", home)
+		}
+		if entries, err := os.ReadDir(tools); err != nil || len(entries) != 0 {
+			t.Fatalf("the refused Secure left %d entries in %s (%v), want none", len(entries), tools, err)
+		}
+
+		got, err := datadir.Check(home, top)
+
+		if want := home + " does not exist yet, and loadline install would refuse to make it: " + refused.Error(); err != nil || got != want {
+			t.Errorf("Check(%s) = %q, %v; want %q", home, got, err, want)
+		}
 	}
 }
 
