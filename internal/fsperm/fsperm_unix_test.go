@@ -89,3 +89,22 @@ func TestExposure_MissingPathFails(t *testing.T) {
 		t.Errorf("Exposure = %v, want an error that matches fs.ErrNotExist", err)
 	}
 }
+
+func TestMkdirAll_CreatesEachMissingFolderWithMode0700(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "tools", "loadline")
+
+	if err := fsperm.MkdirAll(dir); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	for _, path := range []string{filepath.Join(parent, "tools"), dir} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got&0o077 != 0 {
+			t.Errorf("%s has mode %#o, want no permission for group or others", path, got)
+		}
+	}
+}

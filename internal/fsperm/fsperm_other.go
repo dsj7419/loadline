@@ -20,6 +20,16 @@ func Private(dir string) error {
 	return nil
 }
 
+// MkdirAll creates dir and every missing folder above it, each with mode
+// 0700 from the moment it exists. A folder that already exists is left as it
+// is.
+func MkdirAll(dir string) error {
+	if err := os.MkdirAll(dir, privateDirMode); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	return nil
+}
+
 // Exposure says who, besides the user, the mode of path lets in: group,
 // others or both. It returns "" when the mode admits nobody else.
 func Exposure(path string) (string, error) {

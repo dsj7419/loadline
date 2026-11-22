@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
 
@@ -89,7 +90,7 @@ func (s Spool) Put(env protocol.Envelope) error {
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("spool event: name: %w", err)
 	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+	if err := fsperm.MkdirAll(s.Dir); err != nil {
 		return fmt.Errorf("spool event: create spool directory: %w", err)
 	}
 	// An event time before 1970, which only a broken clock gives, sorts
@@ -302,7 +303,7 @@ func readEnvelope(path string) (protocol.Envelope, error) {
 // quarantine moves a spool file into the bad directory.
 func (s Spool) quarantine(name string) error {
 	bad := filepath.Join(s.Dir, badDirName)
-	if err := os.MkdirAll(bad, 0o700); err != nil {
+	if err := fsperm.MkdirAll(bad); err != nil {
 		return fmt.Errorf("create %s directory: %w", badDirName, err)
 	}
 	err := os.Rename(filepath.Join(s.Dir, name), filepath.Join(bad, name))

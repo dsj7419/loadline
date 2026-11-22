@@ -57,8 +57,8 @@ func SelfInstall(src, dataDir string) (string, error) {
 	}
 
 	bin := filepath.Dir(target)
-	if err := os.MkdirAll(bin, executableMode); err != nil {
-		return "", fmt.Errorf("create %s: %w", bin, err)
+	if err := fsperm.MkdirAll(bin); err != nil {
+		return "", err
 	}
 	// Every hook runs the binary here, so only the user may replace it,
 	// whatever the folder above passes down. Made private before the copy is

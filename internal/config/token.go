@@ -37,7 +37,7 @@ func EnsureToken(path string) ([]byte, error) {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return nil, fmt.Errorf("create token directory: %w", err)
 	}
 	// Whoever reads the token can feed the dashboard and read it. Made

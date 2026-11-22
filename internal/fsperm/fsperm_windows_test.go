@@ -154,3 +154,51 @@ func TestExposure_MissingPathFails(t *testing.T) {
 		t.Errorf("Exposure = %v, want an error that matches fs.ErrNotExist", err)
 	}
 }
+
+func TestMkdirAll_CreatesEachMissingFolderPrivateFromTheStart(t *testing.T) {
+	parent := t.TempDir()
+	fspermtest.Permissive(t, parent)
+	dir := filepath.Join(parent, "tools", "loadline", "bin")
+
+	if err := fsperm.MkdirAll(dir); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	for _, path := range []string{filepath.Join(parent, "tools"), filepath.Join(parent, "tools", "loadline"), dir} {
+		if !fspermtest.Protected(t, path) {
+			t.Errorf("%s takes what its parent passes down, want a private access list of its own", path)
+		}
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+			t.Errorf("%s admits %s, want only the user, SYSTEM and Administrators", path, strings.Join(others, ", "))
+		}
+	}
+	later := filepath.Join(dir, "loadline.exe")
+	write(t, later)
+	if others := fspermtest.Others(t, later, fspermtest.Any); len(others) > 0 {
+		t.Errorf("%s admits %s, want it to inherit the private access list", later, strings.Join(others, ", "))
+	}
+}
+
+func TestMkdirAll_LeavesAnExistingFolderAsItIs(t *testing.T) {
+	root := sharedRoot(t)
+
+	if err := fsperm.MkdirAll(root); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if fspermtest.Protected(t, root) || len(fspermtest.Others(t, root, fspermtest.Any)) == 0 {
+		t.Errorf("MkdirAll changed the access list of %s, which already existed", root)
+	}
+}
+
+func TestMkdirAll_AFileInTheWayFails(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "token")
+	write(t, file)
+
+	if err := fsperm.MkdirAll(filepath.Join(file, "bin")); err == nil {
+		t.Error("MkdirAll below a file succeeded, want an error")
+	}
+	if err := fsperm.MkdirAll(file); err == nil {
+		t.Error("MkdirAll of a file succeeded, want an error")
+	}
+}

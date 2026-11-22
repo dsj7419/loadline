@@ -20,6 +20,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
 
@@ -124,7 +125,7 @@ func open(ctx context.Context, path string) (*SQLite, error) {
 // the user alone, and makes an existing file so. SQLite gives its
 // write-ahead log the database file's mode.
 func createPrivate(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create the directory: %w", err)
 	}
 	f, err := os.OpenFile(filepath.Clean(path), os.O_RDWR|os.O_CREATE, 0o600)

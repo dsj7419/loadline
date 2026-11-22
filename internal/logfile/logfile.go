@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+
+	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
 // File is a log file that rotates once it reaches its size limit. It is safe
@@ -37,7 +39,7 @@ func Open(path string, maxBytes int64, keep int) (*File, error) {
 	if maxBytes <= 0 || keep < 0 {
 		return nil, fmt.Errorf("open log file %s: a limit of %d bytes keeping %d files is not one", path, maxBytes, keep)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create log file directory: %w", err)
 	}
 	f := &File{path: path, maxBytes: maxBytes, keep: keep, limit: maxBytes}

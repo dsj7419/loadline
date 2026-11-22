@@ -22,6 +22,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
 
@@ -330,8 +331,8 @@ func ensureServer(env Env, paths config.Paths) {
 
 // touch creates the file at path if need be and sets its time to at.
 func touch(path string, at time.Time) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
+		return err
 	}
 	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

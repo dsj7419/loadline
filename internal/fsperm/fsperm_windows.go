@@ -3,57 +3,106 @@ package fsperm
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-const (
-	// fileAllAccess is FILE_ALL_ACCESS, the Full control of the Security tab.
-	fileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+// accessAllowedCallbackACEType is ACCESS_ALLOWED_CALLBACK_ACE_TYPE, a
+// conditional allow entry. Up to its SID it is laid out as an
+// ACCESS_ALLOWED_ACE.
+const accessAllowedCallbackACEType = 9
 
-	// accessAllowedCallbackACEType is ACCESS_ALLOWED_CALLBACK_ACE_TYPE, a
-	// conditional allow entry. Up to its SID it is laid out as an
-	// ACCESS_ALLOWED_ACE.
-	accessAllowedCallbackACEType = 9
-)
+// privateDescriptor is the security descriptor of a private directory: a
+// protected access list, so that nothing the folder above passes down
+// applies, that gives full control to the current user, SYSTEM and
+// Administrators, and to nobody else, and that every file and directory
+// created below inherits.
+func privateDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, fmt.Errorf("identify the current user: %w", err)
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + user.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	if err != nil {
+		return nil, fmt.Errorf("build a private access list: %w", err)
+	}
+	return sd, nil
+}
 
-// Private replaces the access list of dir with one that gives full control
-// to the current user, SYSTEM and Administrators, and to nobody else, and
-// that every file and directory below dir inherits. The list is protected,
-// so that what the folder above dir passes down no longer applies. Windows
-// applies the new list to everything dir already holds, replacing what each
-// of those inherited; access a file was given explicitly stays.
+// Private gives dir the access list of privateDescriptor. Windows applies it
+// to everything dir already holds, replacing what each of those inherited;
+// access a file was given explicitly stays.
 func Private(dir string) error {
-	trusted, err := trustedSIDs()
+	sd, err := privateDescriptor()
 	if err != nil {
-		return err
-	}
-	// The entries hold the SIDs by address while Windows builds the list.
-	var pinner runtime.Pinner
-	defer pinner.Unpin()
-	entries := make([]windows.EXPLICIT_ACCESS, 0, len(trusted))
-	for _, sid := range trusted {
-		pinner.Pin(sid)
-		entries = append(entries, windows.EXPLICIT_ACCESS{
-			AccessPermissions: fileAllAccess,
-			AccessMode:        windows.SET_ACCESS,
-			Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeValue: windows.TrusteeValueFromSID(sid),
-			},
-		})
-	}
-	acl, err := windows.ACLFromEntries(entries, nil)
-	if err != nil {
-		return fmt.Errorf("make %s private: build its access list: %w", dir, err)
-	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
 		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	runtime.KeepAlive(sd)
+	if err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	return nil
+}
+
+// MkdirAll creates dir and every missing folder above it, each with the
+// access list of privateDescriptor from the moment it exists, so that nobody
+// else can put anything in it first. A folder that already exists is left as
+// it is.
+func MkdirAll(dir string) error {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	info, err := os.Stat(dir)
+	switch {
+	case err == nil && info.IsDir():
+		return nil
+	case err == nil:
+		return fmt.Errorf("create %s: %w", dir, syscall.ENOTDIR)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := MkdirAll(parent); err != nil {
+			return err
+		}
+	}
+
+	sd, err := privateDescriptor()
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	name, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	attrs := windows.SecurityAttributes{SecurityDescriptor: sd}
+	attrs.Length = uint32(unsafe.Sizeof(attrs))
+	err = windows.CreateDirectory(name, &attrs)
+	runtime.KeepAlive(sd)
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		// Created a moment ago by another Loadline process, or by someone
+		// else: either way it exists now and is judged as any existing
+		// folder is.
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			return nil
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	return nil
 }
