@@ -78,18 +78,26 @@ export function shareOfAccount(session: SessionView): string | null {
 /** What a window gauge says under its bar. */
 export type WindowNote = {
   readonly text: string;
-  /** The window is on pace to hit its limit before it resets. */
+  /** The window has reached its limit, or is on pace to before it resets. */
   readonly runsOut: boolean;
 };
+
+/** The usage, in percent, at which a window's limit is reached. */
+const limitPct = 100;
 
 /**
  * When a window resets and where its usage is heading: +2.1%/h · runs out
  * Sun 14:00 · resets Mon 09:00 for one on pace to hit its limit first, and
  * resets Fri 14:00 · +0.3%/h · on pace for 22% at reset otherwise. Without a
- * trend it gives the reset alone, and without a reset time nothing.
+ * trend it gives the reset alone, and without a reset time nothing. A window
+ * already at its limit reads at limit · resets Mon 09:00: it has run out, and
+ * its burn rate no longer says anything.
  */
 export function windowNote(window: WindowView, now: Date): WindowNote | null {
   const resets = window.resetsAt === null ? null : `resets ${formatReset(window.resetsAt, now)}`;
+  if (window.usedPct >= limitPct) {
+    return { text: joined(['at limit', resets]), runsOut: true };
+  }
   const projection = window.projection;
   if (projection === null) {
     return resets === null ? null : { text: resets, runsOut: false };

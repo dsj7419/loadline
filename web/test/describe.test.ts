@@ -76,6 +76,29 @@ describe('windowNote', () => {
     expect(windowNote(w, now)).toEqual({ text: '+2.1%/h · runs out Sun 14:00 · resets Mon 09:00', runsOut: true });
   });
 
+  // A window at or past its limit has run out already rather than being on
+  // pace to, and its burn rate no longer says anything.
+  it.each([100, 120])('says a window at %d percent is at its limit, and when it resets', (usedPct) => {
+    const w = windowOf({
+      usedPct,
+      projection: { ratePerHour: 2.13, atReset: 100, eta: '2026-11-21T18:00:00Z', runsOutBeforeReset: true },
+    });
+    expect(windowNote(w, now)).toEqual({ text: 'at limit · resets Mon 09:00', runsOut: true });
+  });
+
+  it('says a window is at its limit while its trend is unknown, or its reset', () => {
+    expect(windowNote(windowOf({ usedPct: 100 }), now)).toEqual({ text: 'at limit · resets Mon 09:00', runsOut: true });
+    expect(windowNote(windowOf({ usedPct: 100, resetsAt: null }), now)).toEqual({ text: 'at limit', runsOut: true });
+  });
+
+  it('gives a window just short of its limit when it runs out', () => {
+    const w = windowOf({
+      usedPct: 99.9,
+      projection: { ratePerHour: 2.13, atReset: 100, eta: '2026-11-21T18:03:00Z', runsOutBeforeReset: true },
+    });
+    expect(windowNote(w, now)?.text).toBe('+2.1%/h · runs out in 3m · resets Mon 09:00');
+  });
+
   it('gives when it resets and where it is heading for a window on pace', () => {
     const w = windowOf({
       resetsAt: '2026-11-27T14:00:00Z',

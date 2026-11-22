@@ -630,6 +630,7 @@ describe('AccountCard', () => {
     expect(screen.getByText('+2.1%/h · runs out Sun 14:00 · resets Mon 09:00')).toBeTruthy();
   });
 
+
   it('shows how fast each window is burning after when it resets', () => {
     const account = accountOf({ fiveHour: { ...fiveHour, pace: 0.41 }, sevenDay: { ...week, pace: 1.44 } });
     render(<AccountCard range="today" account={account} now={signal(now)} />);
@@ -761,6 +762,22 @@ describe('AccountCard', () => {
     // An icon and words, never colour alone.
     expect(badge.querySelector('svg')).not.toBeNull();
     expect(badge.closest('p')?.textContent).toBe('On credits since 17:42');
+  });
+
+  // The credits row says the account is on credits; the window says only
+  // that it is at its limit, as its gauge shows.
+  it('says a window at its limit is at its limit, never that it runs out', () => {
+    const atLimit = {
+      ...week,
+      usedPct: 100,
+      projection: { ratePerHour: 2.13, atReset: 100, eta: '2026-11-21T18:00:00Z', runsOutBeforeReset: true },
+    };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: atLimit, credits: onCredits })} now={signal(now)} />);
+
+    const note = screen.getByRole('meter', { name: /weekly/i }).closest('.gauge')?.querySelector('.note');
+    expect(note?.textContent).toBe('at limit · resets Mon 09:00');
+    expect(note?.classList.contains('note-bad')).toBe(true);
+    expect(seenText(screen.getByRole('article', { name: 'Main' }))).not.toMatch(/runs out/);
   });
 
   it('shows reported credits as they are, without the estimate mark', () => {
