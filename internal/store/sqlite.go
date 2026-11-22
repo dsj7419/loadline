@@ -550,6 +550,7 @@ func (l *loader) carried(ctx context.Context, cut int64) (map[domain.ConfigDir]d
 // carriedBefore reduces one window's samples, all taken before cut and in
 // time order, to what the tracker keeps of them.
 func carriedBefore(samples []domain.Sample, cut int64) []domain.Sample {
+	// OnCreditsMarks mirrors the tracker's pruneWindow; it changes nothing here, as every row is before the cut.
 	return domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples), instant(cut))
 }
 
