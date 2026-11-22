@@ -32,3 +32,13 @@ func SetRenameBudget(t *testing.T, budget time.Duration) {
 // PrivateMode exposes the mode Apply gives settings files and backups, whose
 // bits the Windows tests cannot observe on disk.
 var PrivateMode = privateMode
+
+// SetBeforeRecheck runs f, for the rest of the test, just before Apply reads
+// the settings file one last time ahead of replacing it.
+func SetBeforeRecheck(t *testing.T, f func()) {
+	t.Helper()
+
+	previous := testHookBeforeRecheck
+	testHookBeforeRecheck = f
+	t.Cleanup(func() { testHookBeforeRecheck = previous })
+}

@@ -253,3 +253,67 @@ func TestApply_RefusesWhenFileWasDeletedSincePlan(t *testing.T) {
 		t.Errorf("dir holds %q, want the deleted settings file left deleted", got)
 	}
 }
+
+// An editor can save the file while Apply writes its backup and the new
+// copy; the bytes are checked once more just before the rename.
+func TestApply_RefusesAnEditJustBeforeTheRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := readFile(t, "testdata/settings_owner.in.json")
+	writeFile(t, path, original)
+	edited := []byte(`{"model": "sonnet"}`)
+	install.SetBeforeRecheck(t, func() { writeFile(t, path, edited) })
+
+	backup, err := install.Apply(path, original, readFile(t, "testdata/settings_owner.out.json"), applyTime)
+
+	if !errors.Is(err, install.ErrChangedSincePlan) {
+		t.Fatalf("err = %v, want ErrChangedSincePlan", err)
+	}
+	if backup != "" {
+		t.Errorf("backup = %q, want none for a refused write", backup)
+	}
+	if got := readFile(t, path); !bytes.Equal(got, edited) {
+		t.Errorf("settings hold %s, want the edit kept", got)
+	}
+	if got := dirEntries(t, dir); !slices.Equal(got, []string{"settings.json"}) {
+		t.Errorf("dir holds %q, want no backup and no temporary file left", got)
+	}
+}
+
+// A temporary file that a crashed Apply left behind can hold the token, so
+// the next Apply removes those older than an hour. Newer ones may belong to
+// an Apply still running, and other files are not Loadline's.
+func TestApply_RemovesItsOwnOldLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := readFile(t, "testdata/settings_owner.in.json")
+	writeFile(t, path, original)
+	leftovers := map[string]time.Duration{
+		".settings.json.loadline-1111.tmp": 2 * time.Hour,
+		".settings.json.loadline-2222.tmp": 10 * time.Minute,
+		".other.json.loadline-3333.tmp":    2 * time.Hour,
+		"settings.json.loadline-4444.tmp":  2 * time.Hour,
+	}
+	for name, age := range leftovers {
+		p := filepath.Join(dir, name)
+		writeFile(t, p, []byte("x-loadline-token=secret"))
+		if err := os.Chtimes(p, applyTime.Add(-age), applyTime.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := install.Apply(path, original, readFile(t, "testdata/settings_owner.out.json"), applyTime); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := []string{
+		".other.json.loadline-3333.tmp",
+		".settings.json.loadline-2222.tmp",
+		"settings.json",
+		"settings.json" + backupSuffix,
+		"settings.json.loadline-4444.tmp",
+	}
+	if got := dirEntries(t, dir); !slices.Equal(got, want) {
+		t.Errorf("dir holds %q, want %q", got, want)
+	}
+}

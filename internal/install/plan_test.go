@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -898,6 +899,60 @@ func TestPlan_AcceptsAbsoluteSlashPaths(t *testing.T) {
 
 		if _, _, _, err := install.Plan([]byte(`{}`), o); err != nil {
 			t.Errorf("Plan rejected exe %q: %v", exe, err)
+		}
+	}
+}
+
+func nested(depth int) string {
+	// The top-level object is the first level.
+	return `{"x": ` + strings.Repeat("[", depth-1) + strings.Repeat("]", depth-1) + `}`
+}
+
+func TestPlan_RefusesSettingsNestedTooDeep(t *testing.T) {
+	if _, _, _, err := install.Plan([]byte(nested(512)), options(install.ShellBash)); err != nil {
+		t.Errorf("Plan refused 512 levels: %v", err)
+	}
+	for _, depth := range []int{513, 50000} {
+		start := time.Now()
+
+		_, _, _, err := install.Plan([]byte(nested(depth)), options(install.ShellBash))
+
+		if !errors.Is(err, install.ErrInvalidSettings) || !strings.Contains(err.Error(), "512") {
+			t.Errorf("depth %d: err = %v, want ErrInvalidSettings naming the 512 limit", depth, err)
+		}
+		if _, _, err := install.Revert([]byte(nested(depth)), goldenExe); !errors.Is(err, install.ErrInvalidSettings) {
+			t.Errorf("depth %d: Revert err = %v, want ErrInvalidSettings", depth, err)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("depth %d took %s to refuse", depth, elapsed)
+		}
+	}
+	// Brackets inside strings are not nesting.
+	deepInText := `{"x": "` + strings.Repeat("[{", 1000) + `"}`
+	if _, _, _, err := install.Plan([]byte(deepInText), options(install.ShellBash)); err != nil {
+		t.Errorf("Plan refused brackets inside a string: %v", err)
+	}
+}
+
+// Windows limits a command line to about 8000 characters in places along the
+// way, so a PowerShell form longer than that is not written.
+func TestPlan_SkipsAPowerShellOriginalTooLongToPass(t *testing.T) {
+	for length, fits := range map[int]bool{5000: true, 6000: false} {
+		original := "Write-Output '" + strings.Repeat("x", length) + "'"
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
+
+		out, changes, warnings := plan(t, settings, options(install.ShellPowerShell))
+
+		if tapped := statusCommand(t, out) != original; tapped != fits {
+			t.Errorf("%d characters: tapped = %v, want %v", length, tapped, fits)
+		}
+		if !fits && (!hasChange(changes, "statusLine.command", install.ActionSkip) ||
+			len(warnings) != 1 || !strings.Contains(warnings[0], "8000")) {
+			t.Errorf("%d characters: changes %+v and warnings %q, want a skip naming the limit", length, changes, warnings)
+		}
+		bashOut, _, _ := plan(t, settings, options(install.ShellBash))
+		if statusCommand(t, bashOut) == original {
+			t.Errorf("%d characters: the bash form was skipped too", length)
 		}
 	}
 }

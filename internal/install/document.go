@@ -24,6 +24,10 @@ const (
 	// defaultIndent is what Claude Code writes, used when a file has no
 	// indentation of its own to copy.
 	defaultIndent = "  "
+	// maxDepth bounds how deeply a settings file may nest objects and
+	// arrays. Real settings nest a handful of levels; far deeper input would
+	// only make the duplicate-key check slow.
+	maxDepth = 512
 )
 
 // document is a settings file being edited in place. Every edit splices text
@@ -57,6 +61,9 @@ func parseDocument(data []byte) (*document, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("%w: it is not valid JSON", ErrInvalidSettings)
 	}
+	if nestsDeeperThan(body, maxDepth) {
+		return nil, fmt.Errorf("%w: it nests more than %d levels deep", ErrInvalidSettings, maxDepth)
+	}
 	root := gjson.ParseBytes(body)
 	if !root.IsObject() {
 		return nil, fmt.Errorf("%w: it must hold a JSON object", ErrInvalidSettings)
@@ -79,6 +86,31 @@ func parseDocument(data []byte) (*document, error) {
 	// Claude Code would format it.
 	d.oneLine = len(top.items) > 0 && !bytes.ContainsRune(d.body[top.open:top.end], '\n')
 	return d, nil
+}
+
+// nestsDeeperThan reports whether the valid JSON in body nests objects and
+// arrays more than limit levels deep, counting the top level as one.
+// Brackets inside strings do not count.
+func nestsDeeperThan(body []byte, limit int) bool {
+	depth, inString, escaped := 0, false, false
+	for _, b := range body {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && b == '\\':
+			escaped = true
+		case b == '"':
+			inString = !inString
+		case inString:
+		case b == '{' || b == '[':
+			if depth++; depth > limit {
+				return true
+			}
+		case b == '}' || b == ']':
+			depth--
+		}
+	}
+	return false
 }
 
 // checkUniqueKeys refuses an object anywhere in value that has a key twice.

@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,11 +26,16 @@ import (
 // The group keeps the meaning of a list, a script of several lines or a
 // command that starts with a reserved word: the pipe feeds all of it, as the
 // status-line JSON fed all of the original. The closing brace goes on a line
-// of its own so a trailing comment or here-document cannot swallow it.
-// PowerShell gets the original out of band, because it would re-encode JSON
-// piped between commands and its quoting of native arguments differs between
-// versions; tap decodes the original and runs it.
+// of its own so a trailing comment cannot swallow it; an original that a
+// group would still break is left alone. PowerShell gets the original out of
+// band, because it would re-encode JSON piped between commands and its
+// quoting of native arguments differs between versions; tap decodes the
+// original and runs it.
 const (
+	// maxPowerShellCommand bounds the PowerShell form, in UTF-16 code units:
+	// parts of Windows cut a command line at 8191 characters.
+	maxPowerShellCommand = 8000
+
 	powerShellCall = "& "
 	tapPipe        = " tap | "
 	groupOpen      = "{ "
@@ -91,7 +97,12 @@ func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 	case t.print || hasNoCommand(original):
 		body = escapeJSON(launcher + printSuffix)
 	case shell == ShellPowerShell:
-		body = escapeJSON(launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close)
+		command := launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close
+		if utf16Len(command) > maxPowerShellCommand {
+			return "", fmt.Sprintf("would be longer than the %d characters a Windows command line safely holds "+
+				"once wrapped for PowerShell", maxPowerShellCommand)
+		}
+		body = escapeJSON(command)
 	case isPlainCommand(original):
 		body = escapeJSON(launcher+tapPipe) + raw(t.original)
 	case strings.HasSuffix(original, `\`):
@@ -360,4 +371,14 @@ func hexRune(s string) (rune, bool) {
 // decodeString returns the value of a valid JSON string literal.
 func decodeString(literal string) string {
 	return gjson.Parse(literal).Str
+}
+
+// utf16Len is the length of s in UTF-16 code units, as Windows counts a
+// command line.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
 }
