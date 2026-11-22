@@ -58,9 +58,10 @@ jobs:
         # stay inside CI time; without it they check the same at a larger one.
         run: go test -count=1 -timeout 10m -run 'TestEstimateCredits_OnePassOverManySpansAndCalls$|TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap$|TestTracker_AViewTakesOnePassOverTheSpansAndCalls$' ./internal/domain/ ./internal/tracker/
       - name: Report the hot-path and view benchmarks
-        # The figures, such as the tap's echo-ms/op against the spec's 30 ms
-        # p95 budget, are for reading: a slow or busy runner must not fail
-        # the build over them.
+        # The figures are for reading, such as the tap's echo-ms/op against
+        # the spec's 30 ms p95 budget. No benchmark asserts a time, and the
+        # tests above cover the code they run, so the step reports and does
+        # not decide the build. At 3x, a p95 is the worst of three runs.
         continue-on-error: true
         run: go test -run '^$' -bench . -benchtime 3x ./internal/cli/ ./internal/tracker/ ./internal/domain/
 
