@@ -3,6 +3,7 @@ package install_test
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,9 +77,28 @@ func TestApply_BackupAndAtomicRename(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := info.Mode().Perm(); got != 0o640 {
-				t.Errorf("%s has mode %o, want the original 640", p, got)
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Errorf("%s has mode %o, want the original 640 narrowed to the owner, 600", p, got)
 			}
+		}
+	}
+}
+
+// Settings and their backups hold the ingest token, so whatever the file's
+// mode, group and others lose every permission and the owner keeps theirs.
+func TestPrivateMode(t *testing.T) {
+	for mode, want := range map[fs.FileMode]fs.FileMode{
+		0o644: 0o600,
+		0o640: 0o600,
+		0o666: 0o600,
+		0o600: 0o600,
+		0o755: 0o700,
+		0o444: 0o400,
+		0o777: 0o700,
+		0o000: 0o000,
+	} {
+		if got := install.PrivateMode(mode); got != want {
+			t.Errorf("PrivateMode(%o) = %o, want %o", mode, got, want)
 		}
 	}
 }

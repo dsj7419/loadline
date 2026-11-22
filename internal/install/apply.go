@@ -32,8 +32,9 @@ const (
 // never overwriting an earlier backup, and returns that backup's path. It then
 // writes out to a temporary file in the same directory and renames it over the
 // file, so readers see either the old settings or the new, never a mix. A file
-// that is a symlink stays one: the file it points to is replaced. The file's
-// permissions are kept.
+// that is a symlink stays one: the file it points to is replaced. The file
+// and its backup keep the owner's permissions, but group and others lose
+// theirs, as both may hold the ingest token.
 func Apply(path string, original, out []byte, now time.Time) (string, error) {
 	current, err := os.ReadFile(filepath.Clean(path))
 	switch {
@@ -56,14 +57,20 @@ func Apply(path string, original, out []byte, now time.Time) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	backup, err := writeBackup(path, current, info.Mode().Perm(), now)
+	mode := privateMode(info.Mode().Perm())
+	backup, err := writeBackup(path, current, mode, now)
 	if err != nil {
 		return "", err
 	}
-	if err := writeAtomically(target, out, info.Mode().Perm()); err != nil {
+	if err := writeAtomically(target, out, mode); err != nil {
 		return backup, err
 	}
 	return backup, nil
+}
+
+// privateMode is mode without any permission for group or others.
+func privateMode(mode fs.FileMode) fs.FileMode {
+	return mode &^ 0o077
 }
 
 func writeBackup(path string, data []byte, mode fs.FileMode, now time.Time) (string, error) {

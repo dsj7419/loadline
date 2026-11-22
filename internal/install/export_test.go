@@ -28,3 +28,7 @@ func SetRenameBudget(t *testing.T, budget time.Duration) {
 	renameBudget = budget
 	t.Cleanup(func() { renameBudget = previous })
 }
+
+// PrivateMode exposes the mode Apply gives settings files and backups, whose
+// bits the Windows tests cannot observe on disk.
+var PrivateMode = privateMode
