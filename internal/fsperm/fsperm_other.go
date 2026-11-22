@@ -85,6 +85,15 @@ func emptiable(folder string) (string, error) {
 	return fmt.Sprintf("%s lets %s rename the folders in it (mode %#o, without the sticky bit)", folder, andList(who), mode.Perm()), nil
 }
 
+// finalPath returns path with every symbolic link in it followed.
+func finalPath(path string) (string, error) {
+	final, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return final, nil
+}
+
 // ownerOf returns the user ID that owns path. Tests replace it: an account
 // that is not root cannot give a folder another owner.
 var ownerOf = func(path string) (uint32, error) {

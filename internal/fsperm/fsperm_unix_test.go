@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
@@ -135,6 +136,30 @@ func TestMovableAncestor_NamesAFolderOthersCanWriteWithoutTheStickyBit(t *testin
 		if err != nil || got != tt.want {
 			t.Errorf("MovableAncestor under mode %v = %q, %v; want %q", tt.mode, got, err, tt.want)
 		}
+	}
+}
+
+// A symbolic link on the way puts the data directory in the folders that
+// hold the link's target, which are judged too.
+func TestMovableAncestor_JudgesTheFoldersThatReallyHoldTheDirectory(t *testing.T) {
+	top := t.TempDir()
+	shared := filepath.Join(top, "shared")
+	target := filepath.Join(shared, "real")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(top, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fsperm.MovableAncestor(filepath.Join(link, "loadline"), top)
+
+	if want := " lets group and others rename the folders in it"; err != nil || !strings.Contains(got, " is really ") || !strings.Contains(got, want) {
+		t.Errorf("MovableAncestor = %q, %v; want it to name the folder that really holds the directory, which%s", got, err, want)
 	}
 }
 

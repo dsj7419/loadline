@@ -32,11 +32,43 @@ func andList(names []string) string {
 // change its permissions, or when it lets anyone else delete or rename
 // itself, or what it holds, or change its permissions or owner. dir itself
 // is judged by its owner alone, since making it private replaces the rest.
+//
+// A link on the way, a junction or a symbolic link, or on Windows a drive
+// letter that subst made, puts dir among the folders that hold the link's
+// target, which dir's own names do not show. So the folders that really
+// hold dir are judged too, as the system resolves them, against top
+// resolved the same way.
 func MovableAncestor(dir, top string) (string, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("check the folders above %s: %w", dir, err)
 	}
+	if found, err := movableChain(dir, top); err != nil || found != "" {
+		return found, err
+	}
+	held, err := resolved(dir)
+	if err != nil {
+		return "", fmt.Errorf("find the folders that hold %s: %w", dir, err)
+	}
+	if samePath(held, dir) {
+		return "", nil
+	}
+	heldTop := top
+	if top != "" {
+		if heldTop, err = resolved(top); err != nil {
+			return "", fmt.Errorf("find the folders that hold %s: %w", top, err)
+		}
+	}
+	found, err := movableChain(held, heldTop)
+	if err != nil || found == "" {
+		return "", err
+	}
+	return dir + " is really " + held + ", and " + found, nil
+}
+
+// movableChain judges dir and the folders above it, as MovableAncestor
+// does, by the names in dir alone.
+func movableChain(dir, top string) (string, error) {
 	if exists(dir) {
 		if found, err := foreignOwner(dir); err != nil || found != "" {
 			return found, err
@@ -81,4 +113,24 @@ func foreignOwner(folder string) (string, error) {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// resolved returns path with every link in it followed (finalPath), as far
+// as path exists, and the rest of it as written. The rest does not exist
+// yet, and Loadline creates it private.
+func resolved(path string) (string, error) {
+	var rest []string
+	for existing := path; ; existing = filepath.Dir(existing) {
+		if exists(existing) {
+			final, err := finalPath(existing)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{final}, rest...)...), nil
+		}
+		if filepath.Dir(existing) == existing {
+			return path, nil
+		}
+		rest = append([]string{filepath.Base(existing)}, rest...)
+	}
 }

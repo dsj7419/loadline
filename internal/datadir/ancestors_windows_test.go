@@ -53,3 +53,65 @@ func TestVerify_RefusesAFolderAboveOthersCanTakeOver(t *testing.T) {
 		}
 	}
 }
+
+// A junction on the path, a relocated AppData or a dotfiles link, puts the
+// data directory in the folders that hold the junction's target, which the
+// path's own names never show. Here one of them lets every signed-in user
+// delete what it holds, so they could move the target aside and put a
+// folder of their own there, which the junction, and every hook, then leads
+// into.
+func TestVerify_ChecksTheFoldersThatReallyHoldTheDataDirectory(t *testing.T) {
+	top := privateTop(t)
+	holder := filepath.Join(top, "real")
+	if err := os.Mkdir(holder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, holder, 0x40 /* FILE_DELETE_CHILD */, windows.NO_INHERITANCE)
+	target := filepath.Join(holder, "Local")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(top, "profile")
+	if err := os.Mkdir(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(profile, "Local")
+	junction(t, local, target)
+	home := filepath.Join(local, "loadline")
+
+	err := datadir.Secure(home, top)
+
+	want := home + " is really " + filepath.Join(target, "loadline") + ", and " + holder + " lets " + fspermtest.AuthenticatedUsers(t)
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("Secure = %v; want it refused, starting %q", err, want)
+	}
+	if _, statErr := os.Stat(home); statErr == nil {
+		t.Errorf("Secure created %s although it refused it", home)
+	}
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, checkErr := datadir.Check(home, top); checkErr != nil || !strings.HasPrefix(got, want) {
+		t.Errorf("Check = %q, %v; want doctor to report the same", got, checkErr)
+	}
+}
+
+// A \\?\ path names the same folders as the plain one, and is judged the
+// same, with top in either form.
+func TestVerify_JudgesAnExtendedLengthPathAsThePlainOne(t *testing.T) {
+	top := driveRoot(t)
+	tools := filepath.Join(top, "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(tools, "loadline")
+	if datadir.Verify(home, top) == nil {
+		t.Fatal("the plain path passes, so the test proves nothing")
+	}
+
+	for _, tt := range []struct{ home, top string }{{`\\?\` + home, `\\?\` + top}, {`\\?\` + home, top}, {home, `\\?\` + top}} {
+		if err := datadir.Verify(tt.home, tt.top); err == nil || !strings.Contains(err.Error(), tools) {
+			t.Errorf("Verify(%s, %s) = %v; want it refused, naming %s", tt.home, tt.top, err, tools)
+		}
+	}
+}

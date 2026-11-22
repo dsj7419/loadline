@@ -510,6 +510,49 @@ func samePath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
+// finalPathFlags are FILE_NAME_NORMALIZED and VOLUME_NAME_DOS, both zero:
+// the path with every link and subst drive resolved, on its drive letter.
+const finalPathFlags = 0
+
+// finalPath returns the path the system opens for path, each junction,
+// symbolic link and subst drive in it resolved.
+func finalPath(path string) (string, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	// No access is asked for: the handle only names the folder.
+	handle, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	buf := make([]uint16, windows.MAX_PATH)
+	for {
+		// buf holds MAX_PATH, or what an earlier call asked for in a uint32.
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), finalPathFlags) //nolint:gosec // G115: see above
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", path, err)
+		}
+		if int(n) < len(buf) {
+			return dosPath(windows.UTF16ToString(buf[:n])), nil
+		}
+		// Too small: n is the size it needs, its terminating null included.
+		buf = make([]uint16, n)
+	}
+}
+
+// dosPath takes the \\?\ prefix, which GetFinalPathNameByHandle puts on what
+// it returns, off p, so that the folders it names compare and read as the
+// written ones do.
+func dosPath(p string) string {
+	if share, ok := strings.CutPrefix(p, `\\?\UNC\`); ok {
+		return `\\` + share
+	}
+	return strings.TrimPrefix(p, `\\?\`)
+}
+
 // trustedInstallerSID is NT SERVICE\TrustedInstaller, which owns the system's
 // own folders, the volume root among them.
 const trustedInstallerSID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"

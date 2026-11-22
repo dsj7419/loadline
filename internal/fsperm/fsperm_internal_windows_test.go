@@ -128,3 +128,18 @@ func TestMovableAncestor_DoesNotJudgeTheOwnerOfTheFolderItTrusts(t *testing.T) {
 		t.Errorf("MovableAncestor = %q, %v; want \"\"", got, err)
 	}
 }
+
+// GetFinalPathNameByHandle names a folder in the \\?\ form, which the walk
+// and what it reports use without the prefix.
+func TestDOSPath_TakesOffTheExtendedLengthPrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		`\\?\C:\Users\me\AppData\Local`: `C:\Users\me\AppData\Local`,
+		`\\?\D:\`:                       `D:\`,
+		`\\?\UNC\server\share\loadline`: `\\server\share\loadline`,
+		`C:\plain`:                      `C:\plain`,
+	} {
+		if got := dosPath(in); got != want {
+			t.Errorf("dosPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
