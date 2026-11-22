@@ -1,0 +1,166 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        # The race detector needs cgo, so a runner without a C compiler fails
+        # here rather than testing without it. GitHub sets CI=true, which also
+        # runs the Windows test that binds a wildcard address, skipped on
+        # developer machines for the firewall prompt it raises.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -timeout 20m ./...
+
+  lint:
+    name: lint (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each platform's build has files of its own, such as *_windows.go.
+        goos:
+          - linux
+          - windows
+          - darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+        with:
+          version: v2.15.0
+          # The jobs share one cache key; one of them saving it is enough.
+          skip-save-cache: ${{ matrix.goos != 'linux' }}
+
+  vuln:
+    name: vuln (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        goos:
+          - linux
+          - windows
+          - darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # Installed for the runner first: govulncheck itself must not be built
+      # for the platform it scans.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+      # The build the releases ship: static, without cgo.
+      - name: Scan
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+        run: govulncheck ./...
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Check that the committed bundle is current
+        working-directory: .
+        run: |
+          git diff --exit-code -- internal/web/dist
+          untracked=$(git ls-files --others --exclude-standard -- internal/web/dist)
+          if [ -n "$untracked" ]; then
+            printf 'Not committed:\n%s\n' "$untracked"
+            exit 1
+          fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the binary
+        run: make build
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run the end-to-end tests
+        working-directory: web
+        env:
+          LOADLINE_BIN: ${{ github.workspace }}/bin/loadline
+        run: npm run e2e
+      - name: Keep the traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-traces
+          path: web/test-results/
+          retention-days: 7

@@ -1,0 +1,64 @@
+# Release builds: run by .github/workflows/release.yml for a v* tag. Check a
+# change locally with `goreleaser check` and `goreleaser release --snapshot --clean`.
+version: 2
+
+project_name: loadline
+
+builds:
+  - id: loadline
+    main: ./cmd/loadline
+    binary: loadline
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/dsj7419/loadline/internal/cli.Version={{.Version}}
+    # The same commit always builds the same binary.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: loadline
+    ids:
+      - loadline
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - THIRD_PARTY_NOTICES.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# CHANGELOG.md is the record of what changed; the release page links to it.
+changelog:
+  disable: true
+
+release:
+  prerelease: auto
+  header: |
+    See [CHANGELOG.md](https://github.com/dsj7419/loadline/blob/{{ .Tag }}/CHANGELOG.md) for what changed.
+
+    Every archive and `checksums.txt` carries a build provenance attestation. To check one after downloading it:
+
+    ```
+    gh attestation verify <archive> --repo dsj7419/loadline
+    ```

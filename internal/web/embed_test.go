@@ -27,6 +27,9 @@ func TestFS_ServesIndex(t *testing.T) {
 		"fonts/jetbrains-mono-latin-500-normal.woff2",
 		"fonts/inter-LICENSE.txt",
 		"fonts/jetbrains-mono-LICENSE.txt",
+		"licenses/preact-LICENSE.txt",
+		"licenses/preact-signals-LICENSE.txt",
+		"licenses/preact-signals-core-LICENSE.txt",
 	} {
 		info, err := fs.Stat(assets, name)
 		if err != nil {

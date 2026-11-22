@@ -24,6 +24,16 @@ const fontLicenses = {
   'jetbrains-mono-LICENSE.txt': '@fontsource/jetbrains-mono/LICENSE',
 };
 
+// app.js bundles these MIT-licensed packages, whose notices must accompany
+// every copy of them. They export neither their LICENSE nor their
+// package.json, so the files are read from the node_modules layout that
+// package-lock.json pins.
+const bundleLicenses = {
+  'preact-LICENSE.txt': 'preact',
+  'preact-signals-LICENSE.txt': '@preact/signals',
+  'preact-signals-core-LICENSE.txt': '@preact/signals-core',
+};
+
 /** @param {string} specifier */
 function resolvePackageFile(specifier) {
   return fileURLToPath(import.meta.resolve(specifier));
@@ -39,6 +49,7 @@ function writeText(path, text) {
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, 'fonts'), { recursive: true });
+mkdirSync(join(dist, 'licenses'), { recursive: true });
 
 // The CSS that main.tsx imports comes out beside app.js as app.css.
 await build({
@@ -60,5 +71,8 @@ for (const font of fonts) {
 }
 for (const [name, license] of Object.entries(fontLicenses)) {
   writeText(join(dist, 'fonts', name), readFileSync(resolvePackageFile(license), 'utf8'));
+}
+for (const [name, pkg] of Object.entries(bundleLicenses)) {
+  writeText(join(dist, 'licenses', name), readFileSync(join(web, 'node_modules', pkg, 'LICENSE'), 'utf8'));
 }
 writeText(join(dist, 'index.html'), readFileSync(join(web, 'index.html'), 'utf8'));
