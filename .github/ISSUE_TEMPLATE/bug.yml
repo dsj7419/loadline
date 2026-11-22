@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in Loadline does not work as described.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. If it is a security problem, please do not open an issue: report it privately as [SECURITY.md](https://github.com/dsj7419/loadline/blob/main/SECURITY.md) describes.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `loadline install`
+        2. Start a session
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Loadline version
+      description: The output of `loadline version`.
+    validations:
+      required: true
+
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      description: The output of `claude --version`.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Shell Claude Code uses on Windows
+      description: Claude Code runs commands through Git Bash when Git for Windows is installed, and through PowerShell otherwise.
+      options:
+        - Git Bash
+        - PowerShell
+        - Not sure
+        - Not on Windows
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `loadline doctor`
+      description: It lists file paths on your machine; edit out anything you would rather not share.
+      render: text
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Server log
+      description: The relevant lines of `loadline.log` in the Loadline data directory, if any. It holds no prompts or responses, but does name config directories.
+      render: text
