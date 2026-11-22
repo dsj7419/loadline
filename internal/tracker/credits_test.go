@@ -133,6 +133,54 @@ func TestTracker_ReportedSpendLimitIsShownWithoutGrants(t *testing.T) {
 	}
 }
 
+// A line observed before the newest report and delivered after it is stale,
+// however far the clock has moved on by then.
+func TestTracker_AnOlderReportDeliveredLateIsStale(t *testing.T) {
+	reporting := func(sec int, used, limit float64) domain.Status {
+		st := statusLine(sec, s1)
+		st.SpendLimit = &domain.SpendLimit{UsedUSD: used, LimitUSD: limit}
+		return st
+	}
+	h := newSubscribedHarness(t, tracker.Config{})
+	h.clock.Set(at(60))
+	h.tr.Apply(reporting(60, 314.25, 500))
+
+	h.clock.Set(at(70))
+	h.tr.Apply(reporting(45, 1, 2))
+
+	want := tracker.CreditsView{BalanceUSD: 500, SpentUSD: 314.25, RemainingUSD: 185.75, Days: 30, Source: domain.CreditSourceReported}
+	if got := h.account(dirA).Credits; got == nil || *got != want {
+		t.Errorf("credits %+v, want %+v: the report observed at %v is the newest", got, want, at(60))
+	}
+}
+
+// A call is held while a status line that arrives late could still show it
+// was made at a limit, and after that only while a span on credits holds it,
+// so the calls held stay bounded.
+func TestTracker_ForgetsCallsNoSpanHoldsOnceTheyAgeOut(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	resets := at(50)
+	h.tr.Apply(withWindows(statusLine(0, s1), nil, window(100, resets)))
+	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 1))
+	h.tr.Apply(withWindows(statusLine(60, s1), nil, window(40, resets.Add(7*24*time.Hour))))
+	const minutes = 180
+	for m := 1; m <= minutes; m++ {
+		h.clock.Set(at(60 * m))
+		h.tr.RecordAPI(request(at(60*m), s1, "Opus 5.5", 0.1))
+	}
+
+	h.tr.Snapshot()
+
+	// The view is at minute 180: the calls from minute 60 on are within the
+	// last two hours, and the one at 30 s is in the span on credits.
+	if got, want := tracker.CallsHeld(h.tr, dirA), minutes-60+1+1; got != want {
+		t.Errorf("%d calls held after the view, want %d: those of the last two hours and the one on credits", got, want)
+	}
+	if got := h.account(dirA).Credits; got == nil || got.SpentUSD != 1 {
+		t.Errorf("credits %+v, want the $1 spent on credits kept", got)
+	}
+}
+
 // Samples and calls older than any projection reads are still needed while
 // they say what was spent on credits.
 func TestTracker_CreditSpendOutlivesTheSampleHorizon(t *testing.T) {

@@ -238,6 +238,29 @@ func TestTracker_ClockSetBackKeepsReadingsInOrderOfFreshness(t *testing.T) {
 	}
 }
 
+// A reported spend limit stands for an hour after it was reported, as the
+// step moved it.
+func TestTracker_ClockSetBackKeepsAReportToItsHour(t *testing.T) {
+	h, _ := newSteppingHarness(t)
+	h.tr.SetAccount(domain.Account{Dir: dirA, Auth: domain.AuthSubscription})
+	h.clock.Set(at(2 * hour))
+	reporting := statusLine(2*hour, s1)
+	reporting.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
+	h.tr.Apply(reporting)
+
+	h.clock.Set(at(0))
+	h.tr.Snapshot()
+
+	h.clock.Set(at(hour - 1))
+	if got := h.account(dirA).Credits; got == nil || got.Source != domain.CreditSourceReported {
+		t.Fatalf("credits %+v just under an hour after the report, want the reported figures", got)
+	}
+	h.clock.Set(at(hour))
+	if got := h.account(dirA).Credits; got != nil {
+		t.Errorf("credits %+v an hour after the report, as the step moved it, want none", got)
+	}
+}
+
 // The two hooks /clear fires can arrive either side of the step.
 func TestTracker_ClockSetBackStillLinksAClear(t *testing.T) {
 	h, _ := newSteppingHarness(t)

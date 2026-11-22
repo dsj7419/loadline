@@ -342,6 +342,17 @@ func TestEstimateCredits_SpanEdges(t *testing.T) {
 	}
 }
 
+func TestEstimateCredits_CountsACallMadeAsTheGrantIsAdded(t *testing.T) {
+	spans := []domain.OnCreditsSpan{span(0, -1)}
+	requests := []domain.APIRequest{callAt(499, 1), callAt(500, 2), callAt(501, 4)}
+
+	got := domain.EstimateCredits([]domain.CreditGrant{grant(20, 500)}, spans, requests, creditsNow)
+
+	if got.SpentUSD != 6 {
+		t.Errorf("spent %v, want 6: a call made at or after the earliest grant is paid from it", got.SpentUSD)
+	}
+}
+
 func TestEstimateCredits_ActiveNeedsRequestInsideOpenSpan(t *testing.T) {
 	grants := []domain.CreditGrant{grant(20, 0)}
 	for name, tc := range map[string]struct {
