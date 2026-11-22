@@ -314,13 +314,44 @@ func movable(folder string) (string, error) {
 }
 
 // emptiable says who besides the user, SYSTEM and Administrators may delete
-// or rename the folders that folder holds, or "" when nobody may.
+// or rename the folders that folder holds, or change its permissions or
+// owner, with which they may give themselves the right to delete or rename
+// it, or what it holds, or "" when nobody may.
 func emptiable(folder string) (string, error) {
 	others, err := othersGranted(folder, fileDeleteChild)
+	if err != nil {
+		return "", err
+	}
+	if len(others) > 0 {
+		return folder + " lets " + andList(others) + " delete or rename the folders in it", nil
+	}
+	others, err = othersGranted(folder, windows.WRITE_DAC|windows.WRITE_OWNER)
 	if err != nil || len(others) == 0 {
 		return "", err
 	}
-	return folder + " lets " + andList(others) + " delete or rename the folders in it", nil
+	return folder + " lets " + andList(others) + " change its permissions or owner, and with that delete or rename it, or what it holds", nil
+}
+
+// foreignOwner reports folder as belonging to someone other than the user,
+// SYSTEM, Administrators or TrustedInstaller, which owns the system's own
+// folders, or "" when it does not.
+func foreignOwner(folder string) (string, error) {
+	owner, err := ownerOf(folder)
+	if err != nil {
+		return "", err
+	}
+	trusted, err := trustedSIDs()
+	if err != nil {
+		return "", err
+	}
+	trustedInstaller, err := windows.StringToSid(trustedInstallerSID)
+	if err != nil {
+		return "", fmt.Errorf("identify TrustedInstaller: %w", err)
+	}
+	if slices.ContainsFunc(append(trusted, trustedInstaller), owner.Equals) {
+		return "", nil
+	}
+	return ownedBy(folder, accountName(owner)), nil
 }
 
 // othersGranted names the trustees besides the user, SYSTEM and
@@ -476,6 +507,25 @@ func fileRights(mask windows.ACCESS_MASK) windows.ACCESS_MASK {
 // names: without regard to case.
 func samePath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// trustedInstallerSID is NT SERVICE\TrustedInstaller, which owns the system's
+// own folders, the volume root among them.
+const trustedInstallerSID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+
+// ownerOf returns the owner of path. Tests replace it: an account that is
+// not elevated cannot give a folder another owner.
+var ownerOf = func(path string) (*windows.SID, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, fmt.Errorf("read the owner of %s: %w", path, err)
+	}
+	defer runtime.KeepAlive(sd)
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return nil, fmt.Errorf("read the owner of %s: %w", path, errors.Join(err, windows.ERROR_INVALID_OWNER))
+	}
+	return owner.Copy()
 }
 
 // trustedSIDs are the principals a private directory admits: the user, and

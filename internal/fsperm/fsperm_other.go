@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"syscall"
 )
 
 // privateDirMode lets only the user list, enter and change a directory.
@@ -80,6 +83,38 @@ func emptiable(folder string) (string, error) {
 		return "", nil
 	}
 	return fmt.Sprintf("%s lets %s rename the folders in it (mode %#o, without the sticky bit)", folder, andList(who), mode.Perm()), nil
+}
+
+// ownerOf returns the user ID that owns path. Tests replace it: an account
+// that is not root cannot give a folder another owner.
+var ownerOf = func(path string) (uint32, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("read the owner of %s: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("read the owner of %s: the system gives none", path)
+	}
+	return stat.Uid, nil
+}
+
+// foreignOwner reports folder as belonging to someone other than the user
+// or root, who may change its mode, or "" when it does not.
+func foreignOwner(folder string) (string, error) {
+	uid, err := ownerOf(folder)
+	if err != nil {
+		return "", err
+	}
+	if uid == 0 || int64(uid) == int64(os.Getuid()) {
+		return "", nil
+	}
+	id := strconv.FormatUint(uint64(uid), 10)
+	name := "the account with user ID " + id
+	if account, err := user.LookupId(id); err == nil {
+		name = account.Username
+	}
+	return ownedBy(folder, name), nil
 }
 
 // samePath reports whether a and b name the same folder.
