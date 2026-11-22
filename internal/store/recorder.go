@@ -179,25 +179,39 @@ func (r *AsyncRecorder) run(ctx context.Context) {
 	}
 }
 
-// flush writes batch in one transaction.
+// flush writes batch in one transaction. When one of its writes fails, the
+// transaction takes the others with it, so they are written again one at a
+// time, and only the write that fails is lost. A batch that fails as it
+// begins or commits fails as a whole, as the database does then: written one
+// at a time, each would wait out the busy timeout in turn.
 func (r *AsyncRecorder) flush(ctx context.Context, batch []write) {
 	if len(batch) == 0 {
 		return
 	}
+	writeFailed := false
 	err := r.store.inTx(ctx, func(tx *sql.Tx) error {
 		for _, w := range batch {
 			if err := w(ctx, tx); err != nil {
+				writeFailed = true
 				return err
 			}
 		}
 		return nil
 	})
-	if err != nil {
+	switch {
+	case err == nil:
+	case writeFailed:
+		for _, w := range batch {
+			if err := r.store.inTx(ctx, func(tx *sql.Tx) error { return w(ctx, tx) }); err != nil {
+				r.noteFailure(err, 1)
+			}
+		}
+	default:
 		r.noteFailure(err, int64(len(batch)))
 	}
 }
 
-// noteFailure counts the changes a failed batch lost, and logs the failure
+// noteFailure counts the changes a failed write lost, and logs the failure
 // unless it logged one less than failureLogEvery ago. A database that fails
 // keeps failing: a disk that is full, or a file another program locked.
 func (r *AsyncRecorder) noteFailure(err error, lost int64) {

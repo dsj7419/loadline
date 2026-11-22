@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -260,5 +261,50 @@ func TestAsyncRecorder_KeepsItsOwnCopyOfTheWindows(t *testing.T) {
 	samples := got.Samples[dirA]
 	if len(samples.FiveHour) != 1 || samples.FiveHour[0].UsedPct != 10 || len(samples.SevenDay) != 1 || samples.SevenDay[0].UsedPct != 20 {
 		t.Errorf("samples %+v, want 10%% and 20%% as reported", samples)
+	}
+}
+
+// One write that fails costs that write alone, not the batch it was queued
+// in.
+func TestAsyncRecorder_LosesOnlyTheWriteThatFails(t *testing.T) {
+	s, path := openStore(t)
+	release := holdWriteLock(t, path)
+	rec, logs := newRecorder(t, s)
+	unwritable := fullSession(s2)
+	unwritable.State = domain.State(99)
+
+	rec.SessionChanged(fullSession(s1))
+	rec.SessionChanged(unwritable)
+	rec.AccountChanged(fullAccount(dirA))
+	rec.UsageRecorded(dirA, modelCall(0))
+	release()
+	closeRecorder(t, rec)
+
+	got := load(t, s, at(-3600))
+	if len(got.Sessions) != 1 || got.Sessions[0].ID != s1 || len(got.Accounts) != 1 || len(got.Usage) != 1 {
+		t.Errorf("kept sessions %+v, %d accounts and %d usage rows; want s1, the account and the call", got.Sessions, len(got.Accounts), len(got.Usage))
+	}
+	if rec.Errors() != 1 || strings.Count(logs.String(), "level=WARN") != 1 {
+		t.Errorf("counted %d lost and logged %q, want the one write lost and logged once", rec.Errors(), logs.String())
+	}
+}
+
+// A model call with a token count at the largest a count can be costs the
+// changes queued beside it nothing.
+func TestAsyncRecorder_AHugeModelCallCostsNothingElse(t *testing.T) {
+	s, _ := openStore(t)
+	rec, _ := newRecorder(t, s)
+	huge := domain.APIRequest{At: at(5), Session: s1, Model: opus, Input: math.MaxInt64, CostUSD: 0.5}
+
+	rec.UsageRecorded(dirA, huge)
+	rec.UsageRecorded(dirA, huge)
+	rec.SessionChanged(fullSession("unrelated"))
+	rec.AccountChanged(fullAccount(dirA))
+	closeRecorder(t, rec)
+
+	got := load(t, s, at(-3600))
+	if len(got.Sessions) != 1 || len(got.Accounts) != 1 || len(got.Usage) != 1 || rec.Errors() != 0 {
+		t.Errorf("kept %d sessions, %d accounts and %d usage rows with %d lost; want all of them",
+			len(got.Sessions), len(got.Accounts), len(got.Usage), rec.Errors())
 	}
 }

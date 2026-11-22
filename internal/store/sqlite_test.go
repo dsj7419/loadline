@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -555,6 +556,25 @@ func TestOpen_ManyAtOnceOnANewDatabase(t *testing.T) {
 				t.Errorf("round %d: open %d: %v", round, i, err)
 			}
 		}
+	}
+}
+
+// A sum of token counts too large to hold stops at the largest it can.
+func TestSQLite_UsageSumsStopAtTheLargestCount(t *testing.T) {
+	s, _ := openStore(t)
+	huge := domain.APIRequest{
+		At: at(5), Session: s1, Model: opus,
+		Input: math.MaxInt64, Output: math.MaxInt64, CacheRead: math.MaxInt64, CacheWrite: math.MaxInt64, CostUSD: 1,
+	}
+	must(t, s.AddUsage(t.Context(), dirA, huge))
+	must(t, s.AddUsage(t.Context(), dirA, huge))
+
+	want := []tracker.UsageRow{{
+		Minute: at(0), Dir: dirA, Session: s1, Model: opus,
+		Input: math.MaxInt64, Output: math.MaxInt64, CacheRead: math.MaxInt64, CacheWrite: math.MaxInt64, CostUSD: 2, Requests: 2,
+	}}
+	if got := load(t, s, at(-60)).Usage; !reflect.DeepEqual(got, want) {
+		t.Errorf("usage\n got %+v\nwant %+v", got, want)
 	}
 }
 

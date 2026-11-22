@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +21,13 @@ import (
 	"github.com/dsj7419/loadline/internal/tracker"
 )
 
-// maxTimeline is how many state changes Load returns for each session, the
-// number the tracker keeps.
-const maxTimeline = 50
+const (
+	// maxTimeline is how many state changes Load returns for each session,
+	// the number the tracker keeps.
+	maxTimeline = 50
+	// maxCount is the largest token count an INTEGER column holds.
+	maxCount int64 = math.MaxInt64
+)
 
 // connOptions configure every connection: up to busyTimeout of waiting for
 // another connection's lock; the syncs that write-ahead logging needs to
@@ -210,12 +215,15 @@ const (
 
 	insertSampleSQL = `INSERT INTO limit_samples (dir, window, at, used_pct, resets_at) VALUES (?, ?, ?, ?, ?)`
 
+	// A sum of counts too large for its column stops at maxCount, the tenth
+	// parameter: SQLite turns a sum that overflows into a float, which an
+	// INTEGER column refuses.
 	addUsageSQL = `INSERT INTO usage_minutes (
 		minute, session, model, dir, input, output, cache_read, cache_write, cost_usd, requests
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 	ON CONFLICT (minute, session, model) DO UPDATE SET
-		input = input + excluded.input, output = output + excluded.output,
-		cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write,
+		input = min(input + excluded.input, ?10), output = min(output + excluded.output, ?10),
+		cache_read = min(cache_read + excluded.cache_read, ?10), cache_write = min(cache_write + excluded.cache_write, ?10),
 		cost_usd = cost_usd + excluded.cost_usd, requests = requests + 1`
 )
 
@@ -303,7 +311,7 @@ func addLimitSample(ctx context.Context, tx *sql.Tx, dir domain.ConfigDir, l dom
 
 func addUsage(ctx context.Context, tx *sql.Tx, dir domain.ConfigDir, r domain.APIRequest) error {
 	if _, err := tx.ExecContext(ctx, addUsageSQL,
-		minuteOf(r.At), r.Session, r.Model, dir, r.Input, r.Output, r.CacheRead, r.CacheWrite, r.CostUSD,
+		minuteOf(r.At), r.Session, r.Model, dir, r.Input, r.Output, r.CacheRead, r.CacheWrite, r.CostUSD, maxCount,
 	); err != nil {
 		return fmt.Errorf("store usage of session %s: %w", r.Session, err)
 	}
