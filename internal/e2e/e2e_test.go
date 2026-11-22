@@ -235,6 +235,12 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	home := t.TempDir()
 	dirA := config.ResolveConfigDir("", home)
 	dirB := config.ResolveConfigDir(filepath.Join(home, ".claude-b"), home)
+	// Claude Code has run under both accounts, so their config dirs exist.
+	for _, dir := range []domain.ConfigDir{dirA, dirB} {
+		if err := os.MkdirAll(string(dir), 0o700); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
 	logs, err := os.ReadFile(otlpFixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)

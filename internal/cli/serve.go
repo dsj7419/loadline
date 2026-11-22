@@ -178,7 +178,8 @@ type instance struct {
 	tracker *tracker.Tracker
 	srv     *server.Server
 	spool   forward.Spool
-	// poller and prober are nil in demo mode.
+	// dirs, poller and prober are nil in demo mode.
+	dirs   *existingDirs
 	poller *poll.Poller
 	prober *accounts.Prober
 }
@@ -232,9 +233,10 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		runner = claudeRunner(cfg, o.Home)
 	}
 	client := claudecli.Client{R: runner}
+	s.dirs = newExistingDirs(s.failures)
 	s.poller = &poll.Poller{
 		List:      s.listSessions(client),
-		Sink:      pollSink{Tracker: s.tracker, start: startDirs},
+		Sink:      pollSink{Tracker: s.tracker, start: startDirs, dirs: s.dirs},
 		Fast:      poll.DefaultFast,
 		Slow:      poll.DefaultSlow,
 		Debounce:  poll.DefaultDebounce,
@@ -249,11 +251,12 @@ func newInstance(o ServeOptions, cfg config.Config, port int, token []byte, log 
 		Clock:     clock,
 		AfterFunc: after,
 	}
+	s.dirs.hasLive, s.dirs.dropped = s.tracker.HasLiveIn, s.prober.Forget
 	for _, dir := range startDirs {
 		s.prober.Observe(dir)
 	}
 
-	deps.State, deps.Kick, deps.OnDir = s.tracker, s.poller.Kick, s.prober.Observe
+	deps.State, deps.Kick, deps.OnDir = s.tracker, s.poller.Kick, s.noteDir
 	s.srv = server.New(deps)
 	s.poller.OnPoll = s.srv.NotePoll
 	return s
@@ -300,8 +303,19 @@ func seedDemo(t *tracker.Tracker, now time.Time) {
 	}
 }
 
+// noteDir notes the config dir an event named: a dir dropped for being
+// missing is polled again, and a new one is probed.
+func (s *instance) noteDir(dir domain.ConfigDir) {
+	s.dirs.named(dir)
+	s.prober.Observe(dir)
+}
+
 func (s *instance) listSessions(client claudecli.Client) func(context.Context, domain.ConfigDir, time.Time) ([]domain.Poll, error) {
 	return func(ctx context.Context, dir domain.ConfigDir, at time.Time) ([]domain.Poll, error) {
+		if !s.dirs.present(dir) {
+			// What claude would list there, once it had created the dir.
+			return nil, nil
+		}
 		polls, err := client.Agents(ctx, dir, at)
 		if err != nil && ctx.Err() == nil {
 			s.failures.note("poll failed", string(dir), err)
@@ -312,6 +326,9 @@ func (s *instance) listSessions(client claudecli.Client) func(context.Context, d
 
 func (s *instance) probeAccount(client claudecli.Client) func(context.Context, domain.ConfigDir) (claudecli.AuthStatus, error) {
 	return func(ctx context.Context, dir domain.ConfigDir) (claudecli.AuthStatus, error) {
+		if !s.dirs.present(dir) {
+			return claudecli.AuthStatus{}, errConfigDirMissing
+		}
 		status, err := client.AuthStatus(ctx, dir)
 		if err != nil && ctx.Err() == nil {
 			s.failures.note("probe failed", string(dir), err)
@@ -463,14 +480,16 @@ func waitIdle(ctx context.Context, live func() bool, idleAfter time.Duration, cl
 }
 
 // pollSink is the tracker as the poller sees it: the dirs of the accounts
-// it knows, and the dirs known from the start, before any event named them.
+// it knows, and the dirs known from the start, before any event named them,
+// less those dropped for being missing.
 type pollSink struct {
 	*tracker.Tracker
 	start []domain.ConfigDir
+	dirs  *existingDirs
 }
 
 func (s pollSink) KnownDirs() []domain.ConfigDir {
 	dirs := append(s.Tracker.KnownDirs(), s.start...)
 	slices.Sort(dirs)
-	return slices.Compact(dirs)
+	return s.dirs.known(slices.Compact(dirs))
 }

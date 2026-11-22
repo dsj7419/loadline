@@ -24,9 +24,9 @@ const (
 
 // Prober asks who each observed account is: once when its config dir is
 // first observed, and again on a schedule: Every after a probe that worked,
-// and sooner after one that failed. The exported fields are set before Run
-// is called and not changed after. Run and Observe are safe to call
-// concurrently.
+// and sooner after one that failed, until it is forgotten. The exported
+// fields are set before Run is called and not changed after. Run, Observe
+// and Forget are safe to call concurrently.
 type Prober struct {
 	// Status asks claude who the account in dir is signed in as.
 	Status func(ctx context.Context, dir domain.ConfigDir) (claudecli.AuthStatus, error)
@@ -76,6 +76,14 @@ func (p *Prober) Observe(dir domain.ConfigDir) {
 	if !known {
 		p.signal()
 	}
+}
+
+// Forget stops probing dir until it is observed again, which probes it at
+// once. A probe of it already running finishes, and schedules nothing.
+func (p *Prober) Forget(dir domain.ConfigDir) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.dirs, dir)
 }
 
 // Run probes each observed dir when it is due, until ctx ends, and returns
@@ -142,7 +150,12 @@ func (p *Prober) probe(ctx context.Context, dir domain.ConfigDir) {
 	}
 
 	p.mu.Lock()
-	s := p.dirs[dir]
+	s, known := p.dirs[dir]
+	if !known {
+		// Forgotten while it was being probed.
+		p.mu.Unlock()
+		return
+	}
 	s.probing = false
 	if err == nil {
 		s.next, s.retry = at.Add(p.every()), 0

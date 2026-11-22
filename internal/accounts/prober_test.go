@@ -410,3 +410,45 @@ func TestProber_ZeroEveryMeans6h(t *testing.T) {
 		t.Errorf("next probe in %v, want 6h", got)
 	}
 }
+
+// A dir forgotten is probed no more, however long passes, until it is
+// observed again, which probes it at once.
+func TestProber_ForgetStopsProbingUntilObservedAgain(t *testing.T) {
+	h := newHarness()
+	h.run(t)
+	h.prober.Observe(dirA)
+	h.settle(t, 1)
+
+	h.prober.Forget(dirA)
+	h.clock.Advance(3 * every)
+	time.Sleep(20 * time.Millisecond)
+	if got := len(h.auth.probes()); got != 1 {
+		t.Fatalf("%d probes of a forgotten dir, want only the one before", got)
+	}
+
+	h.prober.Observe(dirA)
+	h.settle(t, 2)
+	if got := h.clock.Pending(); !slices.Equal(got, []time.Duration{every}) {
+		t.Errorf("next probe in %v, want the usual %v", got, every)
+	}
+}
+
+// A probe running when its dir is forgotten finishes and schedules nothing.
+func TestProber_ForgetDuringAProbeSchedulesNothing(t *testing.T) {
+	h := newHarness()
+	release := make(chan struct{})
+	h.auth.hold[dirA] = release
+	h.run(t)
+	h.prober.Observe(dirA)
+	h.auth.waitProbes(t, 1)
+
+	h.prober.Forget(dirA)
+	close(release)
+	h.log.waitAccounts(t, 1)
+	time.Sleep(20 * time.Millisecond)
+
+	if got := h.clock.Pending(); len(got) != 0 {
+		t.Errorf("timers %v after the forgotten dir's probe returned, want none", got)
+	}
+	h.prober.Forget(dirB) // a dir never observed
+}

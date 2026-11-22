@@ -6,8 +6,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/accounts"
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/clocktest"
 	"github.com/dsj7419/loadline/internal/config"
@@ -171,7 +174,31 @@ func newServeFixture(t *testing.T) *serveFixture {
 		http:   &http.Client{Transport: &http.Transport{Proxy: nil}},
 	}
 	t.Cleanup(f.http.CloseIdleConnections)
+	// Claude Code has run on this machine, so its default config dir is
+	// there.
+	f.mkdirs(f.defaultDir())
 	return f
+}
+
+// mkdirs creates config dirs, as claude leaves them once it has run there.
+func (f *serveFixture) mkdirs(dirs ...domain.ConfigDir) {
+	f.t.Helper()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(string(dir), 0o700); err != nil {
+			f.t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+}
+
+// callsFor returns how many times claude ran with command for dir.
+func (c *fakeClaude) callsFor(dir domain.ConfigDir, command string) int {
+	n := 0
+	for _, call := range c.history() {
+		if call.dir == dir && call.command == command {
+			n++
+		}
+	}
+	return n
 }
 
 // freePort returns a loopback port that nothing listened on a moment ago.
@@ -698,6 +725,7 @@ func TestServe_DrainsTheSpoolEvery10sAndSetsAsideWhatCanNeverApply(t *testing.T)
 
 func TestServe_PollsAndProbesEveryKnownDir(t *testing.T) {
 	f := newServeFixture(t)
+	f.mkdirs(f.dir(".claude-b"), f.dir(".claude-work"))
 	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"}]}`)
 	f.start()
 
@@ -725,6 +753,7 @@ func TestServe_PollsAndProbesEveryKnownDir(t *testing.T) {
 
 func TestServe_LabelsAndBudgetsComeFromTheConfig(t *testing.T) {
 	f := newServeFixture(t)
+	f.mkdirs(f.dir(".claude-b"))
 	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"Work","dailyBudgetUSD":25}]}`)
 	f.start()
 
@@ -887,5 +916,136 @@ func TestServe_StartupDrainAsksForNoExtraPoll(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if pending := f.clock.Pending(); slices.Contains(pending, 500*time.Millisecond) {
 		t.Errorf("timers %v hold a debounced poll after the startup drain, want none", pending)
+	}
+}
+
+// claude, pointed at a config dir that is not there, creates it, and
+// Loadline only observes. So claude never runs for a dir that is missing: a
+// default dir Claude Code never made, a mistyped account in the config, or a
+// dir an event named that has since been deleted. Each is logged once.
+func TestServe_NeverRunsClaudeForAMissingConfigDir(t *testing.T) {
+	f := newServeFixture(t)
+	if err := os.Remove(string(f.defaultDir())); err != nil {
+		t.Fatal(err)
+	}
+	existing := f.dir(".claude-b")
+	f.mkdirs(existing)
+	typo := f.dir(".cluade-work")
+	gone := f.dir(filepath.Join("throwaway", ".claude"))
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"},{"configDir":"~/.cluade-work","label":"Work"}]}`)
+	r := f.start()
+
+	waitFor(t, "the existing account polled and probed", func() bool {
+		return f.claude.callsFor(existing, agentsCommand) > 0 && f.claude.callsFor(existing, authCommand) > 0
+	})
+	f.waitArmed(30 * time.Second)
+	f.hook(gone, "s-gone", "SessionEnd")
+	for range 2 {
+		before := f.claude.callsFor(existing, agentsCommand)
+		f.clock.Advance(30 * time.Second)
+		waitFor(t, "the next round of polls", func() bool { return f.claude.callsFor(existing, agentsCommand) > before })
+		f.waitArmed(30 * time.Second)
+	}
+	r.stop(t)
+
+	log := f.logText()
+	for _, missing := range []domain.ConfigDir{f.defaultDir(), typo, gone} {
+		if _, err := os.Stat(string(missing)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s: %v; the test needs it missing", missing, err)
+		}
+		for _, call := range f.claude.history() {
+			if call.dir == missing {
+				t.Errorf("claude %s ran for %s, which does not exist", call.command, missing)
+				break
+			}
+		}
+		if got := strings.Count(log, fmt.Sprintf("subject=%s ", missing)); got != 1 {
+			t.Errorf("the log names %s %d times, want once:\n%s", missing, got, log)
+		}
+	}
+}
+
+// A dir deleted while none of its sessions is live is no longer polled or
+// probed, even once it is back, until an event names it again.
+func TestServe_ADeletedDirIsDroppedUntilAnEventNamesIt(t *testing.T) {
+	f := newServeFixture(t)
+	b := f.dir(".claude-b")
+	f.mkdirs(b)
+	// The clock runs past the next probe, which an idle exit would cut short.
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B"}],"idleExitMinutes":0}`)
+	f.start()
+	waitFor(t, "the account polled and probed", func() bool {
+		return f.claude.callsFor(b, agentsCommand) > 0 && f.claude.callsFor(b, authCommand) > 0
+	})
+	f.waitArmed(30 * time.Second)
+
+	if err := os.RemoveAll(string(b)); err != nil {
+		t.Fatal(err)
+	}
+	polls, probes := f.claude.callsFor(b, agentsCommand), f.claude.callsFor(b, authCommand)
+	nextRound := func() {
+		t.Helper()
+		before := f.claude.callsFor(f.defaultDir(), agentsCommand)
+		f.clock.Advance(30 * time.Second)
+		waitFor(t, "the next round of polls", func() bool { return f.claude.callsFor(f.defaultDir(), agentsCommand) > before })
+		f.waitArmed(30 * time.Second)
+	}
+	nextRound()
+	f.mkdirs(b)
+	nextRound()
+	// Past the six hours after which both accounts were due to be probed
+	// again: only the one still known is.
+	defaultProbes := f.claude.callsFor(f.defaultDir(), authCommand)
+	f.clock.Advance(accounts.DefaultEvery)
+	waitFor(t, "the default dir probed again", func() bool { return f.claude.callsFor(f.defaultDir(), authCommand) > defaultProbes })
+	time.Sleep(50 * time.Millisecond)
+	if got := f.claude.callsFor(b, agentsCommand); got != polls {
+		t.Errorf("the dropped dir was polled %d more times, want none until an event names it", got-polls)
+	}
+	if got := f.claude.callsFor(b, authCommand); got != probes {
+		t.Errorf("the dropped dir was probed %d more times, want none until an event names it", got-probes)
+	}
+
+	f.statusLine(b, "s1")
+	waitFor(t, "the named dir probed at once", func() bool { return f.claude.callsFor(b, authCommand) > probes })
+	waitFor(t, "the next poll to be scheduled", func() bool {
+		pending := f.clock.Pending()
+		return len(pending) > 0 && pending[0] <= 30*time.Second
+	})
+	f.clock.Advance(30 * time.Second)
+	waitFor(t, "the named dir polled again", func() bool { return f.claude.callsFor(b, agentsCommand) > polls })
+}
+
+// A dir deleted while a session in it is live lists nothing, as claude
+// would say of it, without claude being run: the session ends once it has
+// been missing and silent for the grace, and then the dir is dropped.
+func TestServe_ADeletedDirWithALiveSessionListsNothing(t *testing.T) {
+	f := newServeFixture(t)
+	b := f.dir(".claude-b")
+	f.mkdirs(b)
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b"}]}`)
+	f.claude.setAgents(b, `[{"sessionId":"s1","kind":"interactive","pid":4242,"status":"busy","cwd":"/x","startedAt":1795299000000}]`)
+	f.start()
+	f.hook(b, "s1", "UserPromptSubmit")
+	waitFor(t, "s1 working", func() bool {
+		s, ok := sessionByID(f.snapshot(), "s1")
+		return ok && s.State == domain.StateWorking
+	})
+
+	if err := os.RemoveAll(string(b)); err != nil {
+		t.Fatal(err)
+	}
+	polls := f.claude.callsFor(b, agentsCommand)
+	for range 3 {
+		before := f.claude.callsFor(f.defaultDir(), agentsCommand)
+		f.clock.Advance(30 * time.Second)
+		waitFor(t, "the next round of polls", func() bool { return f.claude.callsFor(f.defaultDir(), agentsCommand) > before })
+	}
+
+	if s, _ := sessionByID(f.snapshot(), "s1"); s.State != domain.StateEnded || !s.Lost {
+		t.Errorf("s1 is %v (lost %t) with its dir gone and no status line for over a minute, want ended and lost", s.State, s.Lost)
+	}
+	if got := f.claude.callsFor(b, agentsCommand); got != polls {
+		t.Errorf("claude ran %d more times for the deleted dir, want none", got-polls)
 	}
 }

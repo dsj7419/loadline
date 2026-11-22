@@ -296,11 +296,27 @@ func (t *Tracker) HasLive() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, e := range t.sessions {
-		if state := e.session.State; state != domain.StateParked && state != domain.StateEnded {
+		if isLive(e.session) {
 			return true
 		}
 	}
 	return false
+}
+
+// HasLiveIn reports whether any session of dir's account is live.
+func (t *Tracker) HasLiveIn(dir domain.ConfigDir) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, e := range t.sessions {
+		if e.session.Dir == dir && isLive(e.session) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLive(s domain.Session) bool {
+	return s.State != domain.StateParked && s.State != domain.StateEnded
 }
 
 // Snapshot returns the view as of now.

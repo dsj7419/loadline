@@ -1576,3 +1576,25 @@ func TestTracker_HasLiveAndKnownDirs(t *testing.T) {
 		t.Error("an ended session counts as live")
 	}
 }
+
+func TestTracker_HasLiveIn(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	parked := backgroundRecord(0, s1, "done", at(-60))
+	parked.Dir = dirB
+	h.tr.ApplyPoll(dirB, at(0), []domain.Poll{parked})
+	h.tr.Apply(hook(1, s2, "SessionStart"))
+
+	if !h.tr.HasLiveIn(dirA) {
+		t.Errorf("%s holds a starting session, but HasLiveIn says no", dirA)
+	}
+	if h.tr.HasLiveIn(dirB) {
+		t.Errorf("%s holds only a parked session, but HasLiveIn says yes", dirB)
+	}
+	if h.tr.HasLiveIn("/home/dev/.claude-unknown") {
+		t.Error("a dir the tracker never saw has a live session")
+	}
+	h.tr.Apply(sessionEnd(2, s2, "prompt_input_exit"))
+	if h.tr.HasLiveIn(dirA) {
+		t.Errorf("%s holds only an ended session, but HasLiveIn says yes", dirA)
+	}
+}
