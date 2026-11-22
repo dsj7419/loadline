@@ -7,7 +7,7 @@ models it is spending on, and how close each account is to its usage limits. Wit
 only on your machine, reads only the interfaces Claude Code documents, and never sees your prompts,
 responses or code.
 
-![The Loadline dashboard, showing demo data: three accounts, five sessions and four alerts](docs/img/dashboard.png)
+![The Loadline dashboard, showing demo data: three accounts, five sessions and four alerts. Main is at 100% of its weekly limit, reached at a pace of ×1.4, and works on usage credits](docs/img/dashboard.png)
 
 ## Install
 
@@ -58,7 +58,10 @@ With Go 1.26 or later you can also build it yourself:
 | `loadline tap [--print \| --run CMD \| --run-b64 CMD]` | Run by the status line. Passes the status-line input through and forwards it. `--print` prints a one-line status of its own; `--run` and `--run-b64` run your status-line command (the latter base64url-encoded) with the input on its stdin. |
 | `loadline version` | Prints the version. |
 
-Commands exit 0 on success, 1 on failure and 2 for a usage error; `hook` always exits 0. A command
+Commands exit 0 on success, 1 on failure and 2 for a usage error, with two exceptions that keep a
+session's display intact. `hook` always exits 0. `tap` has no usage error: given options it cannot
+read, it passes its input through unchanged, says on stderr what was wrong and exits 0, so the status
+line never goes blank, and with `--run` or `--run-b64` it exits with your command's code. A command
 that takes flags lists them with `-h`.
 
 ### Configuration
