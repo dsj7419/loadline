@@ -5,11 +5,13 @@ import { isCurrent, windowNote } from '../model/describe';
 import { formatPct, formatUSD } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
-import { ModelSplit } from './ModelsBar';
+import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
 
 type AccountCardProps = {
   readonly account: AccountView;
   readonly now: ReadonlySignal<Date>;
+  /** The period the card's model split covers, as the models bar shows. */
+  readonly range: Range;
 };
 
 /**
@@ -17,7 +19,7 @@ type AccountCardProps = {
  * account billed per token, its spend. The windows count down against the
  * page's clock and drop out as soon as they reset.
  */
-export function AccountCard({ account, now }: AccountCardProps) {
+export function AccountCard({ account, now, range }: AccountCardProps) {
   const titleId = useId();
   const plan = planOf(account);
   return (
@@ -35,7 +37,11 @@ export function AccountCard({ account, now }: AccountCardProps) {
         <Windows account={account} ownerId={titleId} now={now.value} />
       )}
       <div class="account-foot">
-        <ModelSplit models={account.models} label={`${account.label} models today`} compact />
+        <ModelSplit
+          models={range === 'today' ? account.models : account.modelsWeek}
+          label={rangeLegend(range, account.label)}
+          compact
+        />
       </div>
     </article>
   );

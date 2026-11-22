@@ -10,7 +10,7 @@ import { AlertBanner } from './AlertBanner';
 import { DetailPanel } from './DetailPanel';
 import { drawFavicon as drawTabIcon } from './Favicon';
 import { Header, type LinkStatus } from './Header';
-import { ModelsBar } from './ModelsBar';
+import { ModelsBar, type Range } from './ModelsBar';
 import { browserNotifications, browserOptIn, createNotifier, type NotificationApi } from './Notifier';
 import { useKeepRowFocus, useReturnFocus } from './rowFocus';
 import { SessionGroup } from './SessionGroup';
@@ -46,6 +46,7 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
   const [view, setView] = useState<View | null>(null);
   const [status, setStatus] = useState<LinkStatus>('connecting');
   const [openId, setOpenId] = useState<string | null>(null);
+  const [range, setRange] = useState<Range>('today');
   const now = useSignal(new Date());
   const notifier = useMemo(() => {
     const api = notifications === undefined ? browserNotifications() : notifications;
@@ -102,9 +103,9 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
           ) : (
             <>
               <AlertBanner alerts={view.alerts} />
-              <Accounts accounts={view.accounts} now={now} />
+              <Accounts accounts={view.accounts} now={now} range={range} />
               <Sessions sessions={view.sessions} now={now} onOpen={setOpenId} heading={sessionsHeading} />
-              <ModelsBar today={view.models} week={view.modelsWeek} />
+              <ModelsBar today={view.models} week={view.modelsWeek} range={range} onRange={setRange} />
             </>
           )}
         </main>
@@ -117,9 +118,10 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
 type AccountsProps = {
   readonly accounts: readonly AccountView[];
   readonly now: ReadonlySignal<Date>;
+  readonly range: Range;
 };
 
-function Accounts({ accounts, now }: AccountsProps) {
+function Accounts({ accounts, now, range }: AccountsProps) {
   const headingId = useId();
   return (
     <section class="accounts" aria-labelledby={headingId}>
@@ -131,7 +133,7 @@ function Accounts({ accounts, now }: AccountsProps) {
       ) : (
         <div class="account-grid">
           {accounts.map((account) => (
-            <AccountCard key={account.dir} account={account} now={now} />
+            <AccountCard key={account.dir} account={account} now={now} range={range} />
           ))}
         </div>
       )}

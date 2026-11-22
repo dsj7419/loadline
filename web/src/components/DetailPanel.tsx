@@ -90,6 +90,10 @@ export function DetailPanel({ session, now, onClose }: DetailPanelProps) {
             <time dateTime={session.startedAt}>{formatWhen(session.startedAt, at)}</time>
             <span class="fact-aside"> · {formatRelative(session.startedAt, at)}</span>
           </Fact>
+          <Fact term="Last activity">
+            <time dateTime={session.lastSeenAt}>{formatWhen(session.lastSeenAt, at)}</time>
+            <span class="fact-aside"> · {formatRelative(session.lastSeenAt, at)}</span>
+          </Fact>
           <Fact term="Kind">{session.kind === 'background' ? 'Background' : 'Interactive'}</Fact>
           <Fact term="Process">{session.pid > 0 ? String(session.pid) : '—'}</Fact>
           <Fact term="Session ID" wide>

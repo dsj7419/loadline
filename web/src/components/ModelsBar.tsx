@@ -1,4 +1,4 @@
-import { useId, useState } from 'preact/hooks';
+import { useId } from 'preact/hooks';
 import type { ModelTotal } from '../api/types';
 import { formatPct, formatUSD } from '../model/format';
 import { modelLabel, modelShares, modelTone } from '../model/models';
@@ -7,7 +7,7 @@ type SplitProps = {
   readonly models: readonly ModelTotal[];
   /** Names the legend for screen readers. */
   readonly label: string;
-  /** A compact split leaves out costs, and says nothing when there is no usage. */
+  /** A compact split is smaller, and says nothing when there is no usage. */
   readonly compact?: boolean;
   readonly empty?: string;
 };
@@ -30,7 +30,7 @@ export function ModelSplit({ models, label, compact = false, empty = '' }: Split
           <li key={model} class="legend-item">
             <span class={`swatch model-${modelTone(model)}`} aria-hidden="true" />
             <span class="legend-name">{modelLabel(model)}</span> <span class="legend-pct num">{formatPct(share * 100)}</span>
-            {!compact && <span class="legend-cost num"> {formatUSD(costUSD)}</span>}
+            <span class="legend-cost num"> {formatUSD(costUSD)}</span>
           </li>
         ))}
       </ul>
@@ -38,7 +38,8 @@ export function ModelSplit({ models, label, compact = false, empty = '' }: Split
   );
 }
 
-type Range = 'today' | 'week';
+/** The period the page's usage covers: today, or the last 7 days. */
+export type Range = 'today' | 'week';
 
 const ranges: readonly Range[] = ['today', 'week'];
 
@@ -47,15 +48,22 @@ const rangeText: Readonly<Record<Range, { readonly label: string; readonly legen
   week: { label: '7 days', legend: 'Models over the last 7 days', empty: 'No model usage in the last 7 days.' },
 };
 
+/** The legend's name for a period's usage, beginning with whose it is. */
+export function rangeLegend(range: Range, owner: string): string {
+  return `${owner} ${rangeText[range].legend.toLowerCase()}`;
+}
+
 type ModelsBarProps = {
   readonly today: readonly ModelTotal[];
   readonly week: readonly ModelTotal[];
+  /** The period shown, which the page's account cards follow as well. */
+  readonly range: Range;
+  readonly onRange: (range: Range) => void;
 };
 
 /** The models used across every account, today or over the last 7 days. */
-export function ModelsBar({ today, week }: ModelsBarProps) {
+export function ModelsBar({ today, week, range, onRange }: ModelsBarProps) {
   const headingId = useId();
-  const [range, setRange] = useState<Range>('today');
   const models = range === 'today' ? today : week;
   const total = models.reduce((sum, { costUSD }) => sum + (Number.isFinite(costUSD) ? costUSD : 0), 0);
   return (
@@ -64,7 +72,7 @@ export function ModelsBar({ today, week }: ModelsBarProps) {
         <h2 id={headingId}>Models</h2>
         <div class="segmented" role="group" aria-label="Period">
           {ranges.map((key) => (
-            <button key={key} type="button" aria-pressed={range === key} onClick={() => setRange(key)}>
+            <button key={key} type="button" aria-pressed={range === key} onClick={() => onRange(key)}>
               {rangeText[key].label}
             </button>
           ))}

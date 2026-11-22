@@ -352,6 +352,44 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: 'Sessions' })).toBeTruthy();
   });
 
+  it('switches the models bar and every account card between today and the last 7 days', async () => {
+    const user = userEvent.setup();
+    const { send } = renderApp();
+    const today = [modelOf({ model: 'claude-opus-5-5', costUSD: 3 }), modelOf({ model: 'claude-haiku-5-5', costUSD: 1 })];
+    const week = [modelOf({ model: 'claude-sonnet-5-5', costUSD: 6 }), modelOf({ model: 'claude-opus-5-5', costUSD: 3 })];
+    send(viewOf({ models: today, modelsWeek: week, accounts: [accountOf({ models: today, modelsWeek: week })] }));
+    const models = screen.getByRole('region', { name: 'Models' });
+    const legend = () => within(models).getAllByRole('listitem').map((item) => item.textContent);
+    const card = screen.getByRole('article', { name: 'Main' });
+    const todayButton = screen.getByRole('button', { name: 'Today' });
+    const weekButton = screen.getByRole('button', { name: '7 days' });
+
+    expect(todayButton.getAttribute('aria-pressed')).toBe('true');
+    expect(weekButton.getAttribute('aria-pressed')).toBe('false');
+    expect(legend()).toEqual([expect.stringMatching(/Opus 5\.5.*75%/), expect.stringMatching(/Haiku 5\.5.*25%/)]);
+    expect(card.textContent).toMatch(/Opus 5\.5 75% \$3\.00/);
+    expect(card.textContent).toMatch(/Haiku 5\.5 25% \$1\.00/);
+
+    await user.click(weekButton);
+    expect(todayButton.getAttribute('aria-pressed')).toBe('false');
+    expect(weekButton.getAttribute('aria-pressed')).toBe('true');
+    expect(legend()).toEqual([expect.stringMatching(/Sonnet 5\.5.*67%/), expect.stringMatching(/Opus 5\.5.*33%/)]);
+    expect(card.textContent).toMatch(/Sonnet 5\.5 67% \$6\.00/);
+    expect(card.textContent).toMatch(/Opus 5\.5 33% \$3\.00/);
+    expect(card.textContent).not.toMatch(/Haiku/);
+  });
+
+  it('shows when the session was last active in the detail panel', async () => {
+    const user = userEvent.setup();
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ ...waiting, lastSeenAt: '2026-11-21T17:59:30Z' })] }));
+    await user.click(screen.getByRole('button', { name: /copper-lantern/ }));
+
+    const dialog = screen.getByRole('dialog');
+    const term = within(dialog).getByText('Last activity');
+    expect(term.parentElement?.textContent).toBe('Last activity17:59 · 30s ago');
+  });
+
   it('counts the time in state up each second without a new view', () => {
     vi.useFakeTimers({ now });
     const { send } = renderApp();
@@ -477,20 +515,20 @@ describe('AccountCard', () => {
   const fiveHour = { usedPct: 38, resetsAt: '2026-11-21T20:10:00Z', observedAt: '2026-11-21T17:59:00Z', projection: null };
 
   it('hides the 5-hour gauge when the account has no 5-hour window', () => {
-    render(<AccountCard account={accountOf({ fiveHour: null, sevenDay: week })} now={signal(now)} />);
+    render(<AccountCard range="today" account={accountOf({ fiveHour: null, sevenDay: week })} now={signal(now)} />);
     expect(screen.getByRole('meter', { name: /weekly/i }).getAttribute('aria-valuenow')).toBe('93');
     expect(screen.queryByRole('meter', { name: /5-hour/i })).toBeNull();
   });
 
   it('shows a gauge for each window the account has', () => {
-    render(<AccountCard account={accountOf({ fiveHour, sevenDay: week })} now={signal(now)} />);
+    render(<AccountCard range="today" account={accountOf({ fiveHour, sevenDay: week })} now={signal(now)} />);
     expect(screen.getByRole('meter', { name: /weekly/i })).toBeTruthy();
     expect(screen.getByRole('meter', { name: /5-hour/i }).getAttribute('aria-valuenow')).toBe('38');
   });
 
   it('hides a window once its reset time has passed', () => {
     const later = signal(new Date('2026-11-21T20:10:00Z'));
-    render(<AccountCard account={accountOf({ fiveHour, sevenDay: week })} now={later} />);
+    render(<AccountCard range="today" account={accountOf({ fiveHour, sevenDay: week })} now={later} />);
     expect(screen.queryByRole('meter', { name: /5-hour/i })).toBeNull();
     expect(screen.getByRole('meter', { name: /weekly/i })).toBeTruthy();
   });
@@ -500,13 +538,14 @@ describe('AccountCard', () => {
       ...week,
       projection: { ratePerHour: 2.13, atReset: 100, eta: '2026-11-22T14:00:00Z', runsOutBeforeReset: true },
     };
-    render(<AccountCard account={accountOf({ sevenDay: runningOut })} now={signal(now)} />);
+    render(<AccountCard range="today" account={accountOf({ sevenDay: runningOut })} now={signal(now)} />);
     expect(screen.getByText('+2.1%/h · runs out Sun 14:00 · resets Mon 09:00')).toBeTruthy();
   });
 
   it("shows an API account's spend against its daily budget, as an estimate", () => {
     render(
       <AccountCard
+        range="today"
         account={accountOf({
           label: 'API',
           auth: 'api_key',
@@ -532,6 +571,7 @@ describe('AccountCard', () => {
   it("shows the account's model split for today", () => {
     render(
       <AccountCard
+        range="today"
         account={accountOf({
           sevenDay: week,
           models: [modelOf({ model: 'claude-opus-5-5', costUSD: 3 }), modelOf({ model: 'claude-haiku-5-5', costUSD: 1 })],
@@ -546,38 +586,24 @@ describe('AccountCard', () => {
   });
 
   it('says the limits reset once every window has passed its reset time', () => {
-    render(<AccountCard account={accountOf({ fiveHour, sevenDay: null })} now={signal(new Date('2026-11-21T20:10:00Z'))} />);
+    render(<AccountCard range="today" account={accountOf({ fiveHour, sevenDay: null })} now={signal(new Date('2026-11-21T20:10:00Z'))} />);
     expect(screen.queryByRole('meter')).toBeNull();
     expect(screen.getByText('Limits reset; waiting for new figures')).toBeTruthy();
   });
 
   it('says so when no limits have been reported', () => {
-    render(<AccountCard account={accountOf({ fiveHour: null, sevenDay: null })} now={signal(now)} />);
+    render(<AccountCard range="today" account={accountOf({ fiveHour: null, sevenDay: null })} now={signal(now)} />);
     expect(screen.getByText('No rate limits reported yet.')).toBeTruthy();
   });
 });
 
 describe('ModelsBar', () => {
-  it('switches between today and the last 7 days', async () => {
+  it('asks for the other period when its button is pressed', async () => {
     const user = userEvent.setup();
-    render(
-      <ModelsBar
-        today={[modelOf({ model: 'Opus 5.5', costUSD: 3 }), modelOf({ model: 'Haiku 5.5', costUSD: 1 })]}
-        week={[modelOf({ model: 'Sonnet 5.5', costUSD: 6 }), modelOf({ model: 'Opus 5.5', costUSD: 3 })]}
-      />,
-    );
-    const today = screen.getByRole('button', { name: 'Today' });
-    const week = screen.getByRole('button', { name: '7 days' });
-    const legend = () => screen.getAllByRole('listitem').map((item) => item.textContent);
-
-    expect(today.getAttribute('aria-pressed')).toBe('true');
-    expect(week.getAttribute('aria-pressed')).toBe('false');
-    expect(legend()).toEqual([expect.stringMatching(/Opus 5\.5.*75%/), expect.stringMatching(/Haiku 5\.5.*25%/)]);
-
-    await user.click(week);
-    expect(today.getAttribute('aria-pressed')).toBe('false');
-    expect(week.getAttribute('aria-pressed')).toBe('true');
-    expect(legend()).toEqual([expect.stringMatching(/Sonnet 5\.5.*67%/), expect.stringMatching(/Opus 5\.5.*33%/)]);
+    const onRange = vi.fn();
+    render(<ModelsBar today={[]} week={[]} range="today" onRange={onRange} />);
+    await user.click(screen.getByRole('button', { name: '7 days' }));
+    expect(onRange).toHaveBeenCalledWith('week');
   });
 
   it('names models from their IDs', () => {
@@ -585,6 +611,8 @@ describe('ModelsBar', () => {
       <ModelsBar
         today={[modelOf({ model: 'claude-opus-5-5', costUSD: 3 }), modelOf({ model: 'claude-haiku-5-5-20261001', costUSD: 1 })]}
         week={[]}
+        range="today"
+        onRange={() => {}}
       />,
     );
     const legend = screen.getAllByRole('listitem').map((item) => item.textContent);
@@ -592,7 +620,7 @@ describe('ModelsBar', () => {
   });
 
   it('says when there is no usage yet', () => {
-    render(<ModelsBar today={[]} week={[]} />);
+    render(<ModelsBar today={[]} week={[]} range="today" onRange={() => {}} />);
     expect(screen.getByText(/no model usage today/i)).toBeTruthy();
   });
 });
