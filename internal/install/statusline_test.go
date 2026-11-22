@@ -124,12 +124,17 @@ func TestUsesPowerShellWrapper(t *testing.T) {
 
 // TestBashForm_KeepsTheOriginalsMeaning runs each original and the command
 // install makes of it through real shells, with a stand-in for tap that
-// copies stdin to stdout as tap does, and expects the same output.
+// copies stdin to stdout as tap does, and expects the same output. Starting
+// a shell per case is slow, so with the race detector on, which these
+// shells do not run under anyway, or with -short, it runs one shell and
+// every third case; TestBashForm_GroupsAllButPlainCommands still checks
+// every command.
 func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 	shellPaths := availableShells()
 	if len(shellPaths) == 0 {
 		t.Skip("no POSIX shell here; TestBashForm_GroupsAllButPlainCommands checks the commands")
 	}
+	shellPaths = shellPaths[:scaled(len(shellPaths), 1)]
 	tapStandIn := filepath.Join(t.TempDir(), "loadline")
 	if err := os.WriteFile(tapStandIn, []byte("#!/bin/sh\nexec cat\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -138,7 +143,8 @@ func TestBashForm_KeepsTheOriginalsMeaning(t *testing.T) {
 	o.Exe = filepath.ToSlash(tapStandIn)
 	env := standInHome(t, shellPaths)
 
-	for _, tc := range bashFormCases {
+	for i := 0; i < len(bashFormCases); i += scaled(1, 3) {
+		tc := bashFormCases[i]
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, tc.original) + `}}`)
 		out, _, _ := plan(t, settings, o)
 		wrapped := statusCommand(t, out)
@@ -233,4 +239,13 @@ func runShell(t *testing.T, shell string, env []string, command string) (string,
 		code = exitErr.ExitCode()
 	}
 	return stdout.String(), code
+}
+
+// scaled returns full, or reduced when the race detector or -short would
+// make the full count too slow for CI.
+func scaled(full, reduced int) int {
+	if raceEnabled || testing.Short() {
+		return reduced
+	}
+	return full
 }

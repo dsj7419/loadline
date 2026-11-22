@@ -15,7 +15,7 @@ EXE := $(shell go env GOEXE)
 .PHONY: test lint vuln web build check
 
 test:
-	go test $(RACE) ./...
+	go test $(RACE) -timeout 20m ./...
 
 lint:
 	golangci-lint run

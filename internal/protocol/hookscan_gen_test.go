@@ -173,7 +173,7 @@ func (g genJSON) reader(b []byte) io.Reader {
 // what encoding/json gives with the caps applied.
 func TestReadHookInput_MatchesEncodingJSONAcrossTheCap(t *testing.T) {
 	g := newGen(1)
-	for range 150 {
+	for range scaled(150, 40) {
 		input := g.object()
 		if !json.Valid(input) {
 			t.Fatalf("generated invalid JSON %.300q", input)
@@ -193,7 +193,7 @@ func TestReadHookInput_MutatedInputMatchesEncodingJSON(t *testing.T) {
 		in  protocol.HookInput
 		err error
 	}
-	for range 300 {
+	for range scaled(300, 75) {
 		input := g.mutate(g.object())
 		reader := g.reader(input)
 		done := make(chan result, 1)
@@ -208,4 +208,14 @@ func TestReadHookInput_MutatedInputMatchesEncodingJSON(t *testing.T) {
 			t.Fatalf("ReadHookInput hung on %.300q", input)
 		}
 	}
+}
+
+// scaled returns full, or reduced when the race detector or -short would
+// make full counts too slow for CI. The generator is seeded, so a reduced
+// run checks the first cases of a full one.
+func scaled(full, reduced int) int {
+	if raceEnabled || testing.Short() {
+		return reduced
+	}
+	return full
 }
