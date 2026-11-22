@@ -14,8 +14,8 @@ type AlertKind string
 const (
 	// AlertNeedsYou is a session that has waited on the user too long.
 	AlertNeedsYou AlertKind = "needs_you"
-	// AlertRunsOut is an account whose usage is on pace to hit a limit before
-	// the window resets.
+	// AlertRunsOut is an account that has reached a limit no other alert
+	// reports, or whose usage is on pace to hit one before the window resets.
 	AlertRunsOut AlertKind = "runs_out"
 	// AlertCreditsActive is an account at a plan limit that keeps working on
 	// usage credits.
@@ -115,20 +115,75 @@ func appendAccountAlerts(alerts []Alert, account Account, in AlertInput, cfg Ale
 		return Alert{Kind: kind, Dir: account.Dir, Since: now, Message: message}
 	}
 
-	if window, ok := earliestRunOut(in.Projections[account.Dir], account.Limits); ok {
-		alerts = append(alerts, alert(AlertRunsOut,
-			fmt.Sprintf("%s is on pace to run out of its %s limit before it resets", label, window)))
+	if message, ok := runOutMessage(account, label, in, cfg, now); ok {
+		alerts = append(alerts, alert(AlertRunsOut, message))
 	}
 	alerts = appendCreditAlerts(alerts, account.Dir, label, in.Credits[account.Dir], now)
 	if budget := in.Budgets[account.Dir]; budget > 0 && in.SpendToday[account.Dir] >= budget {
 		alerts = append(alerts, alert(AlertBudget,
 			fmt.Sprintf("%s has spent $%.2f today, reaching its $%.2f daily budget", label, in.SpendToday[account.Dir], budget)))
 	}
-	if weekly := account.Limits.SevenDay; weekly != nil && weekly.UsedPct >= cfg.WeeklyPct {
+	if weekly := account.Limits.SevenDay; weeklyThresholdReached(weekly, cfg) {
 		alerts = append(alerts, alert(AlertWeeklyThreshold,
 			fmt.Sprintf("%s is at %.0f%% of its weekly limit", label, weekly.UsedPct)))
 	}
 	return alerts
+}
+
+func weeklyThresholdReached(weekly *Window, cfg AlertConfig) bool {
+	return weekly != nil && weekly.UsedPct >= cfg.WeeklyPct
+}
+
+// runOutMessage is what the runs_out alert says of the account, if anything.
+// A limit the account has reached is said as a fact, unless another alert
+// says it already: credits_active, while the account works on its usage
+// credits, or weekly_threshold, of the weekly window. Otherwise it names the
+// limit the account is on pace to reach before it resets. A limit reached
+// comes before one ahead, and of two reached, the weekly one, which holds
+// longer.
+func runOutMessage(account Account, label string, in AlertInput, cfg AlertConfig, now time.Time) (string, bool) {
+	limits := account.Limits
+	onCredits := in.Credits[account.Dir].Active
+	for _, w := range []struct {
+		name     string
+		window   *Window
+		reported bool
+	}{
+		{"weekly", limits.SevenDay, onCredits || weeklyThresholdReached(limits.SevenDay, cfg)},
+		{"5-hour", limits.FiveHour, onCredits},
+	} {
+		if atLimit(w.window) && !w.reported {
+			return fmt.Sprintf("%s has reached its %s limit%s", label, w.name, resetClause(w.window.ResetsAt, now)), true
+		}
+	}
+	if window, ok := earliestRunOut(in.Projections[account.Dir], limits); ok {
+		return fmt.Sprintf("%s is on pace to run out of its %s limit before it resets", label, window), true
+	}
+	return "", false
+}
+
+// atLimit reports whether w is reported and at or past its limit.
+func atLimit(w *Window) bool {
+	return w != nil && w.UsedPct >= limitPct
+}
+
+// resetClause says when a window that resets at resetsAt does, by the clock
+// of now's location: ", resets 14:00" later the same day, ", resets Mon
+// 09:00" within the week and ", resets Nov 28 09:00" further out. It is
+// empty when the reset is unknown or past.
+func resetClause(resetsAt, now time.Time) string {
+	if !resetsAt.After(now) {
+		return ""
+	}
+	at := resetsAt.In(now.Location())
+	switch {
+	case at.YearDay() == now.YearDay() && at.Year() == now.Year():
+		return ", resets " + at.Format("15:04")
+	case at.Sub(now) < 7*24*time.Hour:
+		return ", resets " + at.Format("Mon 15:04")
+	default:
+		return ", resets " + at.Format("Jan 2 15:04")
+	}
 }
 
 func appendCreditAlerts(alerts []Alert, dir ConfigDir, label string, credits CreditEstimate, now time.Time) []Alert {
@@ -190,11 +245,11 @@ func earliestRunOut(p WindowProjections, limits Limits) (window string, ok bool)
 }
 
 // onPaceToRunOut reports whether a window is projected to reach its limit
-// before it resets. One already at its limit has run out, which the weekly
-// threshold and credits alerts say; one that w does not report is judged by
-// its projection alone.
+// before it resets. One already at its limit has reached it, which is said
+// as a fact or by another alert; one that w does not report is judged by its
+// projection alone.
 func onPaceToRunOut(p Projection, w *Window) bool {
-	return p.Known && p.RunsOutBeforeReset && (w == nil || w.UsedPct < limitPct)
+	return p.Known && p.RunsOutBeforeReset && !atLimit(w)
 }
 
 func needsYouMessage(label, waitReason string) string {

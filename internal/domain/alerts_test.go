@@ -211,62 +211,179 @@ func TestEvaluate_RunsOutIgnoresAWindowThatIsSafe(t *testing.T) {
 	}
 }
 
-// A window at or past its limit has already run out, so it is not "on pace
-// to run out before it resets": the weekly threshold and the credits alerts
-// say what holds then. Its projection still runs out, as the samples that
-// brought it there say.
-func TestEvaluate_NoRunOutAlertForAWindowAlreadyAtItsLimit(t *testing.T) {
-	resets := alertNow.Add(48 * time.Hour)
-	window := func(pct float64) *domain.Window { return &domain.Window{UsedPct: pct, ResetsAt: resets} }
-	// Each window there is runs out, the 5-hour one first.
-	projections := func(l domain.Limits) domain.WindowProjections {
-		var p domain.WindowProjections
-		if l.FiveHour != nil {
-			p.FiveHour = runsOut(alertNow)
-		}
-		if l.SevenDay != nil {
-			p.SevenDay = runsOut(alertNow.Add(time.Hour))
-		}
-		return p
+// limitWindow is a window used to pct, resetting at resets.
+func limitWindow(pct float64, resets time.Time) *domain.Window {
+	return &domain.Window{UsedPct: pct, ResetsAt: resets}
+}
+
+// projectionsFor gives each window in l a projection that runs out, the
+// 5-hour one first, as the samples that brought a window to its limit say.
+func projectionsFor(l domain.Limits) domain.WindowProjections {
+	var p domain.WindowProjections
+	if l.FiveHour != nil {
+		p.FiveHour = runsOut(alertNow)
 	}
+	if l.SevenDay != nil {
+		p.SevenDay = runsOut(alertNow.Add(time.Hour))
+	}
+	return p
+}
+
+// A window at or past its limit has already run out, so runs_out says the
+// account has reached it, as a fact, rather than that it is on pace to. It
+// leaves the weekly window to weekly_threshold, which already reports it.
+// A limit reached comes before one ahead.
+func TestEvaluate_AWindowAtItsLimitIsSaidToHaveReachedIt(t *testing.T) {
+	// alertNow is Saturday 09:16:40 UTC.
+	resets := alertNow.Add(48 * time.Hour)
+	const fiveHourReached = "Main has reached its 5-hour limit, resets Mon 09:16"
 	for _, used := range []float64{100, 120} {
 		for name, tc := range map[string]struct {
-			limits domain.Limits
-			want   []domain.AlertKind
-			names  string
+			limits  domain.Limits
+			want    []domain.AlertKind
+			message string
 		}{
 			"the weekly window": {
-				limits: domain.Limits{SevenDay: window(used)},
+				limits: domain.Limits{SevenDay: limitWindow(used, resets)},
 				want:   []domain.AlertKind{domain.AlertWeeklyThreshold},
 			},
 			"the 5-hour window": {
-				limits: domain.Limits{FiveHour: window(used)},
-				want:   nil,
+				limits:  domain.Limits{FiveHour: limitWindow(used, resets)},
+				want:    []domain.AlertKind{domain.AlertRunsOut},
+				message: fiveHourReached,
 			},
 			"both windows": {
-				limits: domain.Limits{FiveHour: window(used), SevenDay: window(used)},
-				want:   []domain.AlertKind{domain.AlertWeeklyThreshold},
+				limits:  domain.Limits{FiveHour: limitWindow(used, resets), SevenDay: limitWindow(used, resets)},
+				want:    []domain.AlertKind{domain.AlertRunsOut, domain.AlertWeeklyThreshold},
+				message: fiveHourReached,
 			},
 			"the 5-hour window, with the weekly one still short of it": {
-				limits: domain.Limits{FiveHour: window(used), SevenDay: window(80)},
-				want:   []domain.AlertKind{domain.AlertRunsOut},
-				names:  "weekly",
+				limits:  domain.Limits{FiveHour: limitWindow(used, resets), SevenDay: limitWindow(80, resets)},
+				want:    []domain.AlertKind{domain.AlertRunsOut},
+				message: fiveHourReached,
 			},
 		} {
 			t.Run(fmt.Sprintf("%s at %v%%", name, used), func(t *testing.T) {
 				got := evaluate(domain.AlertInput{
 					Accounts:    []domain.Account{{Dir: dirA, Label: "Main", Limits: tc.limits}},
-					Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: projections(tc.limits)},
+					Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: projectionsFor(tc.limits)},
 				})
 
 				if !slices.Equal(kindsOf(got), tc.want) {
 					t.Fatalf("Evaluate() = %v, want %v", got, tc.want)
 				}
-				if tc.names != "" && !strings.Contains(got[0].Message, tc.names) {
-					t.Errorf("Message = %q, want it to name the %s limit", got[0].Message, tc.names)
+				if tc.message != "" && got[0].Message != tc.message {
+					t.Errorf("Message = %q, want %q", got[0].Message, tc.message)
 				}
 			})
 		}
+	}
+}
+
+// An account stopped at its 5-hour limit, with its week at 40% and no call
+// getting through, so not on credits, has nothing else to say so: neither
+// weekly_threshold, which covers the week alone, nor credits_active, which
+// needs a call made at the limit.
+func TestEvaluate_AnAccountAtItsFiveHourLimitStillAlerts(t *testing.T) {
+	got := evaluate(domain.AlertInput{
+		Accounts: []domain.Account{{Dir: dirA, Label: "B", Auth: domain.AuthSubscription, Limits: domain.Limits{
+			FiveHour: limitWindow(100, alertNow.Add(2*time.Hour)),
+			SevenDay: limitWindow(40, alertNow.Add(72*time.Hour)),
+		}}},
+		Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: {FiveHour: runsOut(alertNow)}},
+		Credits:     map[domain.ConfigDir]domain.CreditEstimate{dirA: {Source: domain.CreditSourceEstimate}},
+	})
+
+	want := []alertKey{{domain.AlertRunsOut, dirA, "", alertNow.Sub(t0)}}
+	if !reflect.DeepEqual(keysOf(got), want) || got[0].Message != "B has reached its 5-hour limit, resets 11:16" {
+		t.Errorf("Evaluate() = %v, want one runs_out alert saying B has reached its 5-hour limit", got)
+	}
+}
+
+// While the account works on its credits, credits_active says it has
+// reached a limit; runs_out says nothing more of the windows at it.
+func TestEvaluate_NoReachedLimitAlertWhileOnCredits(t *testing.T) {
+	resets := alertNow.Add(2 * time.Hour)
+	for name, tc := range map[string]struct {
+		limits      domain.Limits
+		projections domain.WindowProjections
+		want        []domain.AlertKind
+	}{
+		"the 5-hour window": {
+			limits: domain.Limits{FiveHour: limitWindow(100, resets), SevenDay: limitWindow(40, resets)},
+			// Only the window at its limit runs out.
+			projections: domain.WindowProjections{FiveHour: runsOut(alertNow)},
+			want:        []domain.AlertKind{domain.AlertCreditsActive},
+		},
+		"the weekly window": {
+			limits:      domain.Limits{SevenDay: limitWindow(100, resets)},
+			projections: domain.WindowProjections{SevenDay: runsOut(alertNow)},
+			want:        []domain.AlertKind{domain.AlertCreditsActive, domain.AlertWeeklyThreshold},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := evaluate(domain.AlertInput{
+				Accounts:    []domain.Account{{Dir: dirA, Label: "Main", Limits: tc.limits}},
+				Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: tc.projections},
+				Credits: map[domain.ConfigDir]domain.CreditEstimate{dirA: {
+					BalanceUSD: 20, SpentUSD: 1, OnCreditsSince: at(900), Active: true,
+				}},
+			})
+
+			if !slices.Equal(kindsOf(got), tc.want) {
+				t.Errorf("Evaluate() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// With nothing else reporting the weekly window, runs_out says the account
+// has reached it, and names it before the 5-hour one, which it outlasts.
+func TestEvaluate_SaysTheWeeklyLimitIsReachedWhenNothingElseDoes(t *testing.T) {
+	// A threshold past the limit reports no weekly window at it.
+	cfg := domain.AlertConfig{WeeklyPct: 101, ContextPct: 85, NeedsYouAfter: 20 * time.Second}
+	limits := domain.Limits{
+		FiveHour: limitWindow(100, alertNow.Add(2*time.Hour)),
+		SevenDay: limitWindow(100, alertNow.Add(48*time.Hour)),
+	}
+
+	got := domain.Evaluate(domain.AlertInput{
+		Accounts:    []domain.Account{{Dir: dirA, Label: "B", Limits: limits}},
+		Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: projectionsFor(limits)},
+	}, cfg, alertNow)
+
+	if !slices.Equal(kindsOf(got), []domain.AlertKind{domain.AlertRunsOut}) ||
+		got[0].Message != "B has reached its weekly limit, resets Mon 09:16" {
+		t.Errorf("Evaluate() = %v, want one runs_out alert saying B has reached its weekly limit", got)
+	}
+}
+
+// The reset reads by the clock of now's location: the time alone later the
+// same day, the weekday within the week, and the date further out. A reset
+// that is not known is left out.
+func TestEvaluate_SaysWhenAReachedLimitResets(t *testing.T) {
+	tokyo := time.FixedZone("Tokyo", 9*3600)
+	for name, tc := range map[string]struct {
+		resetsAt time.Time
+		now      time.Time
+		want     string
+	}{
+		"later the same day":    {alertNow.Add(2 * time.Hour), alertNow, "B has reached its 5-hour limit, resets 11:16"},
+		"in another time zone":  {alertNow.Add(2 * time.Hour), alertNow.In(tokyo), "B has reached its 5-hour limit, resets 20:16"},
+		"the next day":          {alertNow.Add(16 * time.Hour), alertNow, "B has reached its 5-hour limit, resets Sun 01:16"},
+		"over a week out":       {alertNow.Add(8 * 24 * time.Hour), alertNow, "B has reached its 5-hour limit, resets Nov 29 09:16"},
+		"with no reset time":    {time.Time{}, alertNow, "B has reached its 5-hour limit"},
+		"with a reset now past": {alertNow, alertNow, "B has reached its 5-hour limit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := domain.Evaluate(domain.AlertInput{
+				Accounts: []domain.Account{{Dir: dirA, Label: "B", Limits: domain.Limits{FiveHour: limitWindow(100, tc.resetsAt)}}},
+			}, defaultAlertConfig, tc.now)
+
+			if len(got) != 1 || got[0].Message != tc.want {
+				t.Errorf("Evaluate() = %v, want one alert saying %q", got, tc.want)
+			}
+		})
 	}
 }
 
