@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,20 +28,30 @@ type HookInput struct {
 	Cwd              string `json:"cwd,omitempty"`
 }
 
-// ReadHookInput decodes the first JSON value of r, which must be an object,
-// into a HookInput. Every field is optional, and one holding a value of the
-// wrong type is left empty. It does not cap the input: the decoder holds one
-// value at a time, and nothing outside the allowlist outlives the call.
+// ReadHookInput decodes the JSON object at the start of r into a HookInput,
+// as encoding/json would, in memory that does not grow with the input. A
+// hook's input can run to many megabytes of tool output, which a JSON
+// decoder would hold whole, so the object is read as a stream instead: it
+// holds a 16 KiB read buffer, the nesting of the value being read, at most
+// 10 000 levels, and the members it keeps, at most MaxPayloadBytes each and
+// 1 MiB in all. A longer member is checked and passed over unkept; as it
+// could not be forwarded anyway, its field reads as empty. As in
+// encoding/json, the last occurrence of a key, in any letter case, wins.
+//
+// Every field is optional, and one holding a value of the wrong type is
+// left empty. Input that encoding/json would refuse, in a kept member or a
+// passed-over one, is an error, and then nothing is returned. Reading stops
+// at the object's closing brace.
 func ReadHookInput(r io.Reader) (HookInput, error) {
-	// A pointer target tells a top-level null, which decodes to nil, from {}.
-	var in *HookInput
-	if err := ignoreFieldTypeError(json.NewDecoder(r).Decode(&in)); err != nil {
+	kept, err := shortMembers(bufio.NewReaderSize(r, hookReadBuffer))
+	if err != nil {
 		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
-	if in == nil {
-		return HookInput{}, errors.New("decode hook input: the value is null, not an object")
+	var in HookInput
+	if err := ignoreFieldTypeError(json.Unmarshal(kept, &in)); err != nil {
+		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
-	return *in, nil
+	return in, nil
 }
 
 // HookEvent maps a hook payload to the domain event, stamped with the

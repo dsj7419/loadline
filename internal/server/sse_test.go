@@ -636,12 +636,15 @@ func TestSSE_LogsAFailedWrite(t *testing.T) {
 }
 
 // A writer without deadlines streams, but a client that stops reading could
-// then hold its stream forever, so the server says so, once.
-func TestSSE_WarnsOnceWhenStreamWritesHaveNoDeadline(t *testing.T) {
-	logs := &logRecorder{}
-	h := newHarness(t, withLog(logs))
+// then hold its stream forever, so the process says so, once, however many
+// servers it runs and streams they serve.
+func TestSSE_WarnsOncePerProcessWhenStreamWritesHaveNoDeadline(t *testing.T) {
+	server.ResetNoDeadlineWarning()
+	t.Cleanup(server.ResetNoDeadlineWarning)
+	first, second := &logRecorder{}, &logRecorder{}
 
-	for range 3 {
+	for _, logs := range []*logRecorder{first, second, first} {
+		h := newHarness(t, withLog(logs))
 		// A request that has already ended still gets the snapshot, and
 		// then the stream ends at once.
 		ctx, cancel := context.WithCancel(t.Context())
@@ -653,7 +656,8 @@ func TestSSE_WarnsOnceWhenStreamWritesHaveNoDeadline(t *testing.T) {
 		}
 	}
 
-	if warnings := logs.find(slog.LevelWarn, ""); len(warnings) != 1 {
-		t.Errorf("warnings = %v after three streams without write deadlines, want exactly one", warnings)
+	warnings := len(first.find(slog.LevelWarn, "")) + len(second.find(slog.LevelWarn, ""))
+	if warnings != 1 {
+		t.Errorf("%d warnings from two servers streaming without write deadlines, want exactly one", warnings)
 	}
 }

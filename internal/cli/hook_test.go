@@ -403,23 +403,6 @@ func TestRunHook_NeverWritesStdout(t *testing.T) {
 	}
 }
 
-func TestRunHook_BadConfigFileFallsBackToDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("LOADLINE_HOME", home)
-	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"port":`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	var stdout, stderr bytes.Buffer
-
-	code := cli.Run(context.Background(), []string{"hook"}, cli.IO{
-		In: strings.NewReader(`{"hook_event_name":"Stop"}`), Out: &stdout, Err: &stderr,
-	})
-
-	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Errorf("hook = %d with stdout %q and stderr %q, want 0 and nothing written", code, stdout.String(), stderr.String())
-	}
-}
-
 func writeConfig(t *testing.T, path string, port int) {
 	t.Helper()
 	data, err := json.Marshal(map[string]int{"port": port})

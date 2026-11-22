@@ -38,7 +38,7 @@ func runHookCommand(ctx context.Context, stdio IO) int {
 // for the server to drain later; one the server could never take, such as
 // an event without a session, is dropped.
 func RunHook(ctx context.Context, in io.Reader, env Env, paths config.Paths, cfg config.Config) int {
-	input, err := readHookInput(in)
+	input, err := protocol.ReadHookInput(in)
 	if err != nil {
 		return exitOK
 	}

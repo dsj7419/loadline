@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -88,7 +87,6 @@ type Server struct {
 	uiCookie           []byte
 	pingEvery          time.Duration
 	streamWriteTimeout time.Duration
-	noDeadlineWarning  sync.Once
 
 	limiter *tokenBucket
 	recent  *recentIDs

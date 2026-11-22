@@ -87,8 +87,11 @@ func runTapCommand(ctx context.Context, args []string, stdio IO) int {
 	}
 	mode.Stderr = stdio.Err
 	// A status line whose reader has gone would otherwise end the tap at the
-	// echo, by SIGPIPE, before it forwards anything.
-	signal.Ignore(syscall.SIGPIPE)
+	// echo, by SIGPIPE, before it forwards anything. With the signal
+	// caught, the write fails instead. It is caught rather than ignored: a
+	// --run command then starts with the default disposition, as it would
+	// without the tap, while an ignored signal stays ignored across exec.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		// With no Loadline directories there is no token to send with, so
@@ -166,15 +169,24 @@ func RunTap(ctx context.Context, in io.Reader, out io.Writer, env Env, paths con
 	if len(head) > maxStatusInput {
 		input = io.MultiReader(input, in)
 	}
-	forwardable := readErr == nil && len(head) <= maxStatusInput
+	complete := readErr == nil && len(head) <= maxStatusInput
+
+	// --print needs the input decoded before it writes. Every other mode
+	// writes first and decodes after.
+	printing := mode.Run == "" && mode.Print
+	var status protocol.StatusInput
+	decoded := false
+	if printing {
+		status, decoded = decodeStatusInput(head, complete)
+	}
 
 	code := exitOK
 	var writeErr error
 	switch {
 	case mode.Run != "":
 		code = runStatusLine(ctx, mode.Run, input, out, mode.Stderr)
-	case mode.Print:
-		_, writeErr = io.WriteString(out, summary(head))
+	case printing:
+		_, writeErr = io.WriteString(out, summary(status))
 	default:
 		_, writeErr = io.Copy(out, input)
 	}
@@ -185,21 +197,32 @@ func RunTap(ctx context.Context, in io.Reader, out io.Writer, env Env, paths con
 		code = exitFailure
 	}
 
-	if forwardable {
-		forwardStatus(ctx, env, paths, cfg, head)
+	if !printing {
+		status, decoded = decodeStatusInput(head, complete)
+	}
+	if decoded {
+		forwardStatus(ctx, env, paths, cfg, status)
 	}
 	return code
 }
 
-// summary is the line --print shows for a status-line input: the model, the
-// context window's fill and the weekly limit's use, each left out when
-// unknown. A context window at 0% is one Claude Code has not measured yet:
-// it sends null until then.
-func summary(input []byte) string {
-	s, err := protocol.DecodeStatus(input)
-	if err != nil {
-		return "\n"
+// decodeStatusInput decodes the status-line input, reporting false when it
+// is not one or was too long to read whole.
+func decodeStatusInput(input []byte, complete bool) (protocol.StatusInput, bool) {
+	if !complete {
+		return protocol.StatusInput{}, false
 	}
+	status, err := protocol.DecodeStatus(input)
+	if err != nil {
+		return protocol.StatusInput{}, false
+	}
+	return status, true
+}
+
+// summary is the line --print shows: the model, the context window's fill
+// and the weekly limit's use, each left out when unknown. A context window
+// at 0% is one Claude Code has not measured yet: it sends null until then.
+func summary(s protocol.StatusInput) string {
 	var parts []string
 	if s.Model != nil {
 		if name := cmp.Or(s.Model.DisplayName, s.Model.ID); name != "" {
@@ -239,16 +262,12 @@ func runStatusLine(ctx context.Context, command string, stdin io.Reader, stdout,
 	return exitFailure
 }
 
-// forwardStatus posts the allowlisted fields of the status-line input to the
+// forwardStatus posts the allowlisted fields of a status-line input to the
 // server, and starts the server when the post fails. An input the server
 // could never take, such as one without a session, is dropped before it is
 // sent.
-func forwardStatus(ctx context.Context, env Env, paths config.Paths, cfg config.Config, input []byte) {
+func forwardStatus(ctx context.Context, env Env, paths config.Paths, cfg config.Config, status protocol.StatusInput) {
 	if paths.TokenFile == "" {
-		return
-	}
-	status, err := protocol.DecodeStatus(input)
-	if err != nil {
 		return
 	}
 	payload, err := json.Marshal(status)

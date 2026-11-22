@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -14,6 +15,10 @@ import (
 
 // errSubscriptionClosed ends a stream whose subscription the state closed.
 var errSubscriptionClosed = errors.New("the subscription closed")
+
+// noDeadlineWarning makes the warning about streams without write deadlines
+// once per process: the cause is the platform's, the same for every stream.
+var noDeadlineWarning sync.Once
 
 // handleEvents streams the view as server-sent events: the whole view once
 // on connect and again each time the state publishes one, with a comment in
@@ -87,11 +92,11 @@ func (s *Server) stream(ctx context.Context, stream eventStream, first []byte, v
 	}
 }
 
-// warnNoWriteDeadline says, once, that stream writes go without a deadline,
-// which leaves a client that stops reading holding its stream for as long as
-// the connection lasts.
+// warnNoWriteDeadline says, once per process, that stream writes go without
+// a deadline, which leaves a client that stops reading holding its stream for
+// as long as the connection lasts.
 func (s *Server) warnNoWriteDeadline() {
-	s.noDeadlineWarning.Do(func() {
+	noDeadlineWarning.Do(func() {
 		s.log.Warn("event stream writes have no deadline; a client that stops reading can hold its stream open")
 	})
 }
