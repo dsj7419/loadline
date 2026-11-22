@@ -1123,9 +1123,12 @@ kbd {
   color: var(--muted);
 }
 
+/* A reason is free text, as long as a hook sent it, and may be one word. */
 .change-reason {
+  min-width: 0;
   font-size: 13px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-color-scheme: light) {

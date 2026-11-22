@@ -15,6 +15,17 @@ const day = 24 * hour;
 // A negative amount that rounds to zero reads $0.00, not -$0.00.
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', signDisplay: 'negative' });
 
+// Millions and up: $1.2M, $3.4B, $5.6T.
+const usdCompact = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+const compactFrom = 1e6;
+// The least amount that would round to $1,000T, past the largest unit.
+const compactBeyond = 999.95e12;
+
 // Math.round sends halves up (-2.5 becomes -2); rounding the magnitude sends
 // them away from zero instead.
 function roundHalfAwayFromZero(n: number): number {
@@ -45,7 +56,10 @@ export function formatTokens(n: number): string {
   return `${roundHalfAwayFromZero(n / 100_000) / 10}M`;
 }
 
-/** An amount in US dollars: $12.40, or <$0.01 for a fraction of a cent. */
+/**
+ * An amount in US dollars: $12.40, <$0.01 for a fraction of a cent, $1.2M
+ * from a million up, and >$999T past that, so no amount can widen the page.
+ */
 export function formatUSD(n: number): string {
   if (!Number.isFinite(n)) {
     return dash;
@@ -53,7 +67,11 @@ export function formatUSD(n: number): string {
   if (n > 0 && n < 0.005) {
     return '<$0.01';
   }
-  return usd.format(n);
+  const size = Math.abs(n);
+  if (size >= compactBeyond) {
+    return n > 0 ? '>$999T' : '<-$999T';
+  }
+  return size >= compactFrom ? usdCompact.format(n) : usd.format(n);
 }
 
 /** An elapsed time in its two largest units: 45s, 1m 12s, 2h 14m or 3d 4h. */
