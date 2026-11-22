@@ -383,18 +383,22 @@ func TestExec_RunSuccessIgnoresStderr(t *testing.T) {
 }
 
 func TestExec_RunStdoutCap(t *testing.T) {
+	// The cap is written out rather than taken from maxOutputBytes, so that
+	// the test holds it to four MiB.
+	const fourMiB = 4 << 20
+
 	t.Run("exactly at the cap", func(t *testing.T) {
-		t.Setenv(helperBytesEnv, strconv.Itoa(maxOutputBytes))
+		t.Setenv(helperBytesEnv, strconv.Itoa(fourMiB))
 
 		out, err := helperExec(t, "flood").Run(context.Background(), account, "agents")
 
-		if err != nil || len(out) != maxOutputBytes {
-			t.Errorf("Run = %d bytes, %v, want %d bytes and no error", len(out), err, maxOutputBytes)
+		if err != nil || len(out) != fourMiB {
+			t.Errorf("Run = %d bytes, %v, want %d bytes and no error", len(out), err, fourMiB)
 		}
 	})
 
 	t.Run("beyond the cap kills the child", func(t *testing.T) {
-		t.Setenv(helperBytesEnv, strconv.Itoa(maxOutputBytes+1))
+		t.Setenv(helperBytesEnv, strconv.Itoa(fourMiB+1))
 		t.Setenv(helperExitEnv, "hang")
 
 		start := time.Now()

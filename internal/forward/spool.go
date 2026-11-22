@@ -49,6 +49,10 @@ var (
 
 	// errUndecodable marks a spooled file that holds no valid envelope.
 	errUndecodable = errors.New("not a valid envelope")
+
+	// testHookBeforePublish, when a test sets it, runs once a put's file is
+	// written and before it is published under its final name.
+	testHookBeforePublish func()
 )
 
 // Spool keeps the hook events the server did not take, one file per event,
@@ -113,6 +117,9 @@ func writeFile(dir, name string, data []byte) error {
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		_ = os.Remove(file.Name())
 		return fmt.Errorf("write temporary file: %w", err)
+	}
+	if testHookBeforePublish != nil {
+		testHookBeforePublish()
 	}
 	if err := os.Rename(file.Name(), filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(file.Name())

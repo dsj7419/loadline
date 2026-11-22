@@ -438,6 +438,21 @@ func TestRunHook_NeverWritesStdout(t *testing.T) {
 	}
 }
 
+// Without a usable LOADLINE_HOME there is nowhere to read the token from or
+// spool to, and still the hook must exit 0, silently.
+func TestRunHook_ExitsZeroWithoutItsDirectories(t *testing.T) {
+	t.Setenv("LOADLINE_HOME", filepath.Join("relative", "loadline"))
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(context.Background(), []string{"hook"}, cli.IO{
+		In: strings.NewReader(hookInput(t, "Stop", 0)), Out: &stdout, Err: &stderr,
+	})
+
+	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("hook = %d with stdout %q and stderr %q, want 0 and nothing written", code, stdout.String(), stderr.String())
+	}
+}
+
 func writeConfig(t *testing.T, path string, port int) {
 	t.Helper()
 	data, err := json.Marshal(map[string]int{"port": port})

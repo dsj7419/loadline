@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -245,6 +246,8 @@ type running struct {
 	done   chan int
 	stdout *syncBuffer
 	stderr *syncBuffer
+	// addr is the address Serve said it listens on.
+	addr string
 }
 
 // start runs Serve with the fixture's options, as edit changes them, and
@@ -263,7 +266,7 @@ func (f *serveFixture) start(edit ...func(*cli.ServeOptions)) *running {
 	f.t.Cleanup(func() { r.stop(f.t) })
 
 	select {
-	case <-ready:
+	case r.addr = <-ready:
 	case code := <-r.done:
 		r.done <- code
 		f.t.Fatalf("Serve returned %d before it listened; stderr %q", code, r.stderr.String())
@@ -1081,5 +1084,84 @@ func TestServe_LogsTheClockBeingSetBack(t *testing.T) {
 
 	if log := f.logText(); !strings.Contains(log, "system clock was set back") {
 		t.Errorf("the log does not mention the clock being set back:\n%s", log)
+	}
+}
+
+// The server says where it listens: the loopback address, on its port.
+func TestServe_ListensOnTheLoopbackAddress(t *testing.T) {
+	f := newServeFixture(t)
+
+	r := f.start()
+
+	if want := fmt.Sprintf("127.0.0.1:%d", f.port); r.addr != want {
+		t.Errorf("Serve listens on %q, want %q", r.addr, want)
+	}
+}
+
+// A header block over 64 KiB is refused before any handler sees it.
+func TestServe_RefusesAnOversizedHeaderBlock(t *testing.T) {
+	f := newServeFixture(t)
+	f.start()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.url("/healthz"), http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Padding", strings.Repeat("a", 80<<10))
+
+	resp, err := f.http.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Errorf("status %d for an 80 KiB header, want 431", resp.StatusCode)
+	}
+}
+
+// A login code signs a browser in, so the log must never hold one, whether
+// it was handed out or redeemed.
+func TestServe_LogNeverHoldsALoginCode(t *testing.T) {
+	f := newServeFixture(t)
+	r := f.start()
+	var codes []string
+	for range 2 {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, f.url("/api/login-code"), http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Loadline-Token", string(f.token()))
+		resp, err := f.http.Do(req)
+		if err != nil {
+			t.Fatalf("POST /api/login-code: %v", err)
+		}
+		var body struct {
+			Code string `json:"code"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		_ = resp.Body.Close()
+		if err != nil || body.Code == "" {
+			t.Fatalf("login code: %v, %+v", err, body)
+		}
+		codes = append(codes, body.Code)
+	}
+	redeem, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.url("/login?code="+codes[0]), http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := f.http.Do(redeem); err == nil {
+		_ = resp.Body.Close()
+	}
+	r.stop(t)
+
+	log := f.logText()
+	for _, code := range codes {
+		if strings.Contains(log, code) {
+			t.Errorf("the log holds a login code it handed out:\n%s", log)
+		}
+	}
+	// A code is 32 hex digits; so is half the token. No such run belongs in
+	// the log.
+	if secret := regexp.MustCompile(`[0-9a-f]{32}`).FindString(log); secret != "" {
+		t.Errorf("the log holds %s, which looks like a login code or the token:\n%s", secret, log)
 	}
 }

@@ -127,7 +127,7 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		return fail(stdio, err)
 	}
 
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddress(port))
 	if err != nil {
 		return refuseToListen(ctx, port, o.Demo, err, stdio)
 	}
@@ -142,6 +142,12 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 
 	s := newInstance(o, cfg, port, token, slog.New(slog.NewTextHandler(logs, nil)))
 	return s.run(ctx, listener)
+}
+
+// listenAddress is where the server listens: the IPv4 loopback address,
+// written as a number, since a name resolves as the hosts file says.
+func listenAddress(port int) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 }
 
 // refuseToListen explains a listen that failed. A port that a loadline
