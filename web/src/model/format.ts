@@ -1,3 +1,5 @@
+import { isTimestamp } from '../api/guard';
+
 // How the dashboard writes numbers and times. Every formatter is total: a
 // value it cannot show, such as NaN or an unreadable time, comes out as a
 // dash. Times are local to the viewer, with English names whatever the
@@ -10,7 +12,8 @@ const minute = 60 * second;
 const hour = 60 * minute;
 const day = 24 * hour;
 
-const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+// A negative amount that rounds to zero reads $0.00, not -$0.00.
+const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', signDisplay: 'negative' });
 
 // Math.round sends halves up (-2.5 becomes -2); rounding the magnitude sends
 // them away from zero instead.
@@ -47,10 +50,6 @@ export function formatUSD(n: number): string {
   if (!Number.isFinite(n)) {
     return dash;
   }
-  if (n === 0) {
-    // Intl would write -0 as -$0.00.
-    return '$0.00';
-  }
   if (n > 0 && n < 0.005) {
     return '<$0.01';
   }
@@ -83,6 +82,9 @@ export function formatDuration(ms: number): string {
  * the week, and Nov 28 09:00 further out.
  */
 export function formatReset(iso: string, now: Date): string {
+  if (!isTimestamp(iso)) {
+    return dash;
+  }
   const at = new Date(iso);
   const ahead = at.getTime() - now.getTime();
   if (Number.isNaN(ahead)) {
@@ -108,6 +110,9 @@ export function formatReset(iso: string, now: Date): string {
  * future time reads in 5m.
  */
 export function formatRelative(iso: string, now: Date): string {
+  if (!isTimestamp(iso)) {
+    return dash;
+  }
   const ago = now.getTime() - Date.parse(iso);
   if (Number.isNaN(ago)) {
     return dash;

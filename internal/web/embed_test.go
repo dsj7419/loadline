@@ -70,30 +70,47 @@ func TestInlineCode_FindsEachKind(t *testing.T) {
 	for _, html := range []string{
 		`<style>main { color: red }</style>`,
 		`<main style="color: red">`,
+		`<main style = "color: red">`,
+		"<main\n\tSTYLE=\"color: red\">",
 		`<script>start()</script>`,
 		`<SCRIPT type="module">start()</SCRIPT>`,
+		`<body onload="start()">`,
+		`<button ONCLICK = 'start()'>`,
+		"<img src=\"/a.png\"\nonerror=\"start()\">",
 	} {
 		if found := inlineCode(html); len(found) == 0 {
 			t.Errorf("inlineCode(%q) found nothing", html)
 		}
 	}
-	if found := inlineCode(`<link rel="stylesheet" href="/app.css"><script type="module" src="/app.js"></script>`); len(found) > 0 {
-		t.Errorf("inlineCode flagged external assets: %q", found)
+	// A CSP meta carries content=, and data-* attributes may end in style or
+	// start with on, none of which is inline code.
+	for _, html := range []string{
+		`<link rel="stylesheet" href="/app.css"><script type="module" src="/app.js"></script>`,
+		csp,
+		`<div data-style="compact" data-online="yes">`,
+	} {
+		if found := inlineCode(html); len(found) > 0 {
+			t.Errorf("inlineCode(%q) flagged %q", html, found)
+		}
 	}
 }
 
-var scriptTag = regexp.MustCompile(`<script\b[^>]*>`)
+var (
+	scriptTag = regexp.MustCompile(`<script\b[^>]*>`)
+	// An attribute name follows whitespace, so data-style= and content= are
+	// not matched.
+	inlineAttribute = regexp.MustCompile(`\s(?:style|on\w+)\s*=`)
+)
 
-// inlineCode returns the style elements, style attributes and scripts
-// without a src in html.
+// inlineCode returns the style elements, style attributes, event handler
+// attributes and scripts without a src in html.
 func inlineCode(html string) []string {
 	lower := strings.ToLower(html)
 	var found []string
-	for _, marker := range []string{"<style", " style="} {
-		if strings.Contains(lower, marker) {
-			found = append(found, marker)
-		}
+	if strings.Contains(lower, "<style") {
+		found = append(found, "<style")
 	}
+	found = append(found, inlineAttribute.FindAllString(lower, -1)...)
 	for _, tag := range scriptTag.FindAllString(lower, -1) {
 		if !strings.Contains(tag, " src=") {
 			found = append(found, tag)

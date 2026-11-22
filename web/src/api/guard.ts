@@ -186,7 +186,8 @@ function matches(schema: Schema, value: unknown): boolean {
 // An RFC 3339 date-time, as Go encodes a time.Time.
 const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-function isTimestamp(value: unknown): boolean {
+/** Reports whether value is an RFC 3339 time that names a real moment. */
+export function isTimestamp(value: unknown): value is Timestamp {
   return typeof value === 'string' && rfc3339.test(value) && !Number.isNaN(Date.parse(value));
 }
 

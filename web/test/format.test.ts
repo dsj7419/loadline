@@ -75,6 +75,7 @@ describe('formatUSD', () => {
     [1_240.5, '$1,240.50'],
     [1_234_567.891, '$1,234,567.89'],
     [-3.5, '-$3.50'],
+    [-0.001, '$0.00'],
   ])('shows %s as %s', (n, want) => {
     expect(formatUSD(n)).toBe(want);
   });
@@ -137,11 +138,14 @@ describe('formatReset', () => {
 
   it('shows the time in the time zone of the viewer', () => {
     vi.stubEnv('TZ', 'Asia/Tokyo');
-    expect(formatReset('2026-11-23T00:00:00Z', now)).toBe('Mon 09:00');
-    expect(formatReset('2026-12-01T15:30:00Z', now)).toBe('Dec 2 00:30');
+    // Each time falls on the next day in Tokyo: one a new weekday, the other
+    // a new month.
+    expect(formatReset('2026-11-22T20:00:00Z', now)).toBe('Mon 05:00');
+    expect(formatReset('2026-11-30T15:30:00Z', now)).toBe('Dec 1 00:30');
   });
 
-  it.each(['soon', '', '2026-13-45T00:00:00Z'])('shows %j as a dash', (iso) => {
+  // Date.parse reads '42' as the year 2042, so only a strict check refuses it.
+  it.each(['soon', '', '42', '2026-13-45T00:00:00Z'])('shows %j as a dash', (iso) => {
     expect(formatReset(iso, now)).toBe('—');
   });
 
@@ -174,7 +178,7 @@ describe('formatRelative', () => {
     expect(formatRelative(iso, now)).toBe(want);
   });
 
-  it.each(['yesterday', '', '2026-11-21T25:00:00Z'])('shows %j as a dash', (iso) => {
+  it.each(['yesterday', '', '42', '2026-11-21T25:00:00Z'])('shows %j as a dash', (iso) => {
     expect(formatRelative(iso, now)).toBe('—');
   });
 
