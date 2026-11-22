@@ -37,10 +37,14 @@ type heldReading struct {
 	// takenAt is when the reading was first taken. A line that reports it
 	// again leaves it, so it dates how long the window has stood as it is.
 	takenAt time.Time
+	// freshAs is when the newest response came that the reading's session
+	// was known to have got, zero when none was (see responseClock).
+	freshAs time.Time
 }
 
 // restoredAccount is an account a store kept. Its windows' readings date
-// from when it was last observed, the latest they can have been taken.
+// from when it was last observed, the latest they can have been taken. How
+// fresh they are is not kept, so it is unknown.
 func restoredAccount(a domain.Account) *accountEntry {
 	a.Limits.FiveHour, a.Limits.SevenDay = cloneWindow(a.Limits.FiveHour), cloneWindow(a.Limits.SevenDay)
 	taken := heldReading{takenAt: a.Limits.ObservedAt}
@@ -64,19 +68,21 @@ func (a *accountEntry) sevenDay() windowState {
 	return windowState{a.account.Limits.SevenDay, a.readings.SevenDay, a.samples.SevenDay, domain.SevenDayLength}
 }
 
-// observe applies the rate limits a status line reports. A line that reports
-// no window is no observation of them, and one observed no later than the
-// limits held is older news. Each window is judged on its own (see
-// windowState.observe), and the limits are observed afresh when the line
-// was news of either. It returns whether a window's values moved, as opposed
-// to being observed afresh, and the windows that gained a sample.
-func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limits) {
+// observe applies the rate limits a status line reports, as fresh as freshAs,
+// when the newest response its session is known to have got came, zero when
+// none is known. A line that reports no window is no observation of them,
+// and one observed no later than the limits held is older news. Each window
+// is judged on its own (see windowState.observe), and the limits are observed
+// afresh when the line was news of either. It returns whether a window's
+// values moved, as opposed to being observed afresh, and the windows that
+// gained a sample.
+func (a *accountEntry) observe(l domain.Limits, freshAs time.Time) (moved bool, sampled domain.Limits) {
 	held := a.account.Limits
 	if (l.FiveHour == nil && l.SevenDay == nil) || !l.ObservedAt.After(held.ObservedAt) {
 		return false, domain.Limits{}
 	}
-	fiveHour, fiveHourNews, fiveHourSampled := a.fiveHour().observe(l.FiveHour, l.ObservedAt)
-	sevenDay, sevenDayNews, sevenDaySampled := a.sevenDay().observe(l.SevenDay, l.ObservedAt)
+	fiveHour, fiveHourNews, fiveHourSampled := a.fiveHour().observe(l.FiveHour, l.ObservedAt, freshAs)
+	sevenDay, sevenDayNews, sevenDaySampled := a.sevenDay().observe(l.SevenDay, l.ObservedAt, freshAs)
 	if !fiveHourNews && !sevenDayNews {
 		return false, domain.Limits{}
 	}
@@ -87,28 +93,60 @@ func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limi
 	return moved, domain.Limits{FiveHour: fiveHourSampled, SevenDay: sevenDaySampled, ObservedAt: l.ObservedAt}
 }
 
-// observe returns the window as a line observed at at leaves it, the line
-// reading it as reading, or leaving it out when that is nil; whether the
-// line was news of the window; and the window it sampled, if any.
-func (w windowState) observe(reading *domain.Window, at time.Time) (next windowState, news bool, sampled *domain.Window) {
-	if reading == nil {
-		if w.standsUnreported(at) {
+// observe returns the window as a line observed at at, as fresh as freshAs,
+// leaves it, the line reading it as reading, or leaving it out when that is
+// nil; whether the line was news of the window; and the window it sampled,
+// if any.
+//
+// Each session's line carries the limits of that session's own last
+// response, so an idle session goes on reporting an older reading while a
+// busy one reports the current one. Against a window held that has not reset
+// by at, a fresher line's reading is news whichever way it moves, which takes
+// in a reset that kept its reset time, and a staler line is no news of the
+// window at all. When neither line is the fresher, the window decides (see
+// takes and standsUnreported).
+func (w windowState) observe(reading *domain.Window, at, freshAs time.Time) (next windowState, news bool, sampled *domain.Window) {
+	if unexpired(w.held, at) != nil {
+		switch compareFreshness(freshAs, w.reading.freshAs) {
+		case -1:
 			return w, false, nil
+		case 1:
+			if reading != nil {
+				return w.take(reading, at, freshAs)
+			}
 		}
-		next = windowState{length: w.length}
-		next.samples, sampled = sampleWindow(w.samples, nil, at)
-		return next, w.held != nil || sampled != nil, sampled
+	}
+	if reading == nil {
+		return w.leftOut(at)
 	}
 	if !w.takes(reading, at) {
 		return w, false, nil
 	}
+	return w.take(reading, at, freshAs)
+}
+
+// take returns the window with reading, from a line observed at at, as
+// fresh as freshAs, held in place of the window's last.
+func (w windowState) take(reading *domain.Window, at, freshAs time.Time) (next windowState, news bool, sampled *domain.Window) {
 	next = w
 	next.held = cloneWindow(reading)
+	next.reading.freshAs = freshAs
 	if !sameWindow(w.held, reading) {
-		next.reading = heldReading{takenAt: at}
+		next.reading.takenAt = at
 	}
 	next.samples, sampled = sampleWindow(w.samples, reading, at)
 	return next, true, sampled
+}
+
+// leftOut returns the window as a line observed at at that leaves it out
+// leaves it.
+func (w windowState) leftOut(at time.Time) (next windowState, news bool, sampled *domain.Window) {
+	if w.standsUnreported(at) {
+		return w, false, nil
+	}
+	next = windowState{length: w.length}
+	next.samples, sampled = sampleWindow(w.samples, nil, at)
+	return next, w.held != nil || sampled != nil, sampled
 }
 
 // standsUnreported reports whether the window held stays when a line
@@ -119,16 +157,14 @@ func (w windowState) standsUnreported(at time.Time) bool {
 	return w.held != nil && w.held.ResetsAt.After(at)
 }
 
-// takes reports whether reading, from a line observed at at, is news of the
-// window. Each session's line carries the limits of that session's own last
-// response, so an idle session goes on reporting an older reading while a
-// busy one reports the current one, and within one window usage never goes
-// down. So, unless the window held has reset by at, a reading of the same
-// window, told by its reset time, is news unless it is lower; one with a
-// later reset is of a window begun since, and one with an earlier reset of a
-// window gone by. Without both reset times, a lower reading is news only once
-// the one held was first taken longer ago than the window lasts, by when the
-// window has reset.
+// takes reports whether reading, from a line observed at at that is no
+// fresher than the one held, is news of the window. Within one window usage
+// never goes down. So, unless the window held has reset by at, a reading of
+// the same window, told by its reset time, is news unless it is lower; one
+// with a later reset is of a window begun since, and one with an earlier
+// reset of a window gone by. Without both reset times, a lower reading is
+// news only once the one held was first taken longer ago than the window
+// lasts, by when the window has reset.
 func (w windowState) takes(reading *domain.Window, at time.Time) bool {
 	held := unexpired(w.held, at)
 	if held == nil {

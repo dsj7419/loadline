@@ -51,6 +51,7 @@ func (t *Tracker) rebase(d time.Duration) {
 		e := t.sessions[id]
 		e.session = e.session.Shifted(d)
 		e.firstSeen = e.firstSeen.Add(d)
+		e.responses.shift(d)
 		for i := range e.timeline {
 			e.timeline[i].At = e.timeline[i].At.Add(d)
 		}
@@ -74,7 +75,7 @@ func (a *accountEntry) shift(d time.Duration) {
 	a.account.ProbedAt = shifted(a.account.ProbedAt, d)
 	a.account.Limits.ObservedAt = shifted(a.account.Limits.ObservedAt, d)
 	for _, r := range []*heldReading{&a.readings.FiveHour, &a.readings.SevenDay} {
-		r.takenAt = shifted(r.takenAt, d)
+		r.takenAt, r.freshAs = shifted(r.takenAt, d), shifted(r.freshAs, d)
 	}
 	for _, samples := range [][]domain.Sample{a.samples.FiveHour, a.samples.SevenDay} {
 		for i := range samples {

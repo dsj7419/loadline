@@ -213,6 +213,31 @@ func TestTracker_ClockSetBackKeepsAReadingsAge(t *testing.T) {
 	}
 }
 
+// How fresh a reading is follows the step too: a response after it is
+// fresher than one before, and a session that has had none since reports
+// older news.
+func TestTracker_ClockSetBackKeepsReadingsInOrderOfFreshness(t *testing.T) {
+	h, _ := newSteppingHarness(t)
+	busy, other := s1, s2
+	h.clock.Set(at(hour))
+	h.tr.RecordAPI(request(at(hour), busy, "Opus 5.5", 0.1))
+	h.tr.Apply(withWindows(statusLine(hour+1, busy), nil, window(95, weekResets)))
+
+	h.clock.Set(at(0))
+	h.tr.Snapshot()
+	h.tr.RecordAPI(request(at(5), other, "Opus 5.5", 0.1))
+	h.tr.Apply(withWindows(statusLine(6, other), nil, window(0, weekResets)))
+	if got := h.account(dirA).SevenDay; got == nil || got.UsedPct != 0 {
+		t.Fatalf("weekly window %+v, want the 0%% of the response after the step", got)
+	}
+	h.clock.Set(at(11))
+	h.tr.Apply(withWindows(statusLine(11, busy), nil, window(95, weekResets)))
+
+	if got := h.account(dirA).SevenDay; got == nil || got.UsedPct != 0 {
+		t.Errorf("weekly window %+v, want the 0%% still: the 95%% came with a response before the step", got)
+	}
+}
+
 // The two hooks /clear fires can arrive either side of the step.
 func TestTracker_ClockSetBackStillLinksAClear(t *testing.T) {
 	h, _ := newSteppingHarness(t)

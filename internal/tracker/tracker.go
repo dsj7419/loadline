@@ -84,6 +84,8 @@ type sessionEntry struct {
 	// replaces and replacedBy link the sessions /clear splits one terminal's
 	// conversation into.
 	replaces, replacedBy domain.SessionID
+	// responses dates the rate limits the session's status line reports.
+	responses responseClock
 }
 
 // Tracker holds the live state. It is safe for concurrent use: one lock
@@ -218,7 +220,7 @@ func (t *Tracker) RecordAPI(r domain.APIRequest) {
 		t.pending.hold(r, now)
 		return
 	}
-	t.attach(e.session.Dir, r)
+	t.attach(e, r)
 	t.changed()
 }
 
@@ -321,7 +323,7 @@ func (t *Tracker) Restore(s Restored) {
 		t.sessions[session.ID] = e
 		restored = append(restored, e)
 		for _, r := range t.pending.take(session.ID, now.Add(-pendingFor)) {
-			t.attach(session.Dir, r)
+			t.attach(e, r)
 		}
 	}
 	for _, e := range restored {
@@ -384,24 +386,30 @@ func (t *Tracker) Snapshot() View {
 }
 
 // apply folds one event into its session, creating the session when the
-// event is the first sign of it.
+// event is the first sign of it. A status line's rate limits are judged once
+// the session holds what came with the line, its waiting calls included.
 func (t *Tracker) apply(e domain.Event) {
 	id, dir, at, sighting := subjectOf(e)
 	if sighting {
 		t.account(dir)
 	}
+	entry := t.applyToSession(e, id, dir, at)
 	if st, ok := e.(domain.Status); ok {
-		t.observeLimits(st.Dir, st.Limits)
-		t.account(st.Dir).credits.observe(st.SpendLimit, st.At)
+		t.observeStatus(st, entry)
 	}
-	if id == "" {
-		return
-	}
+}
 
+// applyToSession folds e into session id, of dir, as of at, creating it when
+// e is the first sign of it, and returns the session's entry, or nil when e
+// is of no session the tracker keeps.
+func (t *Tracker) applyToSession(e domain.Event, id domain.SessionID, dir domain.ConfigDir, at time.Time) *sessionEntry {
+	if id == "" {
+		return nil
+	}
 	entry, known := t.sessions[id]
 	if !known {
 		if !opensSession(e) {
-			return
+			return nil
 		}
 		entry = &sessionEntry{session: domain.NewSession(id, dir, at), firstSeen: at}
 		t.sessions[id] = entry
@@ -419,10 +427,11 @@ func (t *Tracker) apply(e domain.Event) {
 	}
 	if !known {
 		for _, r := range t.pending.take(id, t.now().Add(-pendingFor)) {
-			t.attach(after.Dir, r)
+			t.attach(entry, r)
 		}
 	}
 	t.link(entry)
+	return entry
 }
 
 // subjectOf returns the session, account and time an event is about, and
@@ -479,11 +488,24 @@ func appendTransition(timeline []domain.Transition, tr domain.Transition) []doma
 	return timeline
 }
 
-// observeLimits applies a status line's rate limits to the account it came
-// from.
-func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits) {
+// observeStatus applies what a status line reports of its account: the rate
+// limits, as fresh as the newest response its session, nil when it has none,
+// is known to have got, and the spend limit.
+func (t *Tracker) observeStatus(st domain.Status, session *sessionEntry) {
+	var freshAs time.Time
+	if session != nil {
+		session.responses.line(st.APIDurationMS, st.At)
+		freshAs = session.responses.newest
+	}
+	t.observeLimits(st.Dir, st.Limits, freshAs)
+	t.account(st.Dir).credits.observe(st.SpendLimit, st.At)
+}
+
+// observeLimits applies a status line's rate limits, as fresh as freshAs, to
+// the account it came from.
+func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits, freshAs time.Time) {
 	entry := t.account(dir)
-	moved, sampled := entry.observe(l)
+	moved, sampled := entry.observe(l, freshAs)
 	if moved {
 		t.rec.AccountChanged(entry.account)
 	}
@@ -492,10 +514,12 @@ func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits) {
 	}
 }
 
-// attach records a model call against the account in dir. A request carries
-// the account's email, which stands in when the account probe has not
-// supplied one.
-func (t *Tracker) attach(dir domain.ConfigDir, r domain.APIRequest) {
+// attach records a model call of session s against its account. A request
+// carries the account's email, which stands in when the account probe has
+// not supplied one.
+func (t *Tracker) attach(s *sessionEntry, r domain.APIRequest) {
+	s.responses.call(r.At)
+	dir := s.session.Dir
 	entry := t.account(dir)
 	t.usage.add(dir, r.Session, r.Model, r.At, usageOf(r))
 	entry.credits.recordCall(r.At, r.CostUSD)

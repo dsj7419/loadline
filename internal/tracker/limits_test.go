@@ -222,15 +222,242 @@ func TestTracker_RecordsOnlyTheReadingsItTakes(t *testing.T) {
 		h.tr.Apply(withWindows(statusLine(sec+2, s2), nil, window(97, weekResets)))
 	}
 
-	_, _, recorded, _ := h.rec.recorded()
-	var samples []domain.Sample
-	for _, r := range recorded {
-		if r.limits.SevenDay != nil {
-			samples = append(samples, domain.Sample{At: r.limits.ObservedAt, UsedPct: r.limits.SevenDay.UsedPct, ResetsAt: r.limits.SevenDay.ResetsAt})
-		}
-	}
+	samples := recordedWeeklySamples(h)
 	spans := domain.OnCreditsSpans(domain.WindowSamples{SevenDay: samples}, at(300))
 	if len(spans) != 1 || !spans[0].From.Equal(at(0)) || !spans[0].To.IsZero() {
 		t.Errorf("%d spans of the %d samples recorded, the first %v, want one open since %v", len(spans), len(samples), spans[:min(len(spans), 2)], at(0))
+	}
+}
+
+// recordedWeeklySamples returns the weekly window's samples the tracker
+// recorded, which are what a restart rebuilds its spans from.
+func recordedWeeklySamples(h *harness) []domain.Sample {
+	_, _, recorded, _ := h.rec.recorded()
+	var samples []domain.Sample
+	for _, r := range recorded {
+		if w := r.limits.SevenDay; w != nil {
+			samples = append(samples, domain.Sample{At: r.limits.ObservedAt, UsedPct: w.UsedPct, ResetsAt: w.ResetsAt})
+		}
+	}
+	return samples
+}
+
+// withAPITime is st with the session's API time at ms.
+func withAPITime(st domain.Status, ms int64) domain.Status {
+	st.APIDurationMS = ms
+	return st
+}
+
+// weeklyFrom is a status line of id at sec that reports the weekly window at
+// pct, resetting at weekResets.
+func weeklyFrom(sec int, id domain.SessionID, pct float64) domain.Status {
+	return withWindows(statusLine(sec, id), nil, window(pct, weekResets))
+}
+
+// shownWeekly applies st and returns the weekly usage shown after it.
+func shownWeekly(h *harness, st domain.Status) float64 {
+	h.t.Helper()
+	h.clock.Set(st.At)
+	h.tr.Apply(st)
+	return pctOf(h.account(dirA).SevenDay)
+}
+
+// The supervisor's log of one account's weekly window over half an hour, its
+// readings taken in turn from the status lines of a working session and an
+// idle one, all with the same reset: 74, 75, 72, 72, 78, 72, 80. The window
+// shown never falls below the freshest reading.
+func TestTracker_AlternatingSessionsShowTheFreshestReading(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	working, idle := s1, s2
+	h.tr.RecordAPI(request(at(5), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(6, idle, 72))
+
+	for i, step := range []struct {
+		id        domain.SessionID
+		callSec   int // the working session's call before its line, 0 for none
+		sec       int
+		pct, want float64
+	}{
+		{working, 10, 11, 74, 74},
+		{working, 20, 21, 75, 75},
+		{idle, 0, 26, 72, 75},
+		{idle, 0, 31, 72, 75},
+		{working, 35, 36, 78, 78},
+		{idle, 0, 41, 72, 78},
+		{working, 45, 46, 80, 80},
+	} {
+		if step.callSec > 0 {
+			h.tr.RecordAPI(request(at(step.callSec), step.id, "Opus 5.5", 0.1))
+		}
+		if got := shownWeekly(h, weeklyFrom(step.sec, step.id, step.pct)); got != step.want {
+			t.Errorf("reading %d, %v%% from %s: shown %v%%, want %v%%", i+1, step.pct, step.id, got, step.want)
+		}
+	}
+}
+
+// The owner's mid-week reset keeps the reset time and takes the window from
+// 95% to 0%. The busy session's next response reports the 0%, which is news
+// however much lower it is, and the 95% an idle session goes on reporting
+// from its older response is not, however much higher. Here the tracker
+// knows how fresh each reading is from the sessions' calls alone.
+func TestTracker_AResetThatKeepsItsResetTimeShowsFromTheNextResponse(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, idle := s1, s2
+	h.tr.RecordAPI(request(at(0), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(1, idle, 95))
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(11, busy, 95))
+
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0.1))
+	if got := shownWeekly(h, weeklyFrom(61, busy, 0)); got != 0 {
+		t.Errorf("shown %v%% after the busy session's response since the reset, want 0%%", got)
+	}
+	if got := shownWeekly(h, weeklyFrom(66, idle, 95)); got != 0 {
+		t.Errorf("shown %v%% after the idle session's older reading, want the 0%% still", got)
+	}
+	if sampled, ok := sampledAt(h, at(61)); !ok || heldPct(sampled.SevenDay) != 0 {
+		t.Errorf("sampled %+v at the busy session's reading, want 0%%", sampled)
+	}
+	if sampled, ok := sampledAt(h, at(66)); ok {
+		t.Errorf("sampled %+v at the idle session's older reading, want nothing kept", sampled)
+	}
+}
+
+// The same reset, with the tracker knowing how fresh each reading is from the
+// sessions' API time alone: a line on which it has grown came with a response
+// the session got since its last line.
+func TestTracker_FreshnessFromTheStatusLinesAPITime(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, idle := s1, s2
+	shownWeekly(h, withAPITime(weeklyFrom(0, busy, 95), 1000))
+	shownWeekly(h, withAPITime(weeklyFrom(1, idle, 95), 5000))
+	shownWeekly(h, withAPITime(weeklyFrom(10, busy, 95), 1200))
+	shownWeekly(h, withAPITime(weeklyFrom(12, idle, 95), 5100))
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(60, busy, 0), 1500)); got != 0 {
+		t.Errorf("shown %v%% once the busy session's API time grew past the reset, want 0%%", got)
+	}
+	if got := shownWeekly(h, withAPITime(weeklyFrom(61, idle, 95), 5100)); got != 0 {
+		t.Errorf("shown %v%% after the idle session's line, its API time as it was, want the 0%% still", got)
+	}
+	if got := shownWeekly(h, withAPITime(weeklyFrom(65, busy, 0), 1500)); got != 0 {
+		t.Errorf("shown %v%% when the busy session reports its reading again, want 0%%", got)
+	}
+}
+
+// A call delivered after a later one, as batches of events can be, leaves the
+// session as fresh as the later one made it.
+func TestTracker_AnOlderCallDeliveredLateKeepsTheSessionFresh(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, other := s1, s2
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(11, busy, 95))
+	h.tr.RecordAPI(request(at(30), other, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(31, other, 95))
+
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0.1))
+	h.tr.RecordAPI(request(at(5), busy, "Opus 5.5", 0.1))
+
+	if got := shownWeekly(h, weeklyFrom(61, busy, 0)); got != 0 {
+		t.Errorf("shown %v%%, want the 0%% of the busy session's response at %v", got, at(60))
+	}
+}
+
+// A line of a session older than its last, delivered late, says nothing of
+// its responses: the next line's API time is judged against the newest line's.
+func TestTracker_ALateLineDoesNotMakeTheNextOneFresh(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	late, other := s1, s2
+	shownWeekly(h, withAPITime(weeklyFrom(0, late, 95), 1000))
+	shownWeekly(h, withAPITime(weeklyFrom(10, late, 95), 1200))
+	h.tr.RecordAPI(request(at(12), other, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(13, other, 96))
+
+	h.tr.Apply(withAPITime(weeklyFrom(9, late, 95), 1100))
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(15, late, 95), 1200)); got != 96 {
+		t.Errorf("shown %v%%, want the 96%% of the fresher session: the late line's API time had not grown since", got)
+	}
+}
+
+// The tracker learns of every response a session gets while it watches it,
+// so a session it has seen none from has had none since its first line: what
+// it reports is older than any reading whose response the tracker knows.
+func TestTracker_AReadingOfUnknownFreshnessIsOlderNews(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, idle := s1, s2
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(11, busy, 95))
+	shownWeekly(h, withAPITime(weeklyFrom(12, idle, 95), 4000))
+
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(61, busy, 0))
+	if got := shownWeekly(h, withAPITime(weeklyFrom(66, idle, 95), 4000)); got != 0 {
+		t.Errorf("shown %v%% after a session the tracker knows no response of reported 95%%, want the 0%% still", got)
+	}
+}
+
+// Freshness is judged against a window that still stands: once the one held
+// has reset, a session's reading of the window begun since is news, however
+// little the tracker knows of its responses.
+func TestTracker_OnceTheWindowHeldHasResetAnyReadingIsNews(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	resets := at(100)
+	h.tr.RecordAPI(request(at(10), s1, "Opus 5.5", 0.1))
+	h.clock.Set(at(11))
+	h.tr.Apply(withWindows(statusLine(11, s1), nil, window(95, resets)))
+
+	h.clock.Set(at(120))
+	h.tr.Apply(withWindows(statusLine(120, s3), nil, window(3, resets.Add(7*24*time.Hour))))
+
+	if got := h.account(dirA).SevenDay; got == nil || got.UsedPct != 3 {
+		t.Errorf("weekly window %+v, want the 3%% of the window begun at the reset", got)
+	}
+}
+
+// After a restart the tracker knows no session's responses, and judges every
+// reading by its window until a session's next response, which a reset that
+// kept its reset time then shows from.
+func TestTracker_AfterARestartFreshnessIsUnknownUntilTheNextResponse(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.Restore(tracker.Restored{
+		Accounts: []domain.Account{{Dir: dirA, Limits: domain.Limits{SevenDay: window(95, weekResets), ObservedAt: at(-60)}}},
+		Sessions: []domain.Session{restoredSession(s1, domain.StateIdle, at(-60))},
+	})
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(0, s1, 0), 3000)); got != 95 {
+		t.Errorf("shown %v%% from the first line after the restart, want the 95%% held: the line's freshness is unknown", got)
+	}
+	if got := shownWeekly(h, withAPITime(weeklyFrom(5, s1, 0), 3000)); got != 95 {
+		t.Errorf("shown %v%% from a line with the same API time, want the 95%% held", got)
+	}
+	if got := shownWeekly(h, withAPITime(weeklyFrom(10, s1, 0), 3400)); got != 0 {
+		t.Errorf("shown %v%% once the session's API time grew, want 0%%", got)
+	}
+}
+
+// Only the readings taken are recorded, so the reset ends the stretch on
+// credits for a restart too, and an idle session's older reading at the
+// limit opens no new one.
+func TestTracker_AResetThatKeepsItsResetTimeEndsTheStretchOnCredits(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	busy, idle := s1, s2
+	h.tr.RecordAPI(request(at(0), idle, "Opus 5.5", 0))
+	shownWeekly(h, weeklyFrom(1, idle, 100))
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 1))
+	shownWeekly(h, weeklyFrom(11, busy, 100))
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0))
+	shownWeekly(h, weeklyFrom(61, busy, 0))
+	shownWeekly(h, weeklyFrom(66, idle, 100))
+	h.tr.RecordAPI(request(at(70), busy, "Opus 5.5", 2))
+	h.clock.Set(at(80))
+
+	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 1, RemainingUSD: 19, Days: 30, Source: domain.CreditSourceEstimate}
+	if got := h.account(dirA).Credits; got == nil || *got != want {
+		t.Errorf("credits %+v, want %+v", got, want)
+	}
+	spans := domain.OnCreditsSpans(domain.WindowSamples{SevenDay: recordedWeeklySamples(h)}, at(80))
+	if len(spans) != 1 || !spans[0].From.Equal(at(1)) || !spans[0].To.Equal(at(61)) {
+		t.Errorf("spans %v of the samples recorded, want one from %v to %v", spans, at(1), at(61))
 	}
 }
