@@ -168,7 +168,8 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 // A folder between a drive root and LOADLINE_HOME, as D:\tools is above
 // D:\tools\loadline, inherits the root's "Authenticated Users: Modify",
 // which lets them move it aside and put a binary of their own at the path
-// every hook runs. Install refuses before it writes anything.
+// every hook runs. Install refuses before it shows or asks or writes
+// anything, since nothing could be installed there.
 func TestInstall_RefusesADataDirOthersCanMoveAside(t *testing.T) {
 	tools := filepath.Join(driveRoot(t), "tools")
 	if err := os.Mkdir(tools, 0o700); err != nil {
@@ -178,11 +179,14 @@ func TestInstall_RefusesADataDirOthersCanMoveAside(t *testing.T) {
 	t.Setenv("LOADLINE_HOME", home)
 	dir := t.TempDir()
 
-	got := run(t, "install", "--config-dir", dir, "--yes")
+	got := runWithInput(t, "y\n", "install", "--config-dir", dir)
 
 	if got.code != 1 || !strings.Contains(got.stderr, tools+" lets ") || !strings.Contains(got.stderr, "delete or rename it") ||
 		!strings.Contains(got.stderr, "set LOADLINE_HOME to a folder in your user profile") {
 		t.Errorf("install = %d, stderr %q; want 1 and %s named as a folder others can move aside", got.code, got.stderr, tools)
+	}
+	if got.stdout != "" {
+		t.Errorf("install showed %q before refusing, want nothing shown or asked", got.stdout)
 	}
 	if _, err := os.Stat(home); !os.IsNotExist(err) {
 		t.Errorf("install created %s although it refused it", home)
