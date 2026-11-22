@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -199,6 +200,41 @@ func TestPlan_DifferentExeUpdatesInPlace(t *testing.T) {
 	reverted, _ := revert(t, out, otherExe)
 	if !bytes.Equal(reverted, original) {
 		t.Errorf("reverting after the move did not restore the original:\n%s", install.Diff("original", original, reverted))
+	}
+}
+
+func TestHookExes(t *testing.T) {
+	owner := readFile(t, "testdata/settings_owner.in.json")
+	installed, _, _ := plan(t, owner, options(install.ShellBash))
+	// One hook run by another binary, as a half-finished move would leave it.
+	mixed := []byte(`{"hooks": {
+		"SessionStart": [{"hooks": [{"type": "command", "command": "` + goldenExe + `", "args": ["hook"], "async": true}]}],
+		"Stop": [{"hooks": [
+			{"type": "command", "command": "node format.js"},
+			{"type": "command", "command": "` + otherExe + `", "args": ["hook"], "async": true}
+		]}],
+		"SessionEnd": [{"hooks": [{"type": "command", "command": "` + goldenExe + `", "args": ["hook"], "async": true}]}]
+	}}`)
+
+	tests := []struct {
+		name     string
+		settings []byte
+		want     []string
+	}{
+		{name: "installed", settings: installed, want: []string{goldenExe}},
+		{name: "two binaries, in the order install writes the events", settings: mixed, want: []string{goldenExe, otherExe}},
+		{name: "the user's own hooks only", settings: owner},
+		{name: "loadline run with something other than hook", settings: []byte(
+			`{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "` + goldenExe + `", "args": ["status"]}]}]}}`)},
+		{name: "no hooks", settings: []byte(`{}`)},
+		{name: "invalid JSON", settings: []byte(`{"hooks": `)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := install.HookExes(tt.settings); !slices.Equal(got, tt.want) {
+				t.Errorf("HookExes = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

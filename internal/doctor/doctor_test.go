@@ -1,6 +1,7 @@
 package doctor_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +86,9 @@ type world struct {
 	listener  *httptest.Server
 	http      *http.Client
 	deps      doctor.Deps
+
+	// healthDelay holds back the server's answers to /healthz.
+	healthDelay atomic.Int64
 }
 
 func newWorld(t *testing.T) *world {
@@ -109,7 +114,17 @@ func newWorld(t *testing.T) *world {
 	}
 	w.port = addr.Port
 	w.server = server.New(server.Deps{State: w.state, Token: []byte(token), Port: w.port, Clock: w.clock.Now})
-	w.listener.Config.Handler = w.server.Handler()
+	handler := w.server.Handler()
+	w.listener.Config.Handler = http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(time.Duration(w.healthDelay.Load())):
+			}
+		}
+		handler.ServeHTTP(rw, r)
+	})
 	w.listener.Start()
 	t.Cleanup(w.listener.Close)
 
@@ -135,6 +150,15 @@ func (w *world) write(path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		w.t.Fatal(err)
 	}
+}
+
+func (w *world) read(path string) []byte {
+	w.t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return data
 }
 
 // install writes settings to path as loadline install leaves them for shell.
@@ -235,6 +259,9 @@ func named(checks []doctor.Check, names ...string) []doctor.Check {
 	return slices.DeleteFunc(slices.Clone(checks), func(c doctor.Check) bool { return !slices.Contains(names, c.Name) })
 }
 
+// fixed is a detail that does not depend on the world.
+func fixed(detail string) func(*world) string { return func(*world) string { return detail } }
+
 func feedChecks(checks []doctor.Check) []doctor.Check {
 	return named(checks, "hook feed", "status line feed", "OpenTelemetry feed", "poll feed", "feeds")
 }
@@ -273,36 +300,51 @@ func TestDoctor_AllGreen(t *testing.T) {
 }
 
 func TestDoctor_NotWired(t *testing.T) {
+	const oldExe = "D:/old/loadline.exe"
 	tests := []struct {
 		name    string
 		prepare func(w *world, path string)
-		want    doctor.Check
+		detail  func(w *world) string
 	}{
 		{
 			name:    "no settings file",
 			prepare: func(*world, string) {},
-			want:    doctor.Check{Status: doctor.Fail, Detail: "not wired: the file does not exist; run loadline install"},
+			detail:  fixed("not wired: the file does not exist; run loadline install"),
 		},
 		{
 			name:    "never installed",
 			prepare: func(w *world, path string) { w.write(path, `{"model": "opus"}`) },
-			want: doctor.Check{Status: doctor.Fail, Detail: "not wired: install would change hooks.SessionStart, " +
-				"hooks.SessionEnd, hooks.UserPromptSubmit and 18 more; run loadline install"},
+			detail: fixed("not wired: install would change hooks.SessionStart, hooks.SessionEnd, hooks.UserPromptSubmit " +
+				"and 18 more; run loadline install"),
+		},
+		{
+			name:    "never installed, next to the user's own telemetry",
+			prepare: func(w *world, path string) { w.write(path, `{"env": {"OTEL_LOGS_EXPORTER": "console"}}`) },
+			detail: fixed("not wired: install would change hooks.SessionStart, hooks.SessionEnd, hooks.UserPromptSubmit " +
+				"and 11 more; run loadline install; also, env already sets OTEL_LOGS_EXPORTER, so Loadline left " +
+				"OpenTelemetry alone and the per-model view will be unavailable"),
 		},
 		{
 			name: "installed for another port",
 			prepare: func(w *world, path string) {
 				w.installWith(path, `{}`, install.Options{Exe: w.exe, Port: w.port - 1, Token: token, Shell: install.ShellBash})
 			},
-			want: doctor.Check{
-				Status: doctor.Fail,
-				Detail: "not wired: install would change env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT; run loadline install",
+			detail: fixed("not wired: install would change env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT; run loadline install"),
+		},
+		{
+			name: "installed for another binary",
+			prepare: func(w *world, path string) {
+				w.installWith(path, `{}`, install.Options{Exe: oldExe, Port: w.port, Token: token, Shell: install.ShellBash})
+			},
+			detail: func(w *world) string {
+				return "not wired: its hooks run " + oldExe + " instead of " + w.exe + "; install would change " +
+					"hooks.SessionStart, hooks.SessionEnd, hooks.UserPromptSubmit and 11 more; run loadline install"
 			},
 		},
 		{
 			name:    "not JSON",
 			prepare: func(w *world, path string) { w.write(path, `{"hooks": `) },
-			want:    doctor.Check{Status: doctor.Fail, Detail: "unusable settings file: it is not valid JSON"},
+			detail:  fixed("unusable settings file: it is not valid JSON"),
 		},
 	}
 	for _, tt := range tests {
@@ -314,11 +356,9 @@ func TestDoctor_NotWired(t *testing.T) {
 
 			got := w.run()
 
-			want := tt.want
-			want.Name = "settings " + other
 			assertChecks(t, settingsChecks(t, got), []doctor.Check{
 				{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"},
-				want,
+				{Name: "settings " + other, Status: doctor.Fail, Detail: tt.detail(w)},
 			})
 		})
 	}
@@ -372,6 +412,41 @@ func TestDoctor_PowerShellWrapperWarns(t *testing.T) {
 	}
 }
 
+// Each file's own env can choose the shell, so each file must be judged by
+// the shell its own bytes give.
+func TestDoctor_DetectsTheShellOfEachFile(t *testing.T) {
+	w := newWorld(t)
+	own := `"statusLine": {"type": "command", "command": "my-status"}`
+	powerShell := filepath.Join(t.TempDir(), "settings.json")
+	w.install(powerShell, `{"model": "on-powershell", `+own+`}`, install.ShellPowerShell)
+	w.install(w.settings, `{`+own+`}`, install.ShellBash)
+	w.deps.SettingsFiles = []string{powerShell, w.settings}
+	var mu sync.Mutex
+	var seen [][]byte
+	w.deps.Shell = func(settings []byte) install.Shell {
+		mu.Lock()
+		seen = append(seen, slices.Clone(settings))
+		mu.Unlock()
+		if strings.Contains(string(settings), `"on-powershell"`) {
+			return install.ShellPowerShell
+		}
+		return install.ShellBash
+	}
+
+	got := w.run()
+
+	assertChecks(t, settingsChecks(t, got), []doctor.Check{
+		{Name: "settings " + powerShell, Status: doctor.OK, Detail: "wired"},
+		{Name: "status line " + powerShell, Status: doctor.Warn, Detail: wrapperDetail},
+		{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if want := [][]byte{w.read(powerShell), w.read(w.settings)}; !slices.EqualFunc(seen, want, bytes.Equal) {
+		t.Errorf("Shell saw %q, want each file's contents once, in order: %q", seen, want)
+	}
+}
+
 func TestDoctor_OldClaudeFails(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -382,6 +457,11 @@ func TestDoctor_OldClaudeFails(t *testing.T) {
 		{name: "an older patch", output: "2.1.299 (Claude Code)\n", want: "2.1.299 is older than 2.1.300; update Claude Code"},
 		{name: "an older minor", output: "2.0.999 (Claude Code)\n", want: "2.0.999 is older than 2.1.300; update Claude Code"},
 		{name: "an older major", output: "1.99.999\n", want: "1.99.999 is older than 2.1.300; update Claude Code"},
+		{
+			name:   "a pre-release of the oldest supported",
+			output: "2.1.300-rc.1 (Claude Code)\n",
+			want:   "2.1.300-rc.1 is older than 2.1.300; update Claude Code",
+		},
 		{
 			name: "not on PATH",
 			err:  fmt.Errorf("locate claude: %w", &exec.Error{Name: "claude", Err: exec.ErrNotFound}),
@@ -413,7 +493,8 @@ func TestDoctor_SupportedClaudePasses(t *testing.T) {
 		{output: "2.1.1000 (Claude Code)\n", want: "2.1.1000"},
 		{output: "2.2.0\n", want: "2.2.0"},
 		{output: "10.0.0\n", want: "10.0.0"},
-		{output: "  2.1.330-beta.1 (Claude Code)\r\n", want: "2.1.330"},
+		{output: "  2.1.330-beta.1 (Claude Code)\r\n", want: "2.1.330-beta.1"},
+		{output: "2.1.301-rc.1\n", want: "2.1.301-rc.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.output, func(t *testing.T) {
@@ -454,7 +535,7 @@ func TestDoctor_TokenFileMustHoldAToken(t *testing.T) {
 			got := w.run()
 
 			// Without the token, the settings cannot be shown to hold it and
-			// the server does not answer the feed checks.
+			// the server will not answer the feed checks.
 			assertChecks(t, named(got, "token", "settings "+w.settings, "feeds"), []doctor.Check{
 				{Name: "token", Status: doctor.Fail, Detail: tt.want(w)},
 				{
@@ -462,14 +543,25 @@ func TestDoctor_TokenFileMustHoldAToken(t *testing.T) {
 					Status: doctor.Fail,
 					Detail: "not wired: install would change env.OTEL_EXPORTER_OTLP_LOGS_HEADERS; run loadline install",
 				},
-				{
-					Name:   "feeds",
-					Status: doctor.Fail,
-					Detail: "cannot read the server's diagnostics: get /api/diag: the server answered 401 Unauthorized",
-				},
+				{Name: "feeds", Status: doctor.Fail, Detail: "cannot be checked without the token file"},
 			})
 		})
 	}
+}
+
+// A server started before the token file was replaced holds the old token,
+// and only a restart makes it read the new one.
+func TestDoctor_ServerWithAnotherTokenFails(t *testing.T) {
+	w := newWorld(t)
+	w.write(w.tokenFile, strings.Repeat("ab", 32))
+
+	got := w.run()
+
+	assertChecks(t, feedChecks(got), []doctor.Check{{
+		Name:   "feeds",
+		Status: doctor.Fail,
+		Detail: "cannot be checked: the server holds a different token than " + w.tokenFile + "; restart it",
+	}})
 }
 
 func TestDoctor_MissingBinaryFails(t *testing.T) {
@@ -489,7 +581,7 @@ func TestDoctor_MissingBinaryFails(t *testing.T) {
 
 func TestDoctor_FeedStaleWarns(t *testing.T) {
 	w := newWorld(t)
-	w.state.setSessions(domain.StateParked, domain.StateIdle)
+	w.state.setSessions(domain.StateIdle, domain.StateWorking)
 	w.hearHook()
 	w.clock.Advance(time.Minute)
 	w.hearPoll()
@@ -500,16 +592,16 @@ func TestDoctor_FeedStaleWarns(t *testing.T) {
 	got := w.run()
 
 	assertChecks(t, feedChecks(got), []doctor.Check{
-		{Name: "hook feed", Status: doctor.Warn, Detail: "last seen 11m0s ago, while sessions are live"},
+		{Name: "hook feed", Status: doctor.Warn, Detail: "last seen 11m0s ago, while sessions are active"},
 		{Name: "status line feed", Status: doctor.OK, Detail: "last seen 1m0s ago"},
-		{Name: "OpenTelemetry feed", Status: doctor.Warn, Detail: "not seen since the server started, while sessions are live"},
+		{Name: "OpenTelemetry feed", Status: doctor.Warn, Detail: "not seen since the server started, while sessions are active"},
 		{Name: "poll feed", Status: doctor.OK, Detail: "last seen 10m0s ago"},
 	})
 }
 
-func TestDoctor_StaleFeedsAreFineWithoutLiveSessions(t *testing.T) {
+func TestDoctor_StaleFeedsAreFineWithoutActiveSessions(t *testing.T) {
 	w := newWorld(t)
-	w.state.setSessions(domain.StateParked, domain.StateEnded)
+	w.state.setSessions(domain.StateIdle, domain.StateNeedsYou, domain.StateError, domain.StateParked, domain.StateEnded)
 	w.hearHook()
 	w.clock.Advance(11 * time.Minute)
 	w.hearPoll()
@@ -518,10 +610,52 @@ func TestDoctor_StaleFeedsAreFineWithoutLiveSessions(t *testing.T) {
 	got := w.run()
 
 	assertChecks(t, feedChecks(got), []doctor.Check{
-		{Name: "hook feed", Status: doctor.OK, Detail: "no live sessions"},
-		{Name: "status line feed", Status: doctor.OK, Detail: "no live sessions"},
-		{Name: "OpenTelemetry feed", Status: doctor.OK, Detail: "no live sessions"},
+		{Name: "hook feed", Status: doctor.OK, Detail: "no active sessions"},
+		{Name: "status line feed", Status: doctor.OK, Detail: "no active sessions"},
+		{Name: "OpenTelemetry feed", Status: doctor.OK, Detail: "no active sessions"},
 		{Name: "poll feed", Status: doctor.OK, Detail: "last seen 1m0s ago"},
+	})
+}
+
+// Only a session that is starting, working or compacting sends events, so
+// only such a session makes a quiet feed a warning. One that waits for the
+// user may stay quiet for as long as the user is away.
+func TestDoctor_OnlyActiveSessionsMakeAQuietFeedStale(t *testing.T) {
+	stale := doctor.Check{Name: "hook feed", Status: doctor.Warn, Detail: "last seen 11m0s ago, while sessions are active"}
+	quiet := doctor.Check{Name: "hook feed", Status: doctor.OK, Detail: "no active sessions"}
+	for state, want := range map[domain.State]doctor.Check{
+		domain.StateStarting:   stale,
+		domain.StateWorking:    stale,
+		domain.StateCompacting: stale,
+		domain.StateIdle:       quiet,
+		domain.StateNeedsYou:   quiet,
+		domain.StateError:      quiet,
+		domain.StateParked:     quiet,
+		domain.StateEnded:      quiet,
+	} {
+		t.Run(state.String(), func(t *testing.T) {
+			w := newWorld(t)
+			w.state.setSessions(state)
+			w.hearHook()
+			w.clock.Advance(11 * time.Minute)
+
+			got := w.run()
+
+			assertChecks(t, named(got, "hook feed"), []doctor.Check{want})
+		})
+	}
+}
+
+// The doctor is off the hot path, so it gives a busy server longer to answer
+// than a hook would.
+func TestDoctor_WaitsForASlowServer(t *testing.T) {
+	w := newWorld(t)
+	w.healthDelay.Store(int64(500 * time.Millisecond))
+
+	got := w.run()
+
+	assertChecks(t, named(got, "server"), []doctor.Check{
+		{Name: "server", Status: doctor.OK, Detail: "running at " + forward.LoopbackURL(w.port)},
 	})
 }
 

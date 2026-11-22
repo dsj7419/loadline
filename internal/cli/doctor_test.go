@@ -57,10 +57,10 @@ func TestDoctor_PassesEveryCheckOnceInstalled(t *testing.T) {
 		"✔ settings " + filepath.Join(dir, "settings.json") + ": wired\n" +
 		"✔ binary: " + filepath.FromSlash(install.InstalledPath(paths.DataDir)) + "\n" +
 		"✔ server: running at " + forward.LoopbackURL(f.port) + "\n" +
-		"✔ hook feed: no live sessions\n" +
-		"✔ status line feed: no live sessions\n" +
-		"✔ OpenTelemetry feed: no live sessions\n" +
-		"✔ poll feed: no live sessions\n"
+		"✔ hook feed: no active sessions\n" +
+		"✔ status line feed: no active sessions\n" +
+		"✔ OpenTelemetry feed: no active sessions\n" +
+		"✔ poll feed: no active sessions\n"
 	if got.code != 0 || got.stdout != want || got.stderr != "" {
 		t.Errorf("doctor = %d, stderr %q, stdout:\n%s\nwant 0 and:\n%s", got.code, got.stderr, got.stdout, want)
 	}
@@ -100,6 +100,36 @@ func TestDoctor_FailsBeforeInstallAndChangesNothing(t *testing.T) {
 	}
 	if settings := readSettings(t, unwired); settings != `{"model": "opus"}` {
 		t.Errorf("doctor changed the settings to %q", settings)
+	}
+}
+
+func TestDoctor_ABadConfigFailsAndTheOtherChecksUseTheDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LOADLINE_HOME", home)
+	// By default claude comes from PATH, and there is none on this one.
+	t.Setenv("PATH", t.TempDir())
+	configFile := filepath.Join(home, "config.json")
+	if err := os.WriteFile(configFile, []byte(`{"theme": "dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, loadErr := config.Load(configFile, "")
+	if loadErr == nil {
+		t.Fatal("the config loads; want it refused")
+	}
+	dir := t.TempDir()
+
+	got := run(t, "doctor", "--config-dir", dir)
+
+	// The lines after the binary's depend on whatever answers on the default
+	// port, so only the start is compared.
+	want := "" +
+		"✖ config: " + loadErr.Error() + "; the checks below use the defaults\n" +
+		"✖ claude: not found; install Claude Code, or set claudePath in the Loadline config\n" +
+		"✖ token: " + filepath.Join(home, "token") + " does not exist; run loadline install\n" +
+		"✖ settings " + filepath.Join(dir, "settings.json") + ": not wired: the file does not exist; run loadline install\n" +
+		"✖ binary: " + filepath.FromSlash(install.InstalledPath(home)) + " does not exist; run loadline install\n"
+	if got.code != 1 || got.stderr != "" || !strings.HasPrefix(got.stdout, want) {
+		t.Errorf("doctor = %d, stderr %q, stdout:\n%s\nwant 1, starting with:\n%s", got.code, got.stderr, got.stdout, want)
 	}
 }
 

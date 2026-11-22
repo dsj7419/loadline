@@ -28,20 +28,29 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 	if err != nil {
 		return fail(stdio, err)
 	}
-	// Without a home directory, Load refuses only an account that names its
-	// config dir from home, and says so.
-	home, _ := os.UserHomeDir()
-	cfg, err := config.Load(paths.ConfigFile, home)
-	if err != nil {
-		return fail(stdio, err)
-	}
 	files, err := settingsFiles(dirs)
 	if err != nil {
 		return fail(stdio, err)
 	}
+	// Without a home directory, Load refuses only an account that names its
+	// config dir from home, and says so.
+	home, _ := os.UserHomeDir()
+	var checks []doctor.Check
+	cfg, err := config.Load(paths.ConfigFile, home)
+	if err != nil {
+		// A broken config must not hide the other findings. They are
+		// checked against the defaults, which Loadline uses once the file is
+		// gone.
+		checks = append(checks, doctor.Check{
+			Name:   "config",
+			Status: doctor.Fail,
+			Detail: err.Error() + "; the checks below use the defaults",
+		})
+		cfg = config.Defaults()
+	}
 
 	claude := claudeRunner(cfg, home)
-	checks := doctor.Run(ctx, doctor.Deps{
+	checks = append(checks, doctor.Run(ctx, doctor.Deps{
 		SettingsFiles: files,
 		Exe:           install.InstalledPath(paths.DataDir),
 		Port:          cfg.Port,
@@ -53,7 +62,7 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 		},
 		TokenFile: paths.TokenFile,
 		Now:       time.Now,
-	})
+	})...)
 	return printChecks(stdio, checks)
 }
 

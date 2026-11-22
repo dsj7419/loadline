@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -279,6 +281,26 @@ func TestClient_HealthyGivesUpOnAHungServer(t *testing.T) {
 	}
 }
 
+// A caller off the hot path, such as the doctor, can wait longer for a busy
+// server than a hook can.
+func TestClient_HealthTimeoutLetsHealthyWaitLonger(t *testing.T) {
+	slow := startServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(400 * time.Millisecond):
+		}
+		_, _ = io.WriteString(w, `{"app":"loadline"}`)
+	}))
+
+	if (forward.Client{BaseURL: slow}).Healthy(t.Context()) {
+		t.Error("Healthy() = true after 400 ms with the default timeout, want false within its 150 ms")
+	}
+	if !(forward.Client{BaseURL: slow, HealthTimeout: 5 * time.Second}).Healthy(t.Context()) {
+		t.Error("Healthy() = false with a 5 s HealthTimeout against a server answering in 400 ms, want true")
+	}
+}
+
 func TestLoopbackURL(t *testing.T) {
 	if got := forward.LoopbackURL(8289); got != "http://127.0.0.1:8289" {
 		t.Errorf("LoopbackURL(8289) = %q, want http://127.0.0.1:8289", got)
@@ -307,8 +329,16 @@ func TestClient_GetFailsUnlessTheServerAnswers200(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusNoContent} {
 		client := forward.Client{BaseURL: startServer(t, &recorder{status: status}), Token: testToken}
 
-		if body, err := client.Get(t.Context(), "/api/snapshot", 1<<10); err == nil {
-			t.Errorf("Get against a %d = %q, want an error", status, body)
+		body, err := client.Get(t.Context(), "/api/snapshot", 1<<10)
+
+		statusErr, ok := errors.AsType[*forward.StatusError](err)
+		if !ok || statusErr.Code != status {
+			t.Errorf("Get against a %d = %q, %v; want a StatusError with that code", status, body, err)
+			continue
+		}
+		want := fmt.Sprintf("get /api/snapshot: the server answered %d %s", status, http.StatusText(status))
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err, want)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +71,8 @@ type Deps struct {
 	// Shell reports the shell Claude Code runs the status line of a settings
 	// file with.
 	Shell func(settings []byte) install.Shell
-	// Client reaches the server. Run gives it the token from TokenFile.
+	// Client reaches the server. Run gives it the token from TokenFile and
+	// its own, longer health probe.
 	Client forward.Client
 	// ClaudeVersion returns what `claude --version` prints.
 	ClaudeVersion func(ctx context.Context) (string, error)
@@ -89,8 +91,12 @@ const (
 	maxSnapshot = 32 << 20
 	// apiTimeout bounds reading the server's diagnostics and sessions.
 	apiTimeout = 5 * time.Second
+	// healthProbe bounds the server check. Nobody waits on the doctor the
+	// way a session waits on a hook, so a busy server gets longer to answer
+	// than the hook path's probe allows.
+	healthProbe = 2 * time.Second
 	// feedWindow is how recently each feed must have been heard from while
-	// any session is live.
+	// any session is active.
 	feedWindow = 10 * time.Minute
 	// shownChanges is how many pending changes a settings check names before
 	// it only counts the rest.
@@ -107,11 +113,11 @@ const (
 )
 
 // minClaude is the oldest Claude Code that Loadline works with.
-var minClaude = version{2, 1, 300}
+var minClaude = version{release: [3]int{2, 1, 300}}
 
 // leadingVersion matches the version `claude --version` starts with, such as
-// 2.1.330 in "2.1.330 (Claude Code)".
-var leadingVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)`)
+// 2.1.330 in "2.1.330 (Claude Code)", with its pre-release label if any.
+var leadingVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?`)
 
 // Run runs every check and returns their outcomes in order: claude, the
 // token, each settings file, the binary, the server and each feed. A failed
@@ -135,14 +141,17 @@ func Run(ctx context.Context, d Deps) []Check {
 	checks = append(checks, checkBinary(d.Exe))
 
 	client := d.Client
-	client.Token = token
+	client.Token, client.HealthTimeout = token, healthProbe
 	healthy := client.Healthy(ctx)
 	checks = append(checks, serverCheck(client.BaseURL, healthy))
-	if !healthy {
+	switch {
+	case !healthy:
 		// Whatever else answers on the port must not be sent the token.
 		return append(checks, Check{Name: "feeds", Status: Fail, Detail: "cannot be checked while the server is down"})
+	case token == nil:
+		return append(checks, Check{Name: "feeds", Status: Fail, Detail: "cannot be checked without the token file"})
 	}
-	return append(checks, checkFeeds(ctx, client, now())...)
+	return append(checks, checkFeeds(ctx, client, now(), d.TokenFile)...)
 }
 
 func checkClaude(ctx context.Context, claudeVersion func(context.Context) (string, error)) Check {
@@ -167,28 +176,46 @@ func checkClaude(ctx context.Context, claudeVersion func(context.Context) (strin
 	return Check{Name: name, Status: OK, Detail: v.String()}
 }
 
-// version is a major, minor and patch number.
-type version [3]int
+// version is a major, minor and patch number, and the label of a
+// pre-release, such as rc.1.
+type version struct {
+	release [3]int
+	pre     string
+}
 
 func parseVersion(out string) (version, bool) {
 	match := leadingVersion.FindStringSubmatch(strings.TrimSpace(out))
 	if match == nil {
 		return version{}, false
 	}
-	var v version
-	for i, part := range match[1:] {
+	v := version{pre: match[4]}
+	for i, part := range match[1:4] {
 		n, err := strconv.Atoi(part)
 		if err != nil {
 			return version{}, false
 		}
-		v[i] = n
+		v.release[i] = n
 	}
 	return v, true
 }
 
-func (v version) less(than version) bool { return slices.Compare(v[:], than[:]) < 0 }
+// less reports whether v comes before than. A pre-release comes before the
+// release it leads up to; two pre-releases of one release are not ordered,
+// as the minimum Loadline compares with is a release.
+func (v version) less(than version) bool {
+	if c := slices.Compare(v.release[:], than.release[:]); c != 0 {
+		return c < 0
+	}
+	return v.pre != "" && than.pre == ""
+}
 
-func (v version) String() string { return fmt.Sprintf("%d.%d.%d", v[0], v[1], v[2]) }
+func (v version) String() string {
+	text := fmt.Sprintf("%d.%d.%d", v.release[0], v.release[1], v.release[2])
+	if v.pre != "" {
+		text += "-" + v.pre
+	}
+	return text
+}
 
 // checkToken returns the ingest token, or nil when it cannot be read.
 func checkToken(path string) ([]byte, Check) {
@@ -217,22 +244,32 @@ func checkSettings(path string, target install.Options, shell func([]byte) insta
 	}
 
 	target.Shell = shell(settings)
-	_, changes, warnings, err := install.Plan(settings, target)
-	checks := []Check{wiring(name, changes, warnings, err)}
+	checks := []Check{wiring(name, settings, target)}
 	if install.UsesPowerShellWrapper(settings, target.Exe) {
 		checks = append(checks, Check{Name: "status line " + path, Status: Warn, Detail: powerShellNote})
 	}
 	return checks
 }
 
-// wiring turns what install would do to a settings file into its check: a
-// file that install would not edit is wired.
-func wiring(name string, changes []install.Change, warnings []string, err error) Check {
+// wiring turns what install would do to settings into their check: settings
+// that install would not edit are wired. Settings that are not say which
+// other binary their hooks run, if any, and keep install's warnings, which
+// installing again does not clear.
+func wiring(name string, settings []byte, target install.Options) Check {
+	_, changes, warnings, err := install.Plan(settings, target)
 	switch {
 	case err != nil:
 		return Check{Name: name, Status: Fail, Detail: err.Error()}
 	case install.HasEdits(changes):
-		return Check{Name: name, Status: Fail, Detail: "not wired: install would change " + pending(changes) + "; " + installHint}
+		parts := []string{"install would change " + pending(changes), installHint}
+		others := slices.DeleteFunc(install.HookExes(settings), func(exe string) bool { return exe == target.Exe })
+		if len(others) > 0 {
+			parts = slices.Insert(parts, 0, "its hooks run "+strings.Join(others, " and ")+" instead of "+target.Exe)
+		}
+		if len(warnings) > 0 {
+			parts = append(parts, "also, "+strings.Join(warnings, "; "))
+		}
+		return Check{Name: name, Status: Fail, Detail: "not wired: " + strings.Join(parts, "; ")}
 	case len(warnings) > 0:
 		return Check{Name: name, Status: Warn, Detail: "wired, but " + strings.Join(warnings, "; ")}
 	default:
@@ -289,7 +326,7 @@ type diag struct {
 }
 
 // snapshot is the part of the server's snapshot that tells whether any
-// session is live.
+// session is active.
 type snapshot struct {
 	Sessions []session `json:"sessions"`
 }
@@ -298,45 +335,67 @@ type session struct {
 	State domain.State `json:"state"`
 }
 
-// live reports whether the session has a process that sends events: one
-// that is neither ended nor parked.
-func (s session) live() bool { return s.State != domain.StateEnded && s.State != domain.StateParked }
+// active reports whether the session sends events as it goes: it is
+// starting, working or compacting. A session that waits, for the user or for
+// nothing, may stay quiet for as long as it waits.
+func (s session) active() bool {
+	switch s.State {
+	case domain.StateStarting, domain.StateWorking, domain.StateCompacting:
+		return true
+	default:
+		return false
+	}
+}
 
-func checkFeeds(ctx context.Context, client forward.Client, now time.Time) []Check {
+func checkFeeds(ctx context.Context, client forward.Client, now time.Time, tokenFile string) []Check {
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	d, err := getJSON[diag](ctx, client, diagPath, maxDiag)
 	if err != nil {
-		return []Check{{Name: "feeds", Status: Fail, Detail: "cannot read the server's diagnostics: " + err.Error()}}
+		return []Check{unreadable("diagnostics", err, tokenFile)}
 	}
 	s, err := getJSON[snapshot](ctx, client, snapshotPath, maxSnapshot)
 	if err != nil {
-		return []Check{{Name: "feeds", Status: Fail, Detail: "cannot read the server's sessions: " + err.Error()}}
+		return []Check{unreadable("sessions", err, tokenFile)}
 	}
 
-	live := slices.ContainsFunc(s.Sessions, session.live)
+	active := slices.ContainsFunc(s.Sessions, session.active)
 	return []Check{
-		feedCheck("hook feed", time.Time(d.Feeds.Hook), now, live),
-		feedCheck("status line feed", time.Time(d.Feeds.Status), now, live),
-		feedCheck("OpenTelemetry feed", time.Time(d.Feeds.OTLP), now, live),
-		feedCheck("poll feed", time.Time(d.Feeds.Poll), now, live),
+		feedCheck("hook feed", time.Time(d.Feeds.Hook), now, active),
+		feedCheck("status line feed", time.Time(d.Feeds.Status), now, active),
+		feedCheck("OpenTelemetry feed", time.Time(d.Feeds.OTLP), now, active),
+		feedCheck("poll feed", time.Time(d.Feeds.Poll), now, active),
 	}
 }
 
+// unreadable is the feed check when the server would not give the doctor
+// the state it reads. A server that refuses the token in tokenFile holds
+// another one, most likely because it started before the file was replaced.
+func unreadable(what string, err error, tokenFile string) Check {
+	if refused, ok := errors.AsType[*forward.StatusError](err); ok && refused.Code == http.StatusUnauthorized {
+		return Check{
+			Name:   "feeds",
+			Status: Fail,
+			Detail: "cannot be checked: the server holds a different token than " + tokenFile + "; restart it",
+		}
+	}
+	return Check{Name: "feeds", Status: Fail, Detail: "cannot read the server's " + what + ": " + err.Error()}
+}
+
 // feedCheck judges a feed last heard from at, the zero time for never. A
-// feed may well go quiet while no session is live.
-func feedCheck(name string, at, now time.Time, live bool) Check {
+// feed may well go quiet while no session is active.
+func feedCheck(name string, at, now time.Time, active bool) Check {
 	age := max(now.Sub(at), 0)
 	seen := "last seen " + age.Round(time.Second).String() + " ago"
 	switch {
 	case !at.IsZero() && age <= feedWindow:
 		return Check{Name: name, Status: OK, Detail: seen}
-	case !live:
-		return Check{Name: name, Status: OK, Detail: "no live sessions"}
+	case !active:
+		return Check{Name: name, Status: OK, Detail: "no active sessions"}
 	case at.IsZero():
-		return Check{Name: name, Status: Warn, Detail: "not seen since the server started, while sessions are live"}
+		return Check{Name: name, Status: Warn, Detail: "not seen since the server started, while sessions are active"}
 	default:
-		return Check{Name: name, Status: Warn, Detail: seen + ", while sessions are live"}
+		return Check{Name: name, Status: Warn, Detail: seen + ", while sessions are active"}
 	}
 }
 

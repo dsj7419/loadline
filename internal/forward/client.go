@@ -32,9 +32,10 @@ const (
 	// maxAnswer is as much of an answer as the client reads. The server's
 	// answers to it are a few dozen bytes.
 	maxAnswer = 4 << 10
-	// healthTimeout bounds Healthy. A server on the loopback interface that
-	// is up answers in well under a millisecond.
-	healthTimeout = 150 * time.Millisecond
+	// defaultHealthTimeout bounds Healthy unless a Client sets its own. A
+	// server on the loopback interface that is up answers in well under a
+	// millisecond, and a hook or a tap cannot wait much longer.
+	defaultHealthTimeout = 150 * time.Millisecond
 )
 
 // direct is the HTTP client used when a Client names none. It never goes
@@ -61,6 +62,25 @@ type Client struct {
 	// HTTP sends the requests. Nil means a client that never uses a proxy
 	// and follows no redirect.
 	HTTP *http.Client
+	// HealthTimeout bounds Healthy. Zero means 150 ms, which the hook and
+	// tap hot path can afford; a caller off it may give a busy server longer.
+	HealthTimeout time.Duration
+}
+
+// StatusError is the error of a Get or Post that the server answered with a
+// status other than 200.
+type StatusError struct {
+	// Method is the request method, such as GET.
+	Method string
+	Path   string
+	// Code is the status code, such as 401.
+	Code int
+	// Status is the status line, such as "401 Unauthorized".
+	Status string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: the server answered %s", strings.ToLower(e.Method), e.Path, e.Status)
 }
 
 // LoopbackURL returns the base URL of a server listening on port of the
@@ -95,7 +115,8 @@ func (c Client) Send(ctx context.Context, path string, env protocol.Envelope) er
 }
 
 // Get fetches path with the token and returns the answer, which must be a
-// 200 of at most limit bytes. The context bounds the whole exchange.
+// 200 of at most limit bytes; any other status is a *StatusError. The context
+// bounds the whole exchange.
 func (c Client) Get(ctx context.Context, path string, limit int64) ([]byte, error) {
 	return c.call(ctx, http.MethodGet, path, limit)
 }
@@ -121,7 +142,7 @@ func (c Client) call(ctx context.Context, method, path string, limit int64) ([]b
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: the server answered %s", request, resp.Status)
+		return nil, &StatusError{Method: method, Path: path, Code: resp.StatusCode, Status: resp.Status}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
@@ -134,10 +155,14 @@ func (c Client) call(ctx context.Context, method, path string, limit int64) ([]b
 }
 
 // Healthy reports whether a Loadline server answers at BaseURL. It gives up
-// after 150 ms, or sooner when ctx ends, and anything but a 200 whose body,
-// within its first 4 KiB, names the app counts as no.
+// after HealthTimeout, or sooner when ctx ends, and anything but a 200 whose
+// body, within its first 4 KiB, names the app counts as no.
 func (c Client) Healthy(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
+	timeout := c.HealthTimeout
+	if timeout <= 0 {
+		timeout = defaultHealthTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+healthPath, http.NoBody)
 	if err != nil {

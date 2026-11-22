@@ -1,7 +1,9 @@
 package install
 
 import (
+	"bytes"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -64,6 +66,28 @@ func (e hookEvent) describe() string {
 		return "async loadline hook"
 	}
 	return "async loadline hook for " + e.matcher
+}
+
+// HookExes returns the binaries that Loadline's hook handlers in settings
+// run, each once, in the order install writes the events. Settings that are
+// not valid JSON run none.
+func HookExes(settings []byte) []string {
+	body := bytes.TrimPrefix(settings, []byte(utf8BOM))
+	if !gjson.ValidBytes(body) {
+		return nil
+	}
+	var exes []string
+	for _, event := range hookEvents {
+		for _, group := range elements(gjson.GetBytes(body, "hooks."+event.name)) {
+			for _, handler := range elements(group.Get("hooks")) {
+				exe := handler.Get("command").Str
+				if isOwnHandler(handler, "") && !slices.Contains(exes, exe) {
+					exes = append(exes, exe)
+				}
+			}
+		}
+	}
+	return exes
 }
 
 // isOwnHandler reports whether a hook handler is Loadline's: it runs
