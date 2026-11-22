@@ -27,7 +27,7 @@ func TestPace(t *testing.T) {
 		{"a second short of an hour in", 10, t0.Add(4*time.Hour + time.Second), fiveHours, 0, false},
 		{"30 minutes in", 10, t0.Add(week - 30*time.Minute), week, 0, false},
 		{"more time left than the window holds", 10, t0.Add(8 * day), week, 0, false},
-		{"a reset that has passed counts the whole window", 40, t0.Add(-time.Minute), week, 0.4, true},
+		{"a reset days past counts the whole window", 40, t0.Add(-3 * day), week, 0.4, true},
 		{"a reset now counts the whole window", 40, t0, week, 0.4, true},
 		{"a reset centuries ago counts the whole window", 40, time.Date(1, 1, 1, 0, 0, 0, 1, time.UTC), week, 0.4, true},
 		{"an unknown reset", 50, time.Time{}, week, 0, false},

@@ -1,6 +1,7 @@
 package demo_test
 
 import (
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -186,23 +187,34 @@ func TestScenario_ShowsAPaceInEachBand(t *testing.T) {
 		bands := make(map[string][]float64)
 		for _, a := range seeded(t, at).Accounts {
 			for _, w := range []*tracker.WindowView{a.FiveHour, a.SevenDay} {
-				switch {
-				case w == nil || w.Pace == nil:
-				case *w.Pace < 0.9:
-					bands["below 0.9"] = append(bands["below 0.9"], *w.Pace)
-				case *w.Pace <= 1.2:
-					bands["0.9 to 1.2"] = append(bands["0.9 to 1.2"], *w.Pace)
+				if w == nil || w.Pace == nil {
+					continue
+				}
+				switch pace := shownPace(*w.Pace); {
+				case pace < 0.9:
+					bands["below 0.9"] = append(bands["below 0.9"], pace)
+				case pace <= 1.2:
+					bands["0.9 to 1.2"] = append(bands["0.9 to 1.2"], pace)
 				default:
-					bands["above 1.2"] = append(bands["above 1.2"], *w.Pace)
+					bands["above 1.2"] = append(bands["above 1.2"], pace)
 				}
 			}
 		}
 		for _, band := range []string{"below 0.9", "0.9 to 1.2", "above 1.2"} {
 			if len(bands[band]) == 0 {
-				t.Errorf("at %v no window has a pace %s; the paces are %v", at, band, bands)
+				t.Errorf("at %v no window shows a pace %s; the shown paces are %v", at, band, bands)
 			}
 		}
 	}
+}
+
+// shownPace is a pace as the page shows it, and so colors it: to tenths below
+// 10, else to a whole number.
+func shownPace(pace float64) float64 {
+	if tenths := math.Round(pace*10) / 10; tenths < 10 {
+		return tenths
+	}
+	return math.Round(pace)
 }
 
 func TestScenario_APIAccountSpendsAcrossDays(t *testing.T) {
