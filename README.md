@@ -109,7 +109,8 @@ the file when it starts.
 - **Each `settings.json`.** It edits only the values below and leaves formatting, line endings and
   every other key as they were. It refuses a file that is not valid JSON, saves a backup beside it
   as `settings.json.loadline-<YYYYMMDD-HHMMSS>.bak`, and replaces the file atomically. It writes
-  nothing if the file changed after it showed you the diff.
+  nothing if the file changed after it showed you the diff. Each backup holds the token, so it keeps
+  only the newest three it made of each file.
 
 The settings edits:
 
@@ -184,7 +185,10 @@ delete them to remove Loadline completely.
     `--run-b64`: through `sh`, or on Windows through PowerShell 7 (`pwsh`) when it is on `PATH`
     and Windows PowerShell otherwise.
 
-  It never reads transcripts, `.claude.json` or credentials.
+  It never reads transcripts, `.claude.json` or credentials. None of these programs gets the
+  variables of the Claude Code session whose hook started the server: every `ANTHROPIC_*`,
+  `CLAUDE_*`, `CLAUDECODE` and `OTEL_*` is removed, so one account's API key or token never reaches
+  another account's `claude`. They keep the rest of your environment.
 - **Token.** Every ingest request needs the `x-loadline-token` header, whose value is the token in
   the data directory. The token is also in the `env` of each settings file install edits, so on
   macOS and Linux install takes group and other permissions off those files and their backups.
@@ -245,6 +249,9 @@ log (`loadline.log`, rotated at 5 MB) and the spool:
 | Linux | `$XDG_STATE_HOME/loadline` (default `~/.local/state/loadline`) |
 
 Setting `LOADLINE_HOME` to an absolute path moves the data directory and the config file there.
+Wherever it is, Loadline keeps the data directory private: on Windows it gives the directory an
+access list of its own that admits only you, SYSTEM and Administrators, and on macOS and Linux mode
+0700.
 
 ## Multiple accounts
 
@@ -307,12 +314,17 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
 
 - **config:** the config file can be read.
 - **claude:** `claude` runs and is 2.1.300 or later.
+- **data directory:** the data directory admits only you. `loadline install` fixes one that lets
+  others in.
 - **token:** the token file exists and holds a valid token.
 - **settings:** each settings file is wired as install would wire it, and if not, what install
   would change.
 - **status line:** a warning when the status line runs through the PowerShell wrapper, which starts
   PowerShell on every refresh. Installing Git for Windows and running `loadline install` again
   avoids it.
+- **token in:** a warning when a settings file is a symlink, so that the token goes into the file
+  it points to, and on macOS and Linux when its mode lets group or others read the token, as a
+  rewrite by Claude Code can leave it.
 - **binary:** the installed binary exists.
 - **server:** a Loadline server answers on the configured port.
 - **feeds:** each of the four feeds has reached the server in the last 10 minutes while sessions
