@@ -6,6 +6,7 @@ package datadir_test
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,5 +126,131 @@ func TestSecure_TakesOffACreatorGroupEntryOnTheSpool(t *testing.T) {
 	})
 	if others := fspermtest.Others(t, event, fspermtest.Any); len(others) != 0 {
 		t.Errorf("the event a hook spooled after Secure admits %v: %s", others, fspermtest.AccessList(t, event))
+	}
+}
+
+// entriesOf returns the entries of an access list in the security
+// descriptor string format, without the owner, group and flags Windows
+// writes before them.
+func entriesOf(list string) string {
+	_, dacl, _ := strings.Cut(list, "D:")
+	if i := strings.IndexByte(dacl, '('); i >= 0 {
+		return dacl[i:]
+	}
+	return ""
+}
+
+// Whatever was given to one of Loadline's files or folders explicitly, a
+// denial included, and any list of its own but Loadline's private one, is
+// taken off, so that only what the data directory passes down applies.
+func TestSecure_LeavesOnlyWhatTheDataDirectoryPassesDown(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for name, tt := range map[string]struct{ path, list string }{
+		"an entry for the user alone":                {"token", "D:(A;;FA;;;" + user + ")"},
+		"a denial for everyone":                      {"token", "D:(D;;WD;;;WD)"},
+		"a denial in a list of its own":              {"token", "D:P(D;;WD;;;WD)(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)"},
+		"a list of its own without Administrators":   {"spool", "D:P(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)"},
+		"the private list, but passing nothing down": {"bin", "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, tt.path)
+			// What the data directory passes down to a file or a folder of
+			// the same kind, made now.
+			fresh := filepath.Join(home, "loadline.log")
+			if tt.path == "token" {
+				writeFile(t, fresh)
+			} else {
+				fresh = filepath.Join(home, "spool", "bad")
+				if err := os.Mkdir(fresh, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, wantProtected := entriesOf(fspermtest.AccessList(t, fresh)), fspermtest.Protected(t, fresh)
+			fspermtest.SetAccessList(t, path, tt.list)
+
+			if err := datadir.Secure(home, top); err != nil {
+				t.Fatalf("Secure: %v", err)
+			}
+
+			if got := entriesOf(fspermtest.AccessList(t, path)); got != want || fspermtest.Protected(t, path) != wantProtected {
+				t.Errorf("after Secure, %s, given %s, has %s (protected: %t); want %s (protected: %t), as the data directory passes down",
+					path, tt.list, got, fspermtest.Protected(t, path), want, wantProtected)
+			}
+		})
+	}
+}
+
+// A deny entry admits nobody, yet one on the spool keeps every hook from
+// spooling an event, and install and the server take it off.
+func TestSecure_TakesOffADenyEntryThatLocksTheUserOut(t *testing.T) {
+	home, top := loadlineHome(t)
+	spool := filepath.Join(home, "spool")
+	user := fspermtest.UserSID(t)
+	// The spool's own private list, and before it: nobody may add a file.
+	fspermtest.SetAccessList(t, spool, "D:P(D;;DC;;;WD)(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	t.Cleanup(func() {
+		fspermtest.SetAccessList(t, spool, "D:P(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	})
+	if err := (forward.Spool{Dir: spool}).Put(hookEvent(t)); err == nil {
+		t.Fatal("the deny entry did not keep a put out; the test proves nothing")
+	}
+
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	if err := (forward.Spool{Dir: spool}).Put(hookEvent(t)); err != nil {
+		t.Errorf("after Secure, a hook still cannot spool an event: %v\n%s is %s", err, spool, fspermtest.AccessList(t, spool))
+	}
+}
+
+// One on the binary keeps every hook from running it.
+func TestSecure_TakesOffADenyEntryOnTheBinary(t *testing.T) {
+	home, top := loadlineHome(t)
+	exe := filepath.Join(home, "bin", "loadline.exe")
+	fspermtest.SetAccessList(t, exe, "D:(D;;WP;;;WD)")
+
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	if got := fspermtest.AccessList(t, exe); strings.Contains(got, "(D;") {
+		t.Errorf("after Secure, nobody may run %s: %s", exe, got)
+	}
+}
+
+// unreadable gives path a list that lets its owner, through an OWNER RIGHTS
+// entry, read its data and nothing else: not read or change the list, which
+// an owner otherwise always may. Its folder still lets the user see it.
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	writeFile(t, path)
+	fspermtest.SetAccessList(t, path, "D:P(A;;CC;;;OW)")
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("%s cannot even be seen: %v", path, err)
+	}
+}
+
+// A file of Loadline's whose list the user may not read gets past the walk,
+// and is refused where its list is read: Loadline cannot tell what it lets
+// in, or take it off.
+func TestSecure_RefusesAFileWhoseAccessListItCannotRead(t *testing.T) {
+	home, top := loadlineHome(t)
+	log := filepath.Join(home, "loadline.log")
+	unreadable(t, log)
+
+	if err := datadir.Secure(home, top); err == nil || !strings.Contains(err.Error(), log) {
+		t.Errorf("Secure = %v, want it to fail, naming %s", err, log)
+	}
+}
+
+func TestCheck_RefusesAFileWhoseAccessListItCannotRead(t *testing.T) {
+	home, top := loadlineHome(t)
+	log := filepath.Join(home, "loadline.log")
+	unreadable(t, log)
+
+	if got, err := datadir.Check(home, top); err == nil || !strings.Contains(err.Error(), log) {
+		t.Errorf("Check = %q, %v; want it to fail, naming %s", got, err, log)
 	}
 }

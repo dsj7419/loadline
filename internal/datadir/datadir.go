@@ -38,9 +38,9 @@ func Secure(dir, top string) error {
 // that holds anything that is not Loadline's, which making the dir private
 // would take other users' access to, and a link among Loadline's own files.
 // It then creates dir, and each missing folder above it, private to the
-// user, or makes the existing dir private and then, from each of Loadline's
-// own files and folders whose access list still lets anyone else in, takes
-// what access it was given explicitly, which making the dir private leaves.
+// user, or makes the existing dir private and then takes off each of
+// Loadline's own files and folders whatever its access list holds of its
+// own, which making the dir private leaves (fsperm.EntryPrivate).
 //
 // Several Loadline processes may run it at once, and write files in dir
 // meanwhile (Temporary), which it leaves alone. It changes nothing that is
@@ -68,23 +68,24 @@ func Make(dir string) error {
 		return errors.New(linkProblem(link))
 	}
 	for _, path := range paths {
-		if err := clearOthers(path); err != nil {
+		if err := clearOwnEntries(path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// clearOthers takes off path, one of Loadline's files or folders in the
-// private data directory, what access it was given explicitly, when its
-// access list lets anyone else in, so that only what the data directory
-// passes down applies to it. One that lets nobody else in is left as it is,
-// such as a folder Loadline made private with a list of its own. A path
-// that is being deleted is waited for (settle), and once gone, left out.
-func clearOthers(path string) error {
+// clearOwnEntries takes off path, one of Loadline's files or folders in the
+// private data directory, whatever its access list holds of its own: an
+// entry given explicitly, a denial too, since one on the spool or the binary
+// keeps the hooks out, or a list of its own other than the private one. Only
+// what the data directory passes down then applies. A path that is private
+// already is left as it is. A path that is being deleted is waited for
+// (settle), and once gone, left out.
+func clearOwnEntries(path string) error {
 	err := settle(func() error {
-		found, err := fsperm.EntryExposure(path)
-		if err != nil || found == "" {
+		private, err := fsperm.EntryPrivate(path)
+		if err != nil || private {
 			return err
 		}
 		return fsperm.ClearExplicit(path)

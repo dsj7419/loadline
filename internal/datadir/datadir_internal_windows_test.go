@@ -23,11 +23,11 @@ func going(t *testing.T) string {
 	return path
 }
 
-func TestClearOthers_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
+func TestClearOwnEntries_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
 	path := going(t)
 
-	if err := clearOthers(path); err != nil {
-		t.Errorf("clearOthers(%s), deleted meanwhile: %v; want nil", path, err)
+	if err := clearOwnEntries(path); err != nil {
+		t.Errorf("clearOwnEntries(%s), deleted meanwhile: %v; want nil", path, err)
 	}
 }
 

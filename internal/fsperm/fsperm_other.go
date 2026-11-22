@@ -104,6 +104,11 @@ func IsLink(path string) (bool, error) {
 // file that is deleted or renamed goes from its name at once.
 func Transient(error) bool { return false }
 
+// EntryPrivate reports every file and folder inside a private folder as
+// private here: each carries only its mode, and the folder's mode 0700 keeps
+// everyone else from reaching it.
+func EntryPrivate(string) (bool, error) { return true, nil }
+
 // EntryExposure says nothing here of a file or folder inside a private
 // folder: the folder's mode 0700 keeps everyone else from reaching it.
 func EntryExposure(string) (string, error) { return "", nil }

@@ -66,6 +66,12 @@ func hasList(path string, want *windows.ACL) (bool, error) {
 		return false, err
 	}
 	defer runtime.KeepAlive(sd)
+	return isList(sd, want)
+}
+
+// isList reports whether sd has a protected access list that holds the
+// entries of want, in the same order, and nothing else.
+func isList(sd *windows.SECURITY_DESCRIPTOR, want *windows.ACL) (bool, error) {
 	control, _, err := sd.Control()
 	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
 		return false, err
@@ -88,6 +94,71 @@ func hasList(path string, want *windows.ACL) (bool, error) {
 			return false, err
 		}
 		if !sameEntry(haveACE, wantACE) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// fileAllAccess is FILE_ALL_ACCESS, what the private list gives each of the
+// user, SYSTEM and Administrators.
+const fileAllAccess windows.ACCESS_MASK = 0x1f01ff
+
+// EntryPrivate reports whether path, a file or folder in a private folder,
+// holds nothing of its own in its access list: either every entry in it is
+// one its folder passed down, giving full control to the user, SYSTEM or
+// Administrators, or it is the private list itself, protected, as each
+// folder Loadline makes has. Any other list is not: one with an entry given
+// to path explicitly, a denial among them, one protected from what the
+// folder passes down, or one that brought its entries from somewhere else.
+func EntryPrivate(path string) (bool, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false, fmt.Errorf("read the access list of %s: %w", path, err)
+	}
+	defer runtime.KeepAlive(sd)
+	private, err := isPrivate(sd)
+	if err != nil {
+		return false, fmt.Errorf("read the access list of %s: %w", path, err)
+	}
+	return private, nil
+}
+
+func isPrivate(sd *windows.SECURITY_DESCRIPTOR) (bool, error) {
+	control, _, err := sd.Control()
+	if err != nil {
+		return false, err
+	}
+	if control&windows.SE_DACL_PROTECTED != 0 {
+		private, err := privateDescriptor()
+		if err != nil {
+			return false, err
+		}
+		defer runtime.KeepAlive(private)
+		want, _, err := private.DACL()
+		if err != nil {
+			return false, err
+		}
+		return isList(sd, want)
+	}
+	dacl, _, err := sd.DACL()
+	switch {
+	case errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND), err == nil && dacl == nil:
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	trusted, err := trustedSIDs()
+	if err != nil {
+		return false, err
+	}
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return false, err
+		}
+		if ace.Header.AceFlags&windows.INHERITED_ACE == 0 || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE ||
+			ace.Mask != fileAllAccess || !slices.ContainsFunc(trusted, entrySID(ace).Equals) {
 			return false, nil
 		}
 	}

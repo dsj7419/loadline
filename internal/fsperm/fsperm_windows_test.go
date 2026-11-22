@@ -388,6 +388,99 @@ func TestMovableAncestor_CountsEveryKindOfAllowEntry(t *testing.T) {
 	}
 }
 
+// broughtIn writes a file in a folder whose list is the protected one
+// sddl describes, and moves it into root, which keeps what it inherited
+// there.
+func broughtIn(t *testing.T, root, sddl string) string {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.SetAccessList(t, source, sddl)
+	file := filepath.Join(source, "loadline.log")
+	write(t, file)
+	moved := filepath.Join(root, "loadline.log")
+	if err := os.Rename(file, moved); err != nil {
+		t.Fatal(err)
+	}
+	return moved
+}
+
+// A file or folder in a private folder holds nothing of its own when all it
+// has is what that folder passes down, full control for the user, SYSTEM
+// and Administrators, or when it is a folder with the private list itself.
+// Anything else is its own.
+func TestEntryPrivate_TakesOnlyWhatAPrivateFolderGives(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	trusted := "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	for name, tt := range map[string]struct {
+		make func(t *testing.T, root string) string
+		want bool
+	}{
+		"a file the folder made": {func(t *testing.T, root string) string {
+			t.Helper()
+			path := filepath.Join(root, "token")
+			write(t, path)
+			return path
+		}, true},
+		"a folder with the private list": {func(t *testing.T, root string) string {
+			t.Helper()
+			path := filepath.Join(root, "spool")
+			if err := fsperm.MkdirAll(path); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, true},
+		"a file brought from a folder that passes the same down": {func(t *testing.T, root string) string {
+			t.Helper()
+			return broughtIn(t, root, "D:P(A;OICI;FA;;;"+user+")"+trusted)
+		}, true},
+		"an entry given explicitly": {func(t *testing.T, root string) string {
+			t.Helper()
+			path := filepath.Join(root, "token")
+			write(t, path)
+			fspermtest.SetAccessList(t, path, "D:(A;;FA;;;"+user+")")
+			return path
+		}, false},
+		"another list of its own": {func(t *testing.T, root string) string {
+			t.Helper()
+			path := filepath.Join(root, "spool")
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fspermtest.SetAccessList(t, path, "D:P(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)")
+			return path
+		}, false},
+		"a denial brought from elsewhere": {func(t *testing.T, root string) string {
+			t.Helper()
+			return broughtIn(t, root, "D:P(D;OICIIO;CC;;;"+user+")(A;OICI;FA;;;"+user+")"+trusted)
+		}, false},
+		"less than full control brought from elsewhere": {func(t *testing.T, root string) string {
+			t.Helper()
+			return broughtIn(t, root, "D:P(A;OICIIO;FR;;;"+user+")(A;;FA;;;"+user+")"+trusted)
+		}, false},
+		"an entry for others brought from elsewhere": {func(t *testing.T, root string) string {
+			t.Helper()
+			return broughtIn(t, root, "D:P(A;OICI;FR;;;AU)(A;OICI;FA;;;"+user+")"+trusted)
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "loadline")
+			if err := fsperm.MkdirAll(root); err != nil {
+				t.Fatal(err)
+			}
+			path := tt.make(t, root)
+
+			got, err := fsperm.EntryPrivate(path)
+
+			if err != nil || got != tt.want {
+				t.Errorf("EntryPrivate(%s), whose list is %s = %t, %v; want %t", path, fspermtest.AccessList(t, path), got, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestExposure_MissingPathFails(t *testing.T) {
 	_, err := fsperm.Exposure(filepath.Join(t.TempDir(), "missing"))
 
