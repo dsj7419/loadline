@@ -276,34 +276,39 @@ func TestRunTap_BrokenStdoutStillForwards(t *testing.T) {
 // its input leaves it, is no failure of the tap's: it exits 0, so that under
 // pipefail the command's own exit code still counts, and it still forwards.
 // The 0 is the behavior itself, not a looser check: the tap used to exit 1
-// here, and that 1 replaced the command's own exit code under pipefail.
+// here, and that 1 replaced the command's own exit code under pipefail. The
+// echo and --print write to the output alike.
 func TestRunTap_ClosedStdoutPipe(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
-	f := newFixture(t)
-	srv := f.serve()
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatalf("close reader: %v", err)
-	}
-	done := make(chan int, 1)
+	for name, mode := range map[string]cli.TapMode{"echo": {}, "--print": {Print: true}} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			srv := f.serve()
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("pipe: %v", err)
+			}
+			if err := reader.Close(); err != nil {
+				t.Fatalf("close reader: %v", err)
+			}
+			done := make(chan int, 1)
 
-	go func() {
-		done <- cli.RunTap(t.Context(), strings.NewReader(statusInput(t)), writer, f.env(), f.paths, f.cfg, cli.TapMode{})
-	}()
+			go func() {
+				done <- cli.RunTap(t.Context(), strings.NewReader(statusInput(t)), writer, f.env(), f.paths, f.cfg, mode)
+			}()
 
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Errorf("exit code = %d, want 0 for an output whose reader has gone", code)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("tap hung on a closed stdout")
-	}
-	if posts := srv.received(); len(posts) != 1 {
-		t.Errorf("server received %d posts, want 1", len(posts))
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("exit code = %d, want 0 for an output whose reader has gone", code)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("tap hung on a closed stdout")
+			}
+			if posts := srv.received(); len(posts) != 1 {
+				t.Errorf("server received %d posts, want 1", len(posts))
+			}
+		})
 	}
 }
 
