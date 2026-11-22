@@ -52,7 +52,7 @@ func (a agentIDs) without(id string) agentIDs {
 // leave the count wrong for good. Subagents are told apart by agent ID, so a
 // stop that arrives before its start, as a start drained from the spool
 // does, cancels that start and no other, and a start that comes twice counts
-// once. A hook without an agent ID moves a plain count instead.
+// once. A hook without an agent ID moves a count of its own kind instead.
 func countSubagents(s Session, h Hook) Session {
 	switch {
 	case h.Name == "SubagentStart" && h.AgentID == "":
@@ -70,18 +70,16 @@ func countSubagents(s Session, h Hook) Session {
 	return s
 }
 
-// startSubagent counts the subagent id as running, unless its stop came
-// first or it already counts. Beyond maxTrackedSubagents running at once it
-// is not counted.
+// startSubagent counts the subagent id as running, unless it already counts
+// or its stop came first: an agent ID is a single subagent's, and one that
+// has stopped never runs again. Beyond maxTrackedSubagents running at once a
+// subagent is not counted.
 func startSubagent(s Session, id string) Session {
-	switch {
-	case s.stopped.has(id):
-		s.stopped = s.stopped.without(id)
-	case s.running.has(id) || s.running.full():
-	default:
-		s.running = s.running.with(id)
-		s.Subagents++
+	if s.stopped.has(id) || s.running.has(id) || s.running.full() {
+		return s
 	}
+	s.running = s.running.with(id)
+	s.Subagents++
 	return s
 }
 

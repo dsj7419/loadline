@@ -115,3 +115,30 @@ func TestApply_EndingForgetsTheSubagents(t *testing.T) {
 		t.Errorf("Subagents = %d, want 1: agent-2 is running in the reopened session", s.Subagents)
 	}
 }
+
+// Agent IDs are unique to a subagent, so once its stop has been seen it never
+// runs again: a start delivered once more changes nothing.
+func TestApply_ASubagentSeenStoppedNeverCountsAgain(t *testing.T) {
+	got := applyAll(working(),
+		subagentHook(20, "SubagentStop", "agent-1"),
+		subagentHook(10, "SubagentStart", "agent-1"),
+		subagentHook(10, "SubagentStart", "agent-1"),
+	)
+
+	if got.Subagents != 0 {
+		t.Errorf("Subagents = %d, want 0", got.Subagents)
+	}
+}
+
+// A stop without an agent ID is not one of the subagents told apart by ID.
+func TestApply_AStopWithoutAnIDLeavesTheOnesWithIDs(t *testing.T) {
+	s := applyAll(working(), subagentHook(10, "SubagentStart", "agent-1"), hook(11, "SubagentStop"))
+	if s.Subagents != 1 {
+		t.Fatalf("Subagents = %d, want agent-1 still counted", s.Subagents)
+	}
+
+	s = domain.Apply(s, subagentHook(20, "SubagentStop", "agent-1"))
+	if s.Subagents != 0 {
+		t.Errorf("Subagents = %d after agent-1 stopped, want 0", s.Subagents)
+	}
+}
