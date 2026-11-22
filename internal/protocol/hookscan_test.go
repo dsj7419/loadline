@@ -21,8 +21,8 @@ const (
 	maxField = 4 << 10
 )
 
-// bu is a backslash and a u: the start of a \u escape, spelled out so that
-// no tool on the way to this file reads it as one.
+// bu is a backslash and a u: the start of a \u escape, kept as two bytes so
+// the source never holds a literal escape.
 var bu = string([]byte{'\\', 'u'})
 
 // oracle decodes the first JSON value of input as encoding/json does, with
@@ -259,8 +259,9 @@ func longMemberCases() map[string]string {
 	}
 }
 
-// The re-reviewer's cases and a few more, each read whole, a byte at a
-// time, in halves and with an early end of input.
+// Long members, well-formed and malformed, at the grammar's edges (escapes,
+// numbers, literals, brackets, commas and truncated input), each read whole,
+// a byte at a time, in halves and with an early end of input.
 func TestReadHookInput_AgreesWithEncodingJSONOnLongMembers(t *testing.T) {
 	for name, input := range longMemberCases() {
 		for readerName, reader := range readers {
@@ -328,13 +329,17 @@ func TestReadHookInput_SkipsLongMembers(t *testing.T) {
 }
 
 // As in encoding/json, the last occurrence of a key wins, in any letter
-// case; when that one is too long to keep, the field is left empty.
+// case; when that one is too long to keep, or longer than a field may be,
+// the field is left empty.
 func TestReadHookInput_LongLastDuplicateEmptiesTheField(t *testing.T) {
 	pad := strings.Repeat("a", maxMember+100)
+	overField := strings.Repeat("a", maxField+1)
 	for name, input := range map[string]string{
-		"string":      `{"session_id":"s1","session_id":"` + pad + `","tool_name":"Bash"}`,
-		"letter case": `{"session_id":"s1","SESSION_ID":"` + pad + `","tool_name":"Bash"}`,
-		"nested":      `{"session_id":"s1","session_id":["` + pad + `"],"tool_name":"Bash"}`,
+		"string":                    `{"session_id":"s1","session_id":"` + pad + `","tool_name":"Bash"}`,
+		"letter case":               `{"session_id":"s1","SESSION_ID":"` + pad + `","tool_name":"Bash"}`,
+		"nested":                    `{"session_id":"s1","session_id":["` + pad + `"],"tool_name":"Bash"}`,
+		"over a field":              `{"session_id":"s1","session_id":"` + overField + `","tool_name":"Bash"}`,
+		"over a field, letter case": `{"session_id":"s1","Session_ID":"` + overField + `","tool_name":"Bash"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := protocol.ReadHookInput(strings.NewReader(input))
@@ -344,9 +349,17 @@ func TestReadHookInput_LongLastDuplicateEmptiesTheField(t *testing.T) {
 			}
 		})
 	}
-	got, err := protocol.ReadHookInput(strings.NewReader(`{"session_id":"` + pad + `","session_id":"s2"}`))
-	if err != nil || got.SessionID != "s2" {
-		t.Errorf("a short last duplicate: got %+v, %v; want s2", got, err)
+	for name, input := range map[string]string{
+		"after a member too long to keep": `{"session_id":"` + pad + `","session_id":"s2"}`,
+		"after a field over 4 KiB":        `{"session_id":"` + overField + `","session_id":"s2"}`,
+	} {
+		t.Run("short last duplicate "+name, func(t *testing.T) {
+			got, err := protocol.ReadHookInput(strings.NewReader(input))
+
+			if err != nil || got.SessionID != "s2" {
+				t.Errorf("got %+v, %v; want s2", got, err)
+			}
+		})
 	}
 }
 
