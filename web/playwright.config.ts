@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
@@ -12,8 +12,23 @@ const baseURL = `http://127.0.0.1:${port}`;
 // again in every worker; the workers inherit the runner's environment, and
 // with it the home the runner made.
 const homeVariable = 'LOADLINE_E2E_HOME';
-const loadlineHome = process.env[homeVariable] ?? mkdtempSync(join(tmpdir(), 'loadline-e2e-'));
-process.env[homeVariable] = loadlineHome;
+const inheritedHome = process.env[homeVariable];
+const loadlineHome = inheritedHome !== undefined && inheritedHome !== '' ? inheritedHome : makeHome();
+
+// Only the process that makes the home removes it, and only as it exits:
+// Playwright has stopped the server by then, so nothing holds its files open.
+function makeHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'loadline-e2e-'));
+  process.env[homeVariable] = home;
+  process.on('exit', () => {
+    try {
+      rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+    } catch (error) {
+      console.warn(`could not remove the test server's home ${home}: ${String(error)}`);
+    }
+  });
+  return home;
+}
 
 // CI tests the binary it built; locally the server is compiled from source.
 const serve = `serve --demo --no-open --port ${port}`;
@@ -30,7 +45,9 @@ export default defineConfig<LoadlineOptions>({
     loadlineHome,
     trace: 'retain-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Full Chromium rather than the headless shell, which denies notifications
+  // and so shows the page as no user sees it.
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chromium' } }],
   webServer: {
     command,
     url: `${baseURL}/healthz`,

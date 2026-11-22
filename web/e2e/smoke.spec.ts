@@ -99,9 +99,14 @@ async function noteWhenDialogOpens(page: Page): Promise<void> {
 }
 
 // The dialog fades in, and axe must judge the colours it comes to rest at.
+// An endless animation never finishes, and a cancelled one has nothing left
+// to wait for.
 async function animationsFinished(element: Locator): Promise<void> {
   await element.evaluate(async (node) => {
-    await Promise.all(node.getAnimations({ subtree: true }).map(async (animation) => animation.finished));
+    const finite = node
+      .getAnimations({ subtree: true })
+      .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity);
+    await Promise.allSettled(finite.map(async (animation) => animation.finished));
   });
 }
 
