@@ -518,7 +518,9 @@ func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits, freshAs t
 // carries the account's email, which stands in when the account probe has
 // not supplied one.
 func (t *Tracker) attach(s *sessionEntry, r domain.APIRequest) {
-	s.responses.call(r.At)
+	// A call stamped before the clock was set back would date its session
+	// ahead of every response after the step.
+	s.responses.call(notAhead(r.At, t.newest))
 	dir := s.session.Dir
 	entry := t.account(dir)
 	t.usage.add(dir, r.Session, r.Model, r.At, usageOf(r))

@@ -321,6 +321,48 @@ func TestTracker_ACallStampedBeforeTheStepDoesNotFreshenItsSessionForHours(t *te
 	}
 }
 
+// As above for sessions whose lines report no API time, whose next line takes
+// a call that arrives: the call stamped before the step is dated at the step,
+// as a poll stamped before it is, so it cannot keep the idle session ahead of
+// the busy one's responses after the step.
+func TestTracker_ACallStampedBeforeTheStepIsDatedAtTheStep(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	busy, idle := s1, s2
+	h.clock.Set(at(7000))
+	h.tr.RecordAPI(request(at(7000), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(7001, idle, 97))
+	h.tr.RecordAPI(request(at(7095), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(7096, idle, 97))
+	h.tr.RecordAPI(request(at(7100), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(7101, busy, 100))
+
+	h.clock.Set(at(-100))
+	h.tr.RecordAPI(request(at(7098), idle, "Opus 5.5", 0))
+	shownWeekly(h, weeklyFrom(0, idle, 97))
+
+	below, views := 0, 0
+	for sec := 0; sec < 600; sec += 10 {
+		h.tr.RecordAPI(request(at(sec+3), busy, "Opus 5.5", 0.5))
+		if got := shownWeekly(h, weeklyFrom(sec+4, busy, 100)); got < 100 {
+			below++
+		}
+		if got := shownWeekly(h, weeklyFrom(sec+10, idle, 97)); got < 100 {
+			below++
+		}
+		views += 2
+	}
+	if below > 0 {
+		t.Errorf("weekly window shown below 100%% in %d of %d views from the busy session's first response after the step on, want none", below, views)
+	}
+	// Dated at the step, the idle session's reading there is the newest until
+	// the busy one's next line, so the call made in between falls outside the
+	// stretch on credits; every later one is counted.
+	h.clock.Set(at(610))
+	if got := h.account(dirA).Credits; got == nil || !got.Active || !near(got.SpentUSD, 29.5) {
+		t.Errorf("credits %+v, want active, with the $29.50 the busy session spent at the limit from its first line after the step", got)
+	}
+}
+
 // The two hooks /clear fires can arrive either side of the step.
 func TestTracker_ClockSetBackStillLinksAClear(t *testing.T) {
 	h, _ := newSteppingHarness(t)
