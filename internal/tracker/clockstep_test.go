@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -192,6 +193,23 @@ func TestTracker_ClockSetBackKeepsSamplingTheLimits(t *testing.T) {
 
 	if _, _, samples, _ := h.rec.recorded(); len(samples) != 2 {
 		t.Errorf("recorded %d samples, want 2: a minute passed between the status lines", len(samples))
+	}
+}
+
+// A window with no known reset takes a lower reading once the one held was
+// first taken longer ago than the window lasts, as the step moved it.
+func TestTracker_ClockSetBackKeepsAReadingsAge(t *testing.T) {
+	h, _ := newSteppingHarness(t)
+	h.clock.Set(at(hour))
+	h.tr.Apply(withWindows(statusLine(hour, s1), window(100, time.Time{}), nil))
+
+	h.clock.Set(at(0))
+	h.tr.Snapshot()
+	h.clock.Set(at(5*hour + 1))
+	h.tr.Apply(withWindows(statusLine(5*hour+1, s2), window(20, time.Time{}), nil))
+
+	if got := h.account(dirA).FiveHour; got == nil || got.UsedPct != 20 {
+		t.Errorf("five-hour window %+v, want the 20%% reading: the 100%% held was taken over five hours before", got)
 	}
 }
 

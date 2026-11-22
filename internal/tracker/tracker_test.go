@@ -545,14 +545,15 @@ func TestTracker_LimitsNewestObservationWins(t *testing.T) {
 		t.Fatalf("after a line without limits: seven-day %+v, want the one observed at +10s", a.SevenDay)
 	}
 
-	// A newer line replaces both windows: one it lacks is gone.
+	// A newer line is news of a window it reports, and one it lacks stays
+	// while its reset is still to come (see TestTracker_AWindowALineLeavesOut).
 	h.tr.Apply(withWindows(statusLine(20, s2), nil, window(55, resets7d)))
 	a = h.account(dirA)
 	if a.SevenDay == nil || a.SevenDay.UsedPct != 55 {
 		t.Errorf("seven-day window %+v, want 55%%", a.SevenDay)
 	}
-	if a.FiveHour != nil {
-		t.Errorf("five-hour window %+v, want none: the newest line has none", a.FiveHour)
+	if a.FiveHour == nil || a.FiveHour.UsedPct != 20 {
+		t.Errorf("five-hour window %+v, want the 20%% held: it resets in three hours", a.FiveHour)
 	}
 }
 

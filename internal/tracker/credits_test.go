@@ -180,17 +180,20 @@ func TestTracker_CreditsSpanClosesAtTheReset(t *testing.T) {
 
 func TestTracker_CreditsActiveAlertIsDatedByItsSpan(t *testing.T) {
 	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
-	h.tr.Apply(withWindows(statusLine(0, s1), window(100, at(20_000)), window(90, weekResets)))
+	fiveHourResets := at(90)
+	h.tr.Apply(withWindows(statusLine(0, s1), window(100, fiveHourResets), window(90, weekResets)))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 1))
 	h.clock.Set(at(40))
 	if active := alertsOfKind(h.tr.Snapshot(), domain.AlertCreditsActive); len(active) != 1 || !active[0].Since.Equal(at(0)) {
 		t.Fatalf("credits_active alerts %+v, want one since %v", active, at(0))
 	}
 
-	// Off credits and back on between two views: a new stretch on credits,
-	// which the page notifies of afresh.
-	h.tr.Apply(withWindows(statusLine(100, s1), window(98, at(20_000)), window(95, weekResets)))
-	h.tr.Apply(withWindows(statusLine(120, s1), window(98, at(20_000)), window(100, weekResets)))
+	// Off credits at the five-hour reset and back on at the weekly limit
+	// between two views: a new stretch on credits, which the page notifies of
+	// afresh.
+	nextFiveHour := window(2, fiveHourResets.Add(5*time.Hour))
+	h.tr.Apply(withWindows(statusLine(100, s1), nextFiveHour, window(95, weekResets)))
+	h.tr.Apply(withWindows(statusLine(120, s1), nextFiveHour, window(100, weekResets)))
 	h.tr.RecordAPI(request(at(130), s1, "Opus 5.5", 1))
 	h.clock.Set(at(140))
 
@@ -363,13 +366,14 @@ func TestTracker_OnCreditsSinceHoldsWhileAMergedSpanAgesOut(t *testing.T) {
 	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 100, AddedAt: at(-40 * day)}}}
 	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
 	start := -31 * day
+	fiveHourResets := at(start + 2*hour)
 	h.clock.Set(at(start))
-	h.tr.Apply(withWindows(statusLine(start, s1), window(100, at(start+5*hour)), window(50, at(start+3*day))))
+	h.tr.Apply(withWindows(statusLine(start, s1), window(100, fiveHourResets), window(50, at(start+3*day))))
 	h.clock.Set(at(start + hour))
-	h.tr.Apply(withWindows(statusLine(start+hour, s1), window(100, at(start+5*hour)), window(100, time.Time{})))
+	h.tr.Apply(withWindows(statusLine(start+hour, s1), window(100, fiveHourResets), window(100, time.Time{})))
 	h.tr.RecordAPI(request(at(start+hour+10), s1, "Opus 5.5", 1))
 	h.clock.Set(at(start + 2*hour))
-	h.tr.Apply(withWindows(statusLine(start+2*hour, s1), window(30, at(start+5*hour)), window(100, time.Time{})))
+	h.tr.Apply(withWindows(statusLine(start+2*hour, s1), window(30, fiveHourResets.Add(5*time.Hour)), window(100, time.Time{})))
 	h.tr.Snapshot()
 	for d := start + day; d <= start+30*day-2*hour; d += day {
 		h.clock.Set(at(d))
@@ -445,12 +449,14 @@ func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSubscribedHarness(t, tracker.Config{Credits: tc.grants, Alerts: defaultAlerts})
-			reporting := weekly(0, 100)
+			resets := at(50)
+			reporting := withWindows(statusLine(0, s1), nil, window(100, resets))
 			reporting.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
 			h.tr.Apply(reporting)
 			h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 2))
-			// A later line, not at the limit, that reports no spend limit.
-			h.tr.Apply(weekly(60, 40))
+			// A later line, of the window begun at the reset, that reports no
+			// spend limit.
+			h.tr.Apply(withWindows(statusLine(60, s1), nil, window(40, resets.Add(7*24*time.Hour))))
 
 			h.clock.Set(at(3599))
 			if got := h.account(dirA).Credits; got == nil || got.Source != domain.CreditSourceReported {
@@ -462,6 +468,89 @@ func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
 				t.Errorf("credits %+v an hour after the report, want %+v", got, tc.afterAll)
 			}
 		})
+	}
+}
+
+// Two sessions of one account: s1 works on credits, its status line reporting
+// the weekly window at 100%, while s2 sits idle and, refreshed every 5 s, goes
+// on reporting the 97% its own last response carried. Both readings have the
+// same reset, so they describe one window, in which usage never goes down:
+// the 97% is older news, not a drop below the limit. The account is at its
+// limit throughout, so every call after the first 100% reading is paid for
+// with credits, and the stretch on credits has a single start.
+func TestTracker_AnIdleSessionsOlderReadingKeepsTheStretchOnCredits(t *testing.T) {
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 1000, AddedAt: at(-86400)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+
+	const minutes = 10
+	spent := 0.0
+	sinces := map[int64]bool{}
+	activeViews, views, weeklyBelowLimit := 0, 0, 0
+	look := func(sec int) {
+		h.clock.Set(at(sec))
+		v := h.tr.Snapshot()
+		views++
+		if active := alertsOfKind(v, domain.AlertCreditsActive); len(active) == 1 {
+			activeViews++
+			sinces[active[0].Since.UnixMilli()] = true
+		}
+		for _, a := range v.Accounts {
+			if a.Dir == dirA && (a.SevenDay == nil || a.SevenDay.UsedPct != 100) {
+				weeklyBelowLimit++
+			}
+		}
+	}
+	for sec := 0; sec < minutes*60; sec += 5 {
+		h.clock.Set(at(sec))
+		h.tr.Apply(withWindows(statusLine(sec, s1), nil, window(100, weekResets)))
+		h.tr.RecordAPI(request(at(sec+1), s1, "Opus 5.5", 0.10))
+		look(sec + 1)
+		h.clock.Set(at(sec + 2))
+		h.tr.Apply(withWindows(statusLine(sec+2, s2), nil, window(97, weekResets)))
+		h.tr.RecordAPI(request(at(sec+3), s1, "Opus 5.5", 0.10))
+		spent += 0.20
+		look(sec + 4)
+	}
+	h.clock.Set(at(minutes * 60))
+
+	if got := h.account(dirA).Credits; got == nil || !near(got.SpentUSD, spent) {
+		t.Errorf("credits %+v, want $%.2f spent: every call after the first 100%% reading was made at the limit", got, spent)
+	}
+	if activeViews != views {
+		t.Errorf("credits_active shown in %d of %d views, want all: the account never left its limit", activeViews, views)
+	}
+	if len(sinces) != 1 {
+		t.Errorf("credits_active came with %d different since times over %d minutes, want 1: the page notifies afresh for each new since", len(sinces), minutes)
+	}
+	if weeklyBelowLimit != 0 {
+		t.Errorf("the card showed the weekly window below 100%% in %d of %d views, want none: 100%% is the newest usage of the window", weeklyBelowLimit, views)
+	}
+}
+
+// A day of the same disagreement leaves the view as cheap as ever: the tracker
+// holds its lock while it builds one, so a slow view stalls ingest.
+func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 1000, AddedAt: at(-86400)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+	const hours = 24
+	for sec := 0; sec < hours*3600; sec += 5 {
+		h.clock.Set(at(sec))
+		h.tr.Apply(withWindows(statusLine(sec, s1), nil, window(100, weekResets)))
+		h.tr.RecordAPI(request(at(sec+1), s1, "Opus 5.5", 0.01))
+		h.clock.Set(at(sec + 2))
+		h.tr.Apply(withWindows(statusLine(sec+2, s2), nil, window(97, weekResets)))
+		h.tr.RecordAPI(request(at(sec+3), s1, "Opus 5.5", 0.01))
+		if sec%3600 == 0 {
+			h.tr.Snapshot()
+		}
+	}
+	h.clock.Set(at(hours*3600 + 1))
+	for range 3 {
+		start := time.Now()
+		h.tr.Snapshot()
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("a view after %d hours took %v, want well under 100 ms", hours, elapsed)
+		}
 	}
 }
 

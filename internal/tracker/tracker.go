@@ -289,8 +289,7 @@ func (t *Tracker) Restore(s Restored) {
 		if _, known := t.accounts[a.Dir]; known {
 			continue
 		}
-		a.Limits.FiveHour, a.Limits.SevenDay = cloneWindow(a.Limits.FiveHour), cloneWindow(a.Limits.SevenDay)
-		t.accounts[a.Dir] = &accountEntry{account: a}
+		t.accounts[a.Dir] = restoredAccount(a)
 	}
 	for dir, samples := range s.Samples {
 		entry, _ := t.accountEntry(dir)

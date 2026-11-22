@@ -21,30 +21,126 @@ const (
 // credits are worked out from.
 type accountEntry struct {
 	account domain.Account
-	samples domain.WindowSamples
-	credits accountCredits
+	// readings are what the tracker knows of the readings behind the
+	// windows the account's limits hold.
+	readings windowReadings
+	samples  domain.WindowSamples
+	credits  accountCredits
+}
+
+// windowReadings holds a heldReading for each rate-limit window.
+type windowReadings struct{ FiveHour, SevenDay heldReading }
+
+// heldReading is what the tracker knows of the reading behind a window it
+// holds, beyond the window itself.
+type heldReading struct {
+	// takenAt is when the reading was first taken. A line that reports it
+	// again leaves it, so it dates how long the window has stood as it is.
+	takenAt time.Time
+}
+
+// restoredAccount is an account a store kept. Its windows' readings date
+// from when it was last observed, the latest they can have been taken.
+func restoredAccount(a domain.Account) *accountEntry {
+	a.Limits.FiveHour, a.Limits.SevenDay = cloneWindow(a.Limits.FiveHour), cloneWindow(a.Limits.SevenDay)
+	taken := heldReading{takenAt: a.Limits.ObservedAt}
+	return &accountEntry{account: a, readings: windowReadings{FiveHour: taken, SevenDay: taken}}
+}
+
+// windowState is one of an account's windows as the tracker holds it.
+type windowState struct {
+	held    *domain.Window
+	reading heldReading
+	samples []domain.Sample
+	// length is how long the window lasts.
+	length time.Duration
+}
+
+func (a *accountEntry) fiveHour() windowState {
+	return windowState{a.account.Limits.FiveHour, a.readings.FiveHour, a.samples.FiveHour, domain.FiveHourLength}
+}
+
+func (a *accountEntry) sevenDay() windowState {
+	return windowState{a.account.Limits.SevenDay, a.readings.SevenDay, a.samples.SevenDay, domain.SevenDayLength}
 }
 
 // observe applies the rate limits a status line reports. A line that reports
-// no window is no observation of them. A newer line replaces both windows,
-// since Claude Code drops a window from the line once it resets. It returns
-// whether a window's values moved, as opposed to being observed afresh, and
-// the windows that gained a sample.
+// no window is no observation of them, and one observed no later than the
+// limits held is older news. Each window is judged on its own (see
+// windowState.observe), and the limits are observed afresh when the line
+// was news of either. It returns whether a window's values moved, as opposed
+// to being observed afresh, and the windows that gained a sample.
 func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limits) {
-	if l.FiveHour == nil && l.SevenDay == nil {
+	held := a.account.Limits
+	if (l.FiveHour == nil && l.SevenDay == nil) || !l.ObservedAt.After(held.ObservedAt) {
 		return false, domain.Limits{}
 	}
-	current := a.account.Limits
-	if !l.ObservedAt.After(current.ObservedAt) {
+	fiveHour, fiveHourNews, fiveHourSampled := a.fiveHour().observe(l.FiveHour, l.ObservedAt)
+	sevenDay, sevenDayNews, sevenDaySampled := a.sevenDay().observe(l.SevenDay, l.ObservedAt)
+	if !fiveHourNews && !sevenDayNews {
 		return false, domain.Limits{}
 	}
-	moved = !sameWindow(current.FiveHour, l.FiveHour) || !sameWindow(current.SevenDay, l.SevenDay)
-	a.account.Limits = domain.Limits{FiveHour: cloneWindow(l.FiveHour), SevenDay: cloneWindow(l.SevenDay), ObservedAt: l.ObservedAt}
+	a.account.Limits = domain.Limits{FiveHour: fiveHour.held, SevenDay: sevenDay.held, ObservedAt: l.ObservedAt}
+	a.readings = windowReadings{FiveHour: fiveHour.reading, SevenDay: sevenDay.reading}
+	a.samples = domain.WindowSamples{FiveHour: fiveHour.samples, SevenDay: sevenDay.samples}
+	moved = !sameWindow(held.FiveHour, fiveHour.held) || !sameWindow(held.SevenDay, sevenDay.held)
+	return moved, domain.Limits{FiveHour: fiveHourSampled, SevenDay: sevenDaySampled, ObservedAt: l.ObservedAt}
+}
 
-	sampled.ObservedAt = l.ObservedAt
-	a.samples.FiveHour, sampled.FiveHour = sampleWindow(a.samples.FiveHour, l.FiveHour, l.ObservedAt)
-	a.samples.SevenDay, sampled.SevenDay = sampleWindow(a.samples.SevenDay, l.SevenDay, l.ObservedAt)
-	return moved, sampled
+// observe returns the window as a line observed at at leaves it, the line
+// reading it as reading, or leaving it out when that is nil; whether the
+// line was news of the window; and the window it sampled, if any.
+func (w windowState) observe(reading *domain.Window, at time.Time) (next windowState, news bool, sampled *domain.Window) {
+	if reading == nil {
+		if w.standsUnreported(at) {
+			return w, false, nil
+		}
+		next = windowState{length: w.length}
+		next.samples, sampled = sampleWindow(w.samples, nil, at)
+		return next, w.held != nil || sampled != nil, sampled
+	}
+	if !w.takes(reading, at) {
+		return w, false, nil
+	}
+	next = w
+	next.held = cloneWindow(reading)
+	if !sameWindow(w.held, reading) {
+		next.reading = heldReading{takenAt: at}
+	}
+	next.samples, sampled = sampleWindow(w.samples, reading, at)
+	return next, true, sampled
+}
+
+// standsUnreported reports whether the window held stays when a line
+// observed at at leaves it out. Claude Code drops a window from the line once
+// it resets, so only one whose reset is known and still to come does: the
+// session behind the line may not have learned of it yet.
+func (w windowState) standsUnreported(at time.Time) bool {
+	return w.held != nil && w.held.ResetsAt.After(at)
+}
+
+// takes reports whether reading, from a line observed at at, is news of the
+// window. Each session's line carries the limits of that session's own last
+// response, so an idle session goes on reporting an older reading while a
+// busy one reports the current one, and within one window usage never goes
+// down. So, unless the window held has reset by at, a reading of the same
+// window, told by its reset time, is news unless it is lower; one with a
+// later reset is of a window begun since, and one with an earlier reset of a
+// window gone by. Without both reset times, a lower reading is news only once
+// the one held was first taken longer ago than the window lasts, by when the
+// window has reset.
+func (w windowState) takes(reading *domain.Window, at time.Time) bool {
+	held := unexpired(w.held, at)
+	if held == nil {
+		return true
+	}
+	if held.ResetsAt.IsZero() || reading.ResetsAt.IsZero() {
+		return reading.UsedPct >= held.UsedPct || at.Sub(w.reading.takenAt) > w.length
+	}
+	if !reading.ResetsAt.Equal(held.ResetsAt) {
+		return reading.ResetsAt.After(held.ResetsAt)
+	}
+	return reading.UsedPct >= held.UsedPct
 }
 
 // sampleWindow adds the sample a line at at gives of a window, w being nil

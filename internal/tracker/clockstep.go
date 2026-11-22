@@ -66,12 +66,16 @@ func (t *Tracker) rebase(d time.Duration) {
 	t.alerts.shift(d)
 }
 
-// shift moves the times the account was probed and observed at, and the
-// times of the calls and report its credits are worked out from, by d. Reset
-// times stay as they are: Claude Code reports them from the service's clock.
+// shift moves the times the account was probed and observed at, those its
+// windows' readings were taken at, and the times of the calls and report its
+// credits are worked out from, by d. Reset times stay as they are: Claude
+// Code reports them from the service's clock.
 func (a *accountEntry) shift(d time.Duration) {
 	a.account.ProbedAt = shifted(a.account.ProbedAt, d)
 	a.account.Limits.ObservedAt = shifted(a.account.Limits.ObservedAt, d)
+	for _, r := range []*heldReading{&a.readings.FiveHour, &a.readings.SevenDay} {
+		r.takenAt = shifted(r.takenAt, d)
+	}
 	for _, samples := range [][]domain.Sample{a.samples.FiveHour, a.samples.SevenDay} {
 		for i := range samples {
 			samples[i].At = samples[i].At.Add(d)
