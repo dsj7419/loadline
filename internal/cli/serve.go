@@ -145,7 +145,8 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		return failToStart(err)
 	}
 	// Before the log and the history are written there.
-	if err := datadir.Secure(o.Paths.DataDir, trust); err != nil {
+	relaxed, err := secureServedDataDir(o.Paths.DataDir, trust, o.Demo)
+	if err != nil {
 		return failToStart(err)
 	}
 
@@ -165,8 +166,28 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	}
 	defer func() { _ = logs.Close() }()
 
-	s := newInstance(ctx, o, cfg, port, token, slog.New(slog.NewTextHandler(logs, nil)))
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	if relaxed != nil {
+		log.Warn("data directory check relaxed for the demo", "problem", relaxed)
+	}
+	s := newInstance(ctx, o, cfg, port, token, log)
 	return s.run(ctx, listener)
+}
+
+// secureServedDataDir prepares the data directory as datadir.Secure does.
+// A demo holds no real data, takes no events, installs no binary, and no
+// hook runs anything from its data directory, so for a demo the check that
+// nobody else can move the directory aside only reports, as relaxed, what it
+// would refuse, for the log: the directory is still made private, with
+// nothing in it but Loadline's own files and no link among them.
+func secureServedDataDir(dir, trustFrom string, demoMode bool) (relaxed, err error) {
+	if !demoMode {
+		return nil, datadir.Secure(dir, trustFrom)
+	}
+	if err := datadir.Make(dir); err != nil {
+		return nil, err
+	}
+	return datadir.Verify(dir, trustFrom), nil
 }
 
 // listenAddress is where the server listens: the IPv4 loopback address,
