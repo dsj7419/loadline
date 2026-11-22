@@ -82,15 +82,17 @@ const notifyingKinds: ReadonlySet<AlertKind> = new Set<AlertKind>(['needs_you', 
 /**
  * Notifies once for each needs-you or runs-out alert that is new since the
  * previous update. An alert that persists is not new; one that clears and
- * comes back is, because it comes back with a new since. Alerts that were
- * already showing when notifications were turned on never notify.
+ * comes back is, because it comes back with a new since. The first update is
+ * the baseline: alerts already showing when the page loads, or when
+ * notifications are turned on, never notify.
  *
  * It starts on only when the user turned it on before and the browser still
  * allows notifications; it never asks the browser by itself.
  */
 export function createNotifier(api: NotificationApi, optIn: OptInStore): Notifier {
   const state = signal<NotifierState>(initialState(api.permission(), optIn.load()));
-  let known: ReadonlySet<string> = new Set();
+  // Null until the first update, which only records what is showing.
+  let known: ReadonlySet<string> | null = null;
 
   return {
     state,
@@ -115,7 +117,7 @@ export function createNotifier(api: NotificationApi, optIn: OptInStore): Notifie
         }
         const key = keyOf(alert);
         current.add(key);
-        if (state.value === 'on' && !known.has(key)) {
+        if (state.value === 'on' && known !== null && !known.has(key)) {
           api.show('Loadline', alert.message, key);
         }
       }

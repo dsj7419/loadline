@@ -19,9 +19,10 @@ type SessionRowProps = {
  * row reads the page's clock, so its time in state counts up between views.
  *
  * The button covers the whole row but holds only the session's name and
- * account, and is named by its state, name and account. The figures beside
- * it are plain text: they tick every second, and a button named by them
- * would be announced afresh each time.
+ * account, and is named by its state, name and account. It is described by
+ * its model when that is known; a bare dash is not worth announcing. The
+ * figures beside it are plain text: they tick every second, and a button
+ * named by them would be announced afresh each time.
  */
 export function SessionRow({ session, now, onOpen }: SessionRowProps) {
   const stateId = useId();
@@ -39,7 +40,7 @@ export function SessionRow({ session, now, onOpen }: SessionRowProps) {
         class="row-name row-open"
         aria-haspopup="dialog"
         aria-labelledby={`${stateId} ${nameId} ${accountId}`}
-        aria-describedby={modelId}
+        aria-describedby={session.model !== '' ? modelId : undefined}
         data-session={session.id}
         onClick={() => onOpen(session.id)}
       >
@@ -52,7 +53,12 @@ export function SessionRow({ session, now, onOpen }: SessionRowProps) {
       </button>
       <span id={modelId} class="row-model">
         {session.model !== '' ? modelLabel(session.model) : '—'}
-        {session.effort !== '' && <span class="effort"> · {session.effort}</span>}
+        {session.effort !== '' && (
+          <>
+            {' '}
+            <span class="effort">· {session.effort}</span>
+          </>
+        )}
       </span>
       <span class="row-context">
         <ContextBar pct={session.contextPct} left={session.contextLeft} />

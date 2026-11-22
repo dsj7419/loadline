@@ -140,23 +140,31 @@ function largestUnit(ms: number): string {
 }
 
 /**
- * When something happened, as a local clock time: 17:14 today, Fri 23:59
- * within a week either side, Nov 14 18:00 further off, and Dec 31 2025 23:00
- * in another year.
+ * When something happened, as a local clock time: 17:14 today, Fri 23:59 on
+ * the six days either side, Nov 14 18:00 further off, and Dec 31 2025 23:00
+ * in another year. A weekday alone never names the same weekday as today.
  */
 export function formatWhen(iso: string, now: Date): string {
   if (!isTimestamp(iso) || Number.isNaN(now.getTime())) {
     return dash;
   }
   const at = new Date(iso);
-  if (at.toDateString() === now.toDateString()) {
+  const days = Math.abs(calendarDaysBetween(at, now));
+  if (days === 0) {
     return clockTime(at);
   }
-  if (Math.abs(at.getTime() - now.getTime()) < 7 * day) {
+  if (days < 7) {
     return `${nameOf(at, { weekday: 'short' })} ${clockTime(at)}`;
   }
   const year = at.getFullYear() === now.getFullYear() ? '' : ` ${at.getFullYear()}`;
   return `${nameOf(at, { month: 'short' })} ${at.getDate()}${year} ${clockTime(at)}`;
+}
+
+// How many local calendar days separate a from b. Rounding absorbs the
+// 23- and 25-hour days that daylight saving makes.
+function calendarDaysBetween(a: Date, b: Date): number {
+  const midnight = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((midnight(b) - midnight(a)) / day);
 }
 
 // A weekday or month name in English, in the viewer's time zone.

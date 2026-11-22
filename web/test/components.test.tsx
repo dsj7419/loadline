@@ -391,6 +391,16 @@ describe('SessionRow', () => {
     }
   });
 
+  it('describes the row by its model', () => {
+    renderRow({ model: 'Opus 5.5', effort: 'xhigh' });
+    expect(screen.getByRole('button', { description: 'Opus 5.5 · xhigh' })).toBeTruthy();
+  });
+
+  it('gives no description when the model is unknown', () => {
+    renderRow({ model: '', effort: '' });
+    expect(screen.getByRole('button', { description: '' })).toBeTruthy();
+  });
+
   it('leaves out subagents and share when there are none', () => {
     const { row } = renderRow({ subagents: 0, share: 0 });
     expect(row.textContent).not.toMatch(/subagent/);
@@ -548,6 +558,8 @@ describe('createNotifier', () => {
     await notifier.toggle();
     expect(notifier.state.value).toBe('on');
 
+    // The page's first view, with nothing showing yet.
+    notifier.update([]);
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, weekly]);
     notifier.update([needsYou, runsOut, weekly]);
@@ -580,6 +592,26 @@ describe('createNotifier', () => {
     await notifier.toggle();
     expect(notifier.state.value).toBe('blocked');
     expect(createNotifier(fakeNotifications('denied').api, memoryOptIn(true).store).state.value).toBe('blocked');
+  });
+
+  it('never notifies of the alerts in the first view, even when turned on before it', async () => {
+    const notifications = fakeNotifications('granted');
+    const notifier = createNotifier(notifications.api, memoryOptIn().store);
+    await notifier.toggle();
+
+    notifier.update([needsYou, runsOut]);
+    expect(notifications.shown).toEqual([]);
+  });
+
+  it('stays quiet about the alerts showing when it comes back on, and notifies of later ones', () => {
+    const notifications = fakeNotifications('granted');
+    const notifier = createNotifier(notifications.api, memoryOptIn(true).store);
+    expect(notifier.state.value).toBe('on');
+
+    notifier.update([needsYou]);
+    expect(notifications.shown).toEqual([]);
+    notifier.update([needsYou, runsOut]);
+    expect(notifications.shown).toEqual([runsOut.message]);
   });
 
   it('comes back on when the user turned it on before and the browser still allows it', () => {

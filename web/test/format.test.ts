@@ -200,6 +200,11 @@ describe('formatWhen', () => {
     ['2026-11-20T23:59:00Z', 'Fri 23:59'],
     ['2026-11-15T09:05:00Z', 'Sun 09:05'],
     ['2026-11-14T18:00:00Z', 'Nov 14 18:00'],
+    // Under 7 days ago, but on the same weekday as today: the weekday alone
+    // would read as today.
+    ['2026-11-14T18:30:00Z', 'Nov 14 18:30'],
+    ['2026-11-27T23:59:00Z', 'Fri 23:59'],
+    ['2026-11-28T00:30:00Z', 'Nov 28 00:30'],
     ['2026-11-02T08:30:00Z', 'Nov 2 08:30'],
     ['2025-12-31T23:00:00Z', 'Dec 31 2025 23:00'],
   ])('shows %s as %s', (iso, want) => {
