@@ -1,0 +1,29 @@
+{
+  "name": "loadline-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Loadline dashboard, built into internal/web/dist and embedded in the binary.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.4",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}

@@ -1,0 +1,43 @@
+/* Design tokens. Dark is the default; the light theme keeps each color's role
+   and holds text and status colors to at least 4.5:1 on every surface. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0b0d10;
+  --panel: #13161b;
+  --panel2: #181c22;
+  --line: #232830;
+  --text: #e8eaed;
+  --muted: #8a919c;
+  --faint: #5b626d;
+  --accent: #fb6a1c;
+  --accent2: #ff9a52;
+  --ok: #3ccf8e;
+  --warn: #f5b83d;
+  --bad: #ff5468;
+  --blue: #5aa9ff;
+
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel2: #eef0f3;
+    --line: #dcdfe4;
+    --text: #15181d;
+    --muted: #59606b;
+    --faint: #858c97;
+    --accent: #b54707;
+    --accent2: #d0581a;
+    --ok: #0d7550;
+    --warn: #8a5a00;
+    --bad: #bf2238;
+    --blue: #1a62bd;
+  }
+}

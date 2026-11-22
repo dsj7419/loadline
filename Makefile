@@ -9,10 +9,7 @@ RACE ?= -race
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/dsj7419/loadline/internal/cli.Version=$(VERSION)
 
-EXE :=
-ifeq ($(OS),Windows_NT)
-EXE := .exe
-endif
+EXE := $(shell go env GOEXE)
 
 .DEFAULT_GOAL := build
 .PHONY: test lint vuln web build check
@@ -28,18 +25,15 @@ vuln:
 
 # The UI bundle is committed under internal/web/dist, so this only needs to run
 # after the sources under web/ change.
-ifneq ($(wildcard web/package.json),)
 web:
-	npm --prefix web ci
-	npm --prefix web run build
-else
-web:
-	@echo "web/package.json not found: nothing to build"
-endif
+	cd web && npm ci && npm run build
 
 # The shipped binary is static, so cgo stays off here but not for `test`.
 build: export CGO_ENABLED = 0
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/loadline$(EXE) ./cmd/loadline
 
+# check runs its steps one at a time, in order, even under -j: test and build
+# embed the bundle, so they must not start before web has rebuilt it.
+.NOTPARALLEL: check
 check: web test lint vuln build
