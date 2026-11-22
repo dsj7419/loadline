@@ -3,11 +3,13 @@ package install_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +182,66 @@ func TestApply_RefusesMissingDirectory(t *testing.T) {
 	}
 }
 
+// One second holds up to a hundred backups: <stamp>.bak, then <stamp>-2.bak
+// to <stamp>-100.bak. The hundredth is one of Apply's own, kept and pruned
+// like the rest, and there is no hundred and first.
+func TestApply_MakesUpToAHundredBackupsInOneSecond(t *testing.T) {
+	const stamp = ".loadline-20261121-093005"
+	original := []byte(`{"model": "opus"}`)
+	settingsWithBackups := func(t *testing.T, backups int) (dir, path string) {
+		t.Helper()
+		dir = t.TempDir()
+		path = filepath.Join(dir, "settings.json")
+		writeFile(t, path, original)
+		writeFile(t, path+stamp+".bak", original)
+		for n := 2; n <= backups; n++ {
+			writeFile(t, fmt.Sprintf("%s%s-%d.bak", path, stamp, n), original)
+		}
+		return dir, path
+	}
+
+	// Apply takes milliseconds here. A search for a free name that never
+	// ended would hold the suite until its timeout.
+	apply := func(path string) (backup string, err error) {
+		within(10*time.Second, "Apply", func() { backup, err = install.Apply(path, original, []byte(`{}`), applyTime) })
+		return backup, err
+	}
+
+	t.Run("the hundredth", func(t *testing.T) {
+		dir, path := settingsWithBackups(t, 99)
+
+		backup, err := apply(path)
+		if err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if want := path + stamp + "-100.bak"; backup != want {
+			t.Errorf("backup = %s, want %s", backup, want)
+		}
+		want := []string{
+			"settings.json",
+			"settings.json" + stamp + "-100.bak",
+			"settings.json" + stamp + "-98.bak",
+			"settings.json" + stamp + "-99.bak",
+		}
+		if got := dirEntries(t, dir); !slices.Equal(got, want) {
+			t.Errorf("dir holds %q, want %q: the new backup and the two newest others", got, want)
+		}
+	})
+	t.Run("a hundred and first", func(t *testing.T) {
+		_, path := settingsWithBackups(t, 100)
+
+		_, err := apply(path)
+
+		if err == nil || !strings.Contains(err.Error(), "100 backups") {
+			t.Errorf("Apply = %v, want it to refuse a hundred and first backup", err)
+		}
+		if got := readFile(t, path); !bytes.Equal(got, original) {
+			t.Errorf("settings hold %s, want them left as they were", got)
+		}
+	})
+}
+
 func TestApply_KeepsEarlierBackupFromTheSameSecond(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
@@ -281,7 +343,7 @@ func TestApply_RefusesAnEditJustBeforeTheRename(t *testing.T) {
 }
 
 // A temporary file that a crashed Apply left behind can hold the token, so
-// the next Apply removes those older than an hour. Newer ones may belong to
+// the next Apply removes those an hour old or older. Newer ones may belong to
 // an Apply still running, and other files are not Loadline's.
 func TestApply_RemovesItsOwnOldLeftovers(t *testing.T) {
 	dir := t.TempDir()
@@ -291,6 +353,7 @@ func TestApply_RemovesItsOwnOldLeftovers(t *testing.T) {
 	leftovers := map[string]time.Duration{
 		".settings.json.loadline-1111.tmp": 2 * time.Hour,
 		".settings.json.loadline-2222.tmp": 10 * time.Minute,
+		".settings.json.loadline-5555.tmp": time.Hour,
 		".other.json.loadline-3333.tmp":    2 * time.Hour,
 		"settings.json.loadline-4444.tmp":  2 * time.Hour,
 	}
