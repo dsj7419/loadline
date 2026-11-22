@@ -27,8 +27,9 @@ type Browser struct {
 	// executable.
 	Pref string
 	// AppWindow opens the dashboard in a Chromium app window, which has no
-	// tabs or address bar. Firefox and the system default ignore it; a path
-	// given with it must be a Chromium-family browser's.
+	// tabs or address bar. Firefox, by name or by a path to its firefox
+	// executable, and the system default ignore it; any other path given
+	// with it must be a Chromium-family browser's.
 	AppWindow bool
 }
 
@@ -39,6 +40,9 @@ type Browser struct {
 // a shell, which would act on the & in it.
 func Command(url string, b Browser, find func(name string) (string, bool)) (name string, args []string, err error) {
 	if filepath.IsAbs(b.Pref) {
+		if isFirefox(b.Pref) {
+			return b.Pref, []string{url}, nil
+		}
 		return b.Pref, chromiumArgs(url, b.AppWindow), nil
 	}
 	pref := strings.ToLower(b.Pref)
@@ -60,6 +64,13 @@ func Command(url string, b Browser, find func(name string) (string, bool)) (name
 	}
 	name, args = autoCommand(url)
 	return name, args, nil
+}
+
+// isFirefox reports whether path names a firefox executable, as a portable
+// or Scoop install does: Firefox has no app mode, and AppWindow is on by
+// default.
+func isFirefox(path string) bool {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(path)), ".exe") == firefox
 }
 
 func chromiumArgs(url string, appWindow bool) []string {

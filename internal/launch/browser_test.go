@@ -103,6 +103,21 @@ func TestCommand_AbsolutePath(t *testing.T) {
 	assertCommand(t, tab, command{name: path, args: []string{dashboardURL}})
 }
 
+// Firefox has no app mode, and AppWindow is on by default, so a Firefox
+// given by path, as a portable or Scoop install is, must never get --app=.
+func TestCommand_FirefoxByPathHasNoAppWindow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Mozilla Firefox")
+	for _, base := range []string{"firefox.exe", "FireFox.EXE", "firefox"} {
+		t.Run(base, func(t *testing.T) {
+			path := filepath.Join(dir, base)
+
+			got := commandFor(t, launch.Browser{Pref: path, AppWindow: true}, nothingInstalled)
+
+			assertCommand(t, got, command{name: path, args: []string{dashboardURL}})
+		})
+	}
+}
+
 func TestCommand_ChromiumMissingFallsBackToAuto(t *testing.T) {
 	name, args := autoCommand(dashboardURL)
 	for _, pref := range []string{"brave", "chrome", "edge", "firefox"} {
