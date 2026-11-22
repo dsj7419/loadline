@@ -13,7 +13,8 @@ import (
 
 	// The pure-Go SQLite driver, registered as "sqlite": the binary stays
 	// free of cgo.
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -23,13 +24,54 @@ import (
 // number the tracker keeps.
 const maxTimeline = 50
 
-// connOptions configure every connection: write-ahead logging, so that a
-// reader never waits on the writer, with the syncs it needs to survive a
-// crash of the process, though a power cut may undo the last commits; up to
-// 5 s of waiting for another process's write lock; foreign keys enforced;
-// and write transactions that take the write lock as they begin, so that
-// one never fails partway for want of it.
-const connOptions = "?_txlock=immediate&_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=1&_synchronous=NORMAL"
+// connOptions configure every connection: up to busyTimeout of waiting for
+// another connection's lock; the syncs that write-ahead logging needs to
+// survive a crash of the process, though a power cut may undo the last
+// commits; foreign keys enforced; and write transactions that take the
+// write lock as they begin, so that one never fails partway for want of it.
+// Write-ahead logging itself is a property of the file, which migrate sets.
+const connOptions = "?_txlock=immediate&_busy_timeout=5000&_foreign_keys=1&_synchronous=NORMAL"
+
+const (
+	// busyTimeout is connOptions' _busy_timeout.
+	busyTimeout = 5 * time.Second
+	// busyRetryEvery spaces the tries of what SQLite will not wait for.
+	busyRetryEvery = 10 * time.Millisecond
+)
+
+const useWALSQL = `PRAGMA journal_mode = WAL`
+
+// useWAL turns the database to write-ahead logging, so that a reader never
+// waits on the writer. The switch needs the database to itself and, unlike
+// SQLite's other locks, does not wait for it under the busy timeout: a
+// switch that finds another connection at the database, as one opening it
+// at the same moment is, is tried again until busyTimeout has passed. A
+// file system that cannot hold the log leaves the database in the mode it
+// had, which works as well, only with more waiting.
+func useWAL(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(busyTimeout)
+	for {
+		var mode string
+		err := db.QueryRowContext(ctx, useWALSQL).Scan(&mode)
+		if err == nil {
+			return nil
+		}
+		if !isBusy(err) || !time.Now().Before(deadline) {
+			return fmt.Errorf("switch to write-ahead logging: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("switch to write-ahead logging: %w", ctx.Err())
+		case <-time.After(busyRetryEvery):
+		}
+	}
+}
+
+// isBusy reports whether err is SQLite's SQLITE_BUSY, in any of its forms.
+func isBusy(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && e.Code()&0xff == sqlite3.SQLITE_BUSY
+}
 
 // SQLite is the history database. It is safe for concurrent use: it holds
 // one connection, which its calls take turns on.

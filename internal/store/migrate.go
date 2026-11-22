@@ -89,11 +89,13 @@ var migrations = []string{
 
 const readVersionSQL = `PRAGMA user_version`
 
-// migrate brings db's schema up to date, applying each step it lacks in a
+// migrate brings db's file and schema up to date: it turns the database to
+// write-ahead logging, and applies each step of the schema it lacks in a
 // transaction of its own. It refuses a database a newer Loadline migrated
-// further, before it changes anything. Another process may migrate the same
-// database at once: each step reads the version again once it holds the
-// write lock, and skips what the other applied.
+// further before it changes anything, the file's journal mode included.
+// Another process may migrate the same database at once: each step reads
+// the version again once it holds the write lock, and skips what the other
+// applied.
 func migrate(ctx context.Context, db *sql.DB) error {
 	version, err := schemaVersion(ctx, db)
 	if err != nil {
@@ -101,6 +103,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if version > len(migrations) {
 		return fmt.Errorf("%w: its schema is version %d, and this one knows up to %d", ErrNewerSchema, version, len(migrations))
+	}
+	if err := useWAL(ctx, db); err != nil {
+		return err
 	}
 	for i := version; i < len(migrations); i++ {
 		if err := applyStep(ctx, db, i+1); err != nil {

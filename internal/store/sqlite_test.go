@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,6 +501,60 @@ func TestOpen_RefusesANewerSchema(t *testing.T) {
 	}
 	if tables != 0 {
 		t.Errorf("the refused open created %d schema objects, want none", tables)
+	}
+}
+
+// Not a byte of it changes, its journal mode included: the newer Loadline
+// may rely on the mode it chose.
+func TestOpen_LeavesANewerDatabaseAsItIs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loadline.db")
+	db := rawDB(t, path)
+	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode = DELETE; CREATE TABLE future (x); PRAGMA user_version = 7"); err != nil {
+		t.Fatal(err)
+	}
+	must(t, db.Close())
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s, err := store.Open(t.Context(), path); !errors.Is(err, store.ErrNewerSchema) {
+		if err == nil {
+			_ = s.Close()
+		}
+		t.Fatalf("Open = %v, want ErrNewerSchema", err)
+	}
+
+	if after, err := os.ReadFile(path); err != nil || string(after) != string(before) {
+		t.Errorf("the refused open changed the database file (%v)", err)
+	}
+	if _, err := os.Stat(path + "-wal"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused open left a write-ahead log beside the database (%v)", err)
+	}
+}
+
+// Two servers on different ports, or a server and a doctor, may open one new
+// database at the same moment.
+func TestOpen_ManyAtOnceOnANewDatabase(t *testing.T) {
+	for round := range 20 {
+		path := filepath.Join(t.TempDir(), "loadline.db")
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		for i := range errs {
+			wg.Go(func() {
+				s, err := store.Open(context.Background(), path)
+				if err == nil {
+					err = s.Close()
+				}
+				errs[i] = err
+			})
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("round %d: open %d: %v", round, i, err)
+			}
+		}
 	}
 }
 
