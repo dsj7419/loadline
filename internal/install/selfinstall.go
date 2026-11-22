@@ -40,7 +40,8 @@ func installTarget(dataDir string) string {
 // Windows will not replace an executable that is running, as the installed
 // one is whenever a hook or the server is, but it will rename one, so then
 // the running binary is moved aside to loadline.exe.old, replacing any older
-// one, and the rename is tried again.
+// one, or to the first free loadline.exe.old-<n> when the older one is still
+// running too, and the rename is tried again.
 func SelfInstall(src, dataDir string) (string, error) {
 	target := installTarget(dataDir)
 	same, err := sameContent(src, target)
@@ -63,6 +64,22 @@ func SelfInstall(src, dataDir string) (string, error) {
 		return "", err
 	}
 	return filepath.ToSlash(target), nil
+}
+
+// PlanSelfInstall reports what SelfInstall would change, writing nothing: it
+// adds the binary when there is none, updates it when it differs from src,
+// and leaves an identical one alone.
+func PlanSelfInstall(src, dataDir string) ([]Change, error) {
+	target := installTarget(dataDir)
+	same, err := sameContent(src, target)
+	if err != nil || same {
+		return nil, err
+	}
+	action := ActionUpdate
+	if _, err := os.Stat(target); errors.Is(err, fs.ErrNotExist) {
+		action = ActionAdd
+	}
+	return []Change{{Path: "bin/" + filepath.Base(target), Action: action, Detail: "copy of " + src}}, nil
 }
 
 // sameContent reports whether the file at target holds what src holds. A
@@ -143,8 +160,8 @@ func replaceFile(temp, target string) error {
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 
-	aside := target + ".old"
-	if asideErr := os.Rename(target, aside); asideErr != nil {
+	aside, asideErr := moveAside(target)
+	if asideErr != nil {
 		return fmt.Errorf("install %s: %w", target, errors.Join(err, asideErr))
 	}
 	if err := os.Rename(temp, target); err != nil {
@@ -153,4 +170,29 @@ func replaceFile(temp, target string) error {
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 	return nil
+}
+
+// maxAsideNames bounds the search for a free name to move a binary aside to.
+const maxAsideNames = 100
+
+// moveAside renames target to target.old, replacing an older one, and when
+// that older one is running too, to the first name target.old-<n> not yet
+// taken. It returns the new name.
+func moveAside(target string) (string, error) {
+	aside := target + ".old"
+	err := os.Rename(target, aside)
+	if err == nil {
+		return aside, nil
+	}
+	for n := 1; n <= maxAsideNames; n++ {
+		candidate := fmt.Sprintf("%s.old-%d", target, n)
+		if _, statErr := os.Lstat(candidate); !errors.Is(statErr, fs.ErrNotExist) {
+			continue
+		}
+		if renameErr := os.Rename(target, candidate); renameErr != nil {
+			return "", errors.Join(err, renameErr)
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("%w; %s.old-1 to -%d are taken too", err, target, maxAsideNames)
 }

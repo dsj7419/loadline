@@ -138,10 +138,19 @@ func decodeStrict(data []byte, cfg *Config) error {
 	return nil
 }
 
+// ValidatePort reports whether port can be the dashboard's port: one outside
+// the privileged range.
+func ValidatePort(port int) error {
+	if port < minPort || port > maxPort {
+		return fmt.Errorf("port %d is outside %d-%d", port, minPort, maxPort)
+	}
+	return nil
+}
+
 // validate reports the first setting that is out of range, naming its key.
 func (c Config) validate() error {
-	if c.Port < minPort || c.Port > maxPort {
-		return fmt.Errorf("port %d is outside %d-%d", c.Port, minPort, maxPort)
+	if err := ValidatePort(c.Port); err != nil {
+		return err
 	}
 	if !slices.Contains(openModes, c.OpenOnStart) {
 		return fmt.Errorf("openOnStart %q is not one of %q, %q or %q",

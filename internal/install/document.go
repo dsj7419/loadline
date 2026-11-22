@@ -57,8 +57,12 @@ func parseDocument(data []byte) (*document, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("%w: it is not valid JSON", ErrInvalidSettings)
 	}
-	if !gjson.ParseBytes(body).IsObject() {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
 		return nil, fmt.Errorf("%w: it must hold a JSON object", ErrInvalidSettings)
+	}
+	if err := checkUniqueKeys(root, ""); err != nil {
+		return nil, err
 	}
 
 	d := &document{
@@ -67,14 +71,54 @@ func parseDocument(data []byte) (*document, error) {
 		newline: detectNewline(body),
 		indent:  detectIndent(body),
 	}
-	root, err := d.container("")
+	top, err := d.container("")
 	if err != nil {
 		return nil, err
 	}
 	// An empty object gives no layout to follow, so it is formatted the way
 	// Claude Code would format it.
-	d.oneLine = len(root.items) > 0 && !bytes.ContainsRune(d.body[root.open:root.end], '\n')
+	d.oneLine = len(top.items) > 0 && !bytes.ContainsRune(d.body[top.open:top.end], '\n')
 	return d, nil
+}
+
+// checkUniqueKeys refuses an object anywhere in value that has a key twice.
+// Claude Code would read the last one, but a JSON path finds the first, so an
+// edit would change the copy Claude Code ignores, and an uninstall could
+// remove the hooks it runs.
+func checkUniqueKeys(value gjson.Result, path string) error {
+	var err error
+	switch {
+	case value.IsObject():
+		seen := map[string]bool{}
+		value.ForEach(func(key, member gjson.Result) bool {
+			if seen[key.Str] {
+				where := path
+				if where == "" {
+					where = "the top level"
+				}
+				err = fmt.Errorf("%w: %s has the key %q more than once, and Claude Code reads only the last",
+					ErrInvalidSettings, where, key.Str)
+				return false
+			}
+			seen[key.Str] = true
+			err = checkUniqueKeys(member, joinPath(path, key.Str))
+			return err == nil
+		})
+	case value.IsArray():
+		for i, element := range value.Array() {
+			if err = checkUniqueKeys(element, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				break
+			}
+		}
+	}
+	return err
+}
+
+func joinPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 func detectNewline(body []byte) string {
@@ -268,19 +312,19 @@ func (d *document) lineIndent(offset int) string {
 	return string(d.body[start:end])
 }
 
-// removeMember deletes every member named key from the object at path.
+// removeMember deletes the member named key from the object at path. Keys
+// are unique, as parseDocument checks.
 func (d *document) removeMember(path, key string) error {
-	for {
-		c, err := d.container(path)
-		if err != nil {
-			return err
-		}
-		i := slices.IndexFunc(c.items, func(it item) bool { return it.key == key })
-		if i < 0 {
-			return nil
-		}
-		d.removeAt(c, i)
+	c, err := d.container(path)
+	if err != nil {
+		return err
 	}
+	i := slices.IndexFunc(c.items, func(it item) bool { return it.key == key })
+	if i < 0 {
+		return fmt.Errorf("remove %s.%s: there is no such member", path, key)
+	}
+	d.removeAt(c, i)
+	return nil
 }
 
 // removeElement deletes the element at index from the array at path.
@@ -327,18 +371,23 @@ func encodeJSON(v any) ([]byte, error) {
 }
 
 // jsonString returns the JSON string literal for s, which must be valid
-// UTF-8, escaping only what JSON requires.
+// UTF-8, encoded as JSON.stringify encodes it, which is how Claude Code
+// writes the file.
 func jsonString(s string) string {
 	return `"` + escapeJSON(s) + `"`
+}
+
+var shortEscapes = map[rune]string{
+	'"': `\"`, '\\': `\\`, '\b': `\b`, '\f': `\f`, '\n': `\n`, '\r': `\r`, '\t': `\t`,
 }
 
 func escapeJSON(s string) string {
 	var b strings.Builder
 	for _, r := range s {
+		escape, short := shortEscapes[r]
 		switch {
-		case r == '"' || r == '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
+		case short:
+			b.WriteString(escape)
 		case r < 0x20:
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:

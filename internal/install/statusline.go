@@ -1,6 +1,7 @@
 package install
 
 import (
+	"encoding/base64"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,22 +11,36 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// The pieces of the status-line commands install writes. The user's own
-// command stays in the settings file behind the tap prefix, so anything else
-// that reads the same file gets the same status line.
+// The status-line commands install writes. The user's own command stays in
+// the settings file behind the tap prefix, so anything else that reads the
+// same file gets the same status line.
 //
-//	bash:       "<exe>" tap | <original>
-//	PowerShell: & "<exe>" tap --run '<original, single quotes doubled>'
-//	no status line of the user's own: "<exe>" tap --print (with & in PowerShell)
+//	bash, a plain command: "<exe>" tap | <original>
+//	bash, anything else:   "<exe>" tap | { <original>
+//	                       }
+//	PowerShell:            & "<exe>" tap --run-b64 '<original as unpadded base64url>'
+//	no status line of the user's own: "<exe>" tap --print, after & in PowerShell
 //
-// PowerShell would hand the JSON on stdin to the original command
-// re-encoded if it were piped, so there tap runs the command itself.
+// The group keeps the meaning of a list, a script of several lines or a
+// command that starts with a reserved word: the pipe feeds all of it, as the
+// status-line JSON fed all of the original. The closing brace goes on a line
+// of its own so a trailing comment or here-document cannot swallow it.
+// PowerShell gets the original out of band, because it would re-encode JSON
+// piped between commands and its quoting of native arguments differs between
+// versions; tap decodes the original and runs it.
 const (
 	powerShellCall = "& "
-	pipeSuffix     = " tap | "
-	runSuffix      = " tap --run '"
+	tapPipe        = " tap | "
+	groupOpen      = "{ "
+	groupClose     = "\n}"
+	runB64Open     = " tap --run-b64 '"
+	runB64Close    = "'"
 	printSuffix    = " tap --print"
 )
+
+// reservedWords start a compound command. After a pipe, some of them, such
+// as time and !, mean something else or nothing at all.
+var reservedWords = []string{"time", "!", "if", "for", "while", "until", "case", "select", "function", "coproc", "{", "[["}
 
 // tapCommand is a status-line command that runs through loadline tap.
 type tapCommand struct {
@@ -37,7 +52,7 @@ type tapCommand struct {
 }
 
 // char is one character of a JSON string literal together with the bytes
-// that encode it there. Moving a user's command in and out of the tap prefix
+// that encode it there. Moving a user's command in and out of the bash forms
 // character by character keeps whatever escapes the file used, so reverting
 // restores the original bytes.
 type char struct {
@@ -45,103 +60,153 @@ type char struct {
 	r   rune
 }
 
-// literal returns the command as a JSON string literal, for shell.
-func (t tapCommand) literal(exe string, shell Shell) string {
+// tapMatch says how a status-line command relates to Loadline.
+type tapMatch uint8
+
+const (
+	// foreign commands do not start with Loadline.
+	foreign tapMatch = iota
+	// tapped commands are in one of the forms install writes.
+	tapped
+	// edited commands start with Loadline but in no form install writes,
+	// most likely because one was changed by hand. Loadline leaves them
+	// alone rather than guess.
+	edited
+)
+
+// literal returns the command for shell as a JSON string literal. It
+// reports false for an original that ends in an unescaped backslash, which
+// would join the group's closing line to it.
+func (t tapCommand) literal(exe string, shell Shell) (string, bool) {
 	launcher := `"` + exe + `"`
 	if shell == ShellPowerShell {
 		launcher = powerShellCall + launcher
 	}
+	original := text(t.original)
 
-	var b strings.Builder
-	b.WriteByte('"')
+	var body string
 	switch {
 	case t.print:
-		b.WriteString(escapeJSON(launcher + printSuffix))
+		body = escapeJSON(launcher + printSuffix)
 	case shell == ShellPowerShell:
-		b.WriteString(escapeJSON(launcher + runSuffix))
-		for _, c := range t.original {
-			b.WriteString(c.raw)
-			if isPowerShellQuote(c.r) {
-				b.WriteString(c.raw)
-			}
-		}
-		b.WriteByte('\'')
+		body = escapeJSON(launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close)
+	case isPlainCommand(original):
+		body = escapeJSON(launcher+tapPipe) + raw(t.original)
+	case endsInEscape(original):
+		return "", false
 	default:
-		b.WriteString(escapeJSON(launcher + pipeSuffix))
-		b.WriteString(raw(t.original))
+		body = escapeJSON(launcher+tapPipe+groupOpen) + raw(t.original) + escapeJSON(groupClose)
 	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + body + `"`, true
 }
 
-// originalLiteral returns the user's own command as the JSON string literal
-// it was before install.
+// originalLiteral returns the user's own command as a JSON string literal:
+// the bytes it had before install, in the bash forms.
 func (t tapCommand) originalLiteral() string {
 	return `"` + raw(t.original) + `"`
 }
 
-// parseTapCommand recognizes a status-line command, given as its JSON string
-// literal, that runs Loadline's tap in any of the forms install writes, for
-// any Loadline path or exe.
-func parseTapCommand(literal, exe string) (tapCommand, bool) {
-	chars := splitString(literal)
-	rest, powerShell := cutText(chars, powerShellCall+`"`)
-	if !powerShell {
-		var quoted bool
-		if rest, quoted = cutText(chars, `"`); !quoted {
-			return tapCommand{}, false
-		}
-	}
-	end := slices.IndexFunc(rest, func(c char) bool { return c.r == '"' })
-	if end < 0 || !isLoadlinePath(text(rest[:end]), exe) {
-		return tapCommand{}, false
-	}
-	rest = rest[end+1:]
-
-	if text(rest) == printSuffix {
-		return tapCommand{print: true}, true
-	}
-	if powerShell {
-		quoted, ok := cutText(rest, runSuffix)
-		if !ok {
-			return tapCommand{}, false
-		}
-		original, ok := unquotePowerShell(quoted)
-		return tapCommand{original: original}, ok
-	}
-	original, ok := cutText(rest, pipeSuffix)
-	return tapCommand{original: original}, ok
-}
-
-// unquotePowerShell reads the rest of a single-quoted PowerShell string,
-// after its opening quote, which must close at the very end. PowerShell
-// takes the typographic single quotes as quotes too, and a doubled quote of
-// any kind stands for the second one.
-func unquotePowerShell(quoted []char) ([]char, bool) {
-	original := []char{}
-	for i := 0; i < len(quoted); i++ {
-		switch {
-		case !isPowerShellQuote(quoted[i].r):
-			original = append(original, quoted[i])
-		case i == len(quoted)-1:
-			return original, true
-		case isPowerShellQuote(quoted[i+1].r):
-			original = append(original, quoted[i+1])
-			i++
-		default:
-			return nil, false
-		}
-	}
-	return nil, false
-}
-
-func isPowerShellQuote(r rune) bool {
-	switch r {
-	case '\'', '‘', '’', '‚', '‛':
-		return true
-	default:
+// isPlainCommand reports whether original can follow the pipe as it is: it
+// holds no character the shell treats specially and does not start with a
+// reserved word, so the pipe feeds all of it.
+func isPlainCommand(original string) bool {
+	trimmed := strings.TrimSpace(original)
+	if trimmed == "" || strings.ContainsFunc(trimmed, func(r rune) bool { return !isPlainRune(r) }) {
 		return false
 	}
+	first, _, _ := strings.Cut(trimmed, " ")
+	return !slices.Contains(reservedWords, first)
+}
+
+func isPlainRune(r rune) bool {
+	switch {
+	case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
+		return true
+	default:
+		return strings.ContainsRune(` _./~:=+@%,-'"`, r)
+	}
+}
+
+// endsInEscape reports whether s ends in a backslash that escapes whatever
+// follows it.
+func endsInEscape(s string) bool {
+	backslashes := len(s) - len(strings.TrimRight(s, `\`))
+	return backslashes%2 == 1
+}
+
+// parseTapCommand tells whether a status-line command, given as its JSON
+// string literal, is one install wrote, for any Loadline path or exe, and if
+// so recovers the user's own command.
+func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
+	chars := splitString(literal)
+	rest, powerShell := cutText(chars, powerShellCall)
+	if !powerShell {
+		rest = chars
+	}
+	path, rest, quoted := cutLauncher(rest)
+	if !isLoadlinePath(text(path), exe) {
+		return tapCommand{}, foreign
+	}
+	if !quoted {
+		return tapCommand{}, edited
+	}
+	if text(rest) == printSuffix {
+		return tapCommand{print: true}, tapped
+	}
+	if powerShell {
+		return parseRunB64(rest)
+	}
+	return parsePipe(rest)
+}
+
+// cutLauncher splits off the program a command starts with: a quoted path,
+// or else its first word.
+func cutLauncher(chars []char) (path, rest []char, quoted bool) {
+	if after, ok := cutText(chars, `"`); ok {
+		end := slices.IndexFunc(after, func(c char) bool { return c.r == '"' })
+		if end < 0 {
+			return nil, nil, false
+		}
+		return after[:end], after[end+1:], true
+	}
+	end := slices.IndexFunc(chars, func(c char) bool { return c.r == ' ' || c.r == '\t' })
+	if end < 0 {
+		end = len(chars)
+	}
+	return chars[:end], chars[end:], false
+}
+
+func parsePipe(rest []char) (tapCommand, tapMatch) {
+	after, ok := cutText(rest, tapPipe)
+	if !ok {
+		return tapCommand{}, edited
+	}
+	inner, grouped := cutText(after, groupOpen)
+	if !grouped {
+		return tapCommand{original: after}, tapped
+	}
+	original, closed := cutSuffix(inner, groupClose)
+	if !closed {
+		return tapCommand{}, edited
+	}
+	return tapCommand{original: original}, tapped
+}
+
+func parseRunB64(rest []char) (tapCommand, tapMatch) {
+	after, ok := cutText(rest, runB64Open)
+	if !ok {
+		return tapCommand{}, edited
+	}
+	encoded, closed := cutSuffix(after, runB64Close)
+	if !closed {
+		return tapCommand{}, edited
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(text(encoded))
+	// Only the encoding install writes counts: no padding, no line breaks.
+	if err != nil || !utf8.Valid(decoded) || base64.RawURLEncoding.EncodeToString(decoded) != text(encoded) {
+		return tapCommand{}, edited
+	}
+	return tapCommand{original: splitString(jsonString(string(decoded)))}, tapped
 }
 
 // cutText reports whether chars start with prefix, and returns the rest.
@@ -154,6 +219,22 @@ func cutText(chars []char, prefix string) ([]char, bool) {
 		i++
 	}
 	return chars[i:], true
+}
+
+// cutSuffix reports whether chars end with suffix, and returns what precedes
+// it.
+func cutSuffix(chars []char, suffix string) ([]char, bool) {
+	runes := []rune(suffix)
+	if len(chars) < len(runes) {
+		return nil, false
+	}
+	start := len(chars) - len(runes)
+	for i, r := range runes {
+		if chars[start+i].r != r {
+			return nil, false
+		}
+	}
+	return chars[:start], true
 }
 
 func text(chars []char) string {
@@ -184,7 +265,7 @@ func splitString(literal string) []char {
 	return chars
 }
 
-var shortEscapes = map[byte]rune{
+var escapedRunes = map[byte]rune{
 	'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
 }
 
@@ -196,7 +277,7 @@ func decodeChar(s string) (rune, int) {
 		return utf8.DecodeRuneInString(s)
 	}
 	if s[1] != 'u' {
-		if r, ok := shortEscapes[s[1]]; ok {
+		if r, ok := escapedRunes[s[1]]; ok {
 			return r, 2
 		}
 		return utf8.RuneError, 2

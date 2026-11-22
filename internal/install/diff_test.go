@@ -173,6 +173,10 @@ func TestMaskToken(t *testing.T) {
 		"-x-loadline-token=aa\n+x-loadline-token=bb\n":                     "-x-loadline-token=****\n+x-loadline-token=****\n",
 		`"OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-loadline-token=ab,other=1"`: `"OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-loadline-token=****,other=1"`,
 		`no token here`: `no token here`,
+		// Whatever the value holds, all of it is masked.
+		`"x-loadline-token=ab\"cdAef\\gh"`:  `"x-loadline-token=****"`,
+		`"x-loadline-token=ab cd	ef"`:       `"x-loadline-token=****"`,
+		"x-loadline-token=ab cd\nnext line": "x-loadline-token=****\nnext line",
 	}
 	for in, want := range tests {
 		if got := string(install.MaskToken([]byte(in))); got != want {

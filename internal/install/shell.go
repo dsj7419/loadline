@@ -1,8 +1,11 @@
 package install
 
 import (
+	"bytes"
 	"runtime"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 // Shell is the shell Claude Code runs the status-line command with, which
@@ -19,16 +22,45 @@ const (
 )
 
 // DetectShell reports the shell Claude Code uses on this system. getenv
-// reads an environment variable and exists reports whether a file exists.
+// reads an environment variable, and should see the settings file's env
+// through SettingsEnv; exists reports whether a file exists.
 func DetectShell(getenv func(string) string, exists func(string) bool) Shell {
 	return detectShell(runtime.GOOS, getenv, exists)
 }
 
+// SettingsEnv returns a getenv that reads the env object of settings first
+// and getenv after, as Claude Code applies a settings file's env on top of
+// the environment it starts in. Names match without regard to case, as they
+// do on Windows, where the shell depends on them.
+func SettingsEnv(settings []byte, getenv func(string) string) func(string) string {
+	var env gjson.Result
+	if body := bytes.TrimPrefix(settings, []byte(utf8BOM)); gjson.ValidBytes(body) {
+		env = gjson.GetBytes(body, "env")
+	}
+	return func(name string) string {
+		value, found := "", false
+		env.ForEach(func(key, v gjson.Result) bool {
+			if strings.EqualFold(key.Str, name) && v.Type == gjson.String {
+				value, found = v.Str, true
+				return false
+			}
+			return true
+		})
+		if found {
+			return value
+		}
+		return getenv(name)
+	}
+}
+
 // detectShell follows Claude Code: on Windows it uses Git Bash when
-// CLAUDE_CODE_GIT_BASH_PATH names it or Git for Windows is installed, and
-// PowerShell otherwise.
+// CLAUDE_CODE_GIT_BASH_PATH names an existing bash or sh, or Git for Windows
+// is installed, and PowerShell otherwise.
 func detectShell(goos string, getenv func(string) string, exists func(string) bool) Shell {
-	if goos != "windows" || getenv("CLAUDE_CODE_GIT_BASH_PATH") != "" {
+	if goos != "windows" {
+		return ShellBash
+	}
+	if bash := getenv("CLAUDE_CODE_GIT_BASH_PATH"); isBashName(bash) && exists(bash) {
 		return ShellBash
 	}
 	for _, bash := range gitBashCandidates(getenv, exists) {
@@ -37,6 +69,18 @@ func detectShell(goos string, getenv func(string) string, exists func(string) bo
 		}
 	}
 	return ShellPowerShell
+}
+
+// isBashName reports whether path names a shell Claude Code accepts in
+// CLAUDE_CODE_GIT_BASH_PATH.
+func isBashName(path string) bool {
+	base := path[strings.LastIndexAny(path, `\/`)+1:]
+	for _, name := range []string{"bash.exe", "sh.exe", "bash", "sh"} {
+		if strings.EqualFold(base, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitBashCandidates lists where Git for Windows keeps bash.exe: beside the

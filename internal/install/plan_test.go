@@ -2,6 +2,7 @@ package install_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -235,7 +236,7 @@ func TestPlan_ExePathWithSpaces(t *testing.T) {
 		want  string
 	}{
 		{install.ShellBash, `"C:/Users/John Smith/AppData/Local/loadline/bin/loadline.exe" tap | bash ~/.claude/statusline.sh`},
-		{install.ShellPowerShell, `& "C:/Users/John Smith/AppData/Local/loadline/bin/loadline.exe" tap --run 'bash ~/.claude/statusline.sh'`},
+		{install.ShellPowerShell, `& "C:/Users/John Smith/AppData/Local/loadline/bin/loadline.exe" tap --run-b64 '` + b64("bash ~/.claude/statusline.sh") + `'`},
 	}
 	for _, tt := range tests {
 		o := options(tt.shell)
@@ -287,34 +288,64 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `& "` + goldenExe + `" tap --print`,
 		},
 		{
-			name:     "PowerShell doubles every kind of single quote",
-			settings: `{"statusLine": {"type": "command", "command": "echo 'it''s' ‘a’ ‚b‛"}}`,
+			name:     "PowerShell gets the original out of band, whatever its quotes",
+			settings: `{"statusLine": {"type": "command", "command": "echo 'it''s' \"q\" ‘a’ $x"}}`,
 			shell:    install.ShellPowerShell,
-			want:     `& "` + goldenExe + `" tap --run 'echo ''it''''s'' ‘‘a’’ ‚‚b‛‛'`,
+			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64(`echo 'it''s' "q" ‘a’ $x`) + `'`,
 		},
 		{
-			name:     "bash keeps quotes, pipes and redirections as they are",
+			name:     "a plain command follows the pipe as it is",
+			settings: `{"statusLine": {"type": "command", "command": "FOO=bar npx -y ccstatusline@latest --theme \"dark mode\" ~/x,y:1+2%"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | FOO=bar npx -y ccstatusline@latest --theme "dark mode" ~/x,y:1+2%`,
+		},
+		{
+			name:     "a list is grouped so the pipe feeds all of it",
 			settings: `{"statusLine": {"type": "command", "command": "jq -r '.model' 2>/dev/null && echo \"ok\" | tr a-z A-Z"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | jq -r '.model' 2>/dev/null && echo "ok" | tr a-z A-Z`,
+			want:     `"` + goldenExe + `" tap | { jq -r '.model' 2>/dev/null && echo "ok" | tr a-z A-Z` + "\n}",
 		},
 		{
-			name:     "an old bash prefix is replaced, not doubled",
+			name:     "a reserved first word is grouped",
+			settings: `{"statusLine": {"type": "command", "command": "time status.sh"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | { time status.sh` + "\n}",
+		},
+		{
+			name:     "a script of several lines is grouped",
+			settings: `{"statusLine": {"type": "command", "command": "read line\necho \"$line\""}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | { read line` + "\n" + `echo "$line"` + "\n}",
+		},
+		{
+			name:     "an old plain prefix is replaced, not doubled",
 			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | my-status"}}`,
 			shell:    install.ShellBash,
 			want:     `"` + goldenExe + `" tap | my-status`,
 		},
 		{
-			name:     "a bash prefix becomes the PowerShell wrapper",
-			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | echo it's"}}`,
-			shell:    install.ShellPowerShell,
-			want:     `& "` + goldenExe + `" tap --run 'echo it''s'`,
+			name:     "an old grouped prefix is replaced, not doubled",
+			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | { a && b\n}"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | { a && b` + "\n}",
 		},
 		{
-			name:     "a PowerShell wrapper becomes the bash prefix",
-			settings: `{"statusLine": {"type": "command", "command": "& \"D:/old/loadline.exe\" tap --run 'echo it''s'"}}`,
+			name:     "a list behind an old plain prefix gets grouped",
+			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | a && b"}}`,
 			shell:    install.ShellBash,
-			want:     `"` + goldenExe + `" tap | echo it's`,
+			want:     `"` + goldenExe + `" tap | { a && b` + "\n}",
+		},
+		{
+			name:     "a bash prefix becomes the PowerShell form",
+			settings: `{"statusLine": {"type": "command", "command": "\"D:/old/loadline.exe\" tap | { echo it's && x\n}"}}`,
+			shell:    install.ShellPowerShell,
+			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64("echo it's && x") + `'`,
+		},
+		{
+			name:     "the PowerShell form becomes the bash prefix",
+			settings: `{"statusLine": {"type": "command", "command": "& \"D:/old/loadline.exe\" tap --run-b64 '` + b64("echo it's; x") + `'"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | { echo it's; x` + "\n}",
 		},
 		{
 			name:     "an old print command keeps printing",
@@ -362,6 +393,7 @@ func TestPlan_LeavesStatusLineWithoutCommand(t *testing.T) {
 	for _, settings := range []string{
 		`{"statusLine": {"type": "command", "padding": 2}}`,
 		`{"statusLine": {"type": "command", "command": ""}}`,
+		`{"statusLine": {"type": "command", "command": " \t "}}`,
 		`{"statusLine": {"type": "command", "command": 7}}`,
 		`{"statusLine": "status.sh"}`,
 	} {
@@ -380,6 +412,79 @@ func TestPlan_LeavesStatusLineWithoutCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+
+func TestPlan_GroupsWithAReadableNewline(t *testing.T) {
+	settings := []byte(`{"statusLine": {"type": "command", "command": "a && b"}}`)
+
+	out, _, _ := plan(t, settings, options(install.ShellBash))
+
+	if raw := gjson.GetBytes(out, "statusLine.command").Raw; !strings.HasSuffix(raw, `{ a && b\n}"`) {
+		t.Errorf("statusLine.command = %s, want the group closed by an escaped \\n", raw)
+	}
+}
+
+func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
+	for _, command := range []string{
+		`"C:/x/loadline.exe" tap|foo`,
+		`"C:/x/loadline.exe" tap --print --wide`,
+		`"C:/x/loadline.exe" tap | { foo`,
+		`& "C:/x/loadline.exe" tap | foo`,
+		`& "C:/x/loadline.exe" tap --run 'foo'`,
+		`& "C:/x/loadline.exe" tap --run-b64 'not*base64'`,
+		`& "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `' extra`,
+		`loadline tap | foo`,
+		`/opt/loadline/bin/loadline status`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
+
+			for _, shell := range shells {
+				out, changes, warnings := plan(t, settings, options(shell))
+
+				if got := statusCommand(t, out); got != command {
+					t.Errorf("shell %d: status line = %q, want it left as %q", shell, got, command)
+				}
+				if !hasChange(changes, "statusLine.command", install.ActionSkip) {
+					t.Errorf("shell %d: changes %+v lack a skip for statusLine.command", shell, changes)
+				}
+				if len(warnings) != 1 || !strings.Contains(warnings[0], "loadline") {
+					t.Errorf("shell %d: warnings = %q, want one about the edited loadline command", shell, warnings)
+				}
+			}
+		})
+	}
+}
+
+func TestPlan_SkipsAnOriginalEndingInABackslash(t *testing.T) {
+	settings := []byte(`{"statusLine": {"type": "command", "command": "status.sh --wide \\"}}`)
+
+	out, changes, warnings := plan(t, settings, options(install.ShellBash))
+
+	if got := statusCommand(t, out); got != `status.sh --wide \` {
+		t.Errorf("status line = %q, want it left alone", got)
+	}
+	if !hasChange(changes, "statusLine.command", install.ActionSkip) || len(warnings) != 1 {
+		t.Errorf("changes %+v and warnings %q, want a skip with a warning", changes, warnings)
+	}
+
+	escaped := []byte(`{"statusLine": {"type": "command", "command": "echo a\\\\"}}`)
+	out, _, _ = plan(t, escaped, options(install.ShellBash))
+	if got, want := statusCommand(t, out), `"`+goldenExe+`" tap | { echo a\\`+"\n}"; got != want {
+		t.Errorf("status line = %q, want an escaped backslash grouped: %q", got, want)
+	}
+}
+
+func jsonQuote(t *testing.T, s string) string {
+	t.Helper()
+
+	quoted, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(quoted)
 }
 
 func hasChange(changes []install.Change, path, action string) bool {
@@ -612,6 +717,11 @@ func TestPlan_RejectsInvalidJSON(t *testing.T) {
 		`{"hooks": {"Stop": {}}}`,
 		`{"hooks": {"Stop": "loadline"}}`,
 		`{"env": "OTEL"}`,
+		duplicatedKeys,
+		`{"model": "opus", "model": "sonnet"}`,
+		`{"a": 1, "a": 2}`,
+		`{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "a", "command": "b"}]}]}}`,
+		`{"permissions": {"allow": [], "deny": [], "allow": ["Bash"]}}`,
 	} {
 		t.Run(settings, func(t *testing.T) {
 			out, changes, _, err := install.Plan([]byte(settings), options(install.ShellBash))
@@ -623,6 +733,26 @@ func TestPlan_RejectsInvalidJSON(t *testing.T) {
 				t.Errorf("got output %q and changes %+v alongside the error", out, changes)
 			}
 		})
+	}
+}
+
+// duplicatedKeys repeats hooks and env. Claude Code reads the last of each,
+// while a JSON path finds the first, so an edit would land on the copy
+// Claude Code ignores and an uninstall could delete the hooks it runs.
+const duplicatedKeys = `{"hooks":{"PostToolUse":[]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify.sh"}]}]},"env":{},"env":{"EDITOR":"vim"}}`
+
+func TestPlan_DuplicateKeyErrorNamesTheKeyAndItsPath(t *testing.T) {
+	tests := map[string]struct{ key, where string }{
+		`{"model": "opus", "model": "sonnet"}`:                                               {`"model"`, "top level"},
+		`{"hooks": {"Stop": [{"hooks": [{"type": "command", "type": "command"}]}]}}`:         {`"type"`, "hooks.Stop[0].hooks[0]"},
+		`{"env": {"EDITOR": "vim", "OTEL_LOGS_EXPORTER": "otlp", "EDITOR": "code"}, "x": 1}`: {`"EDITOR"`, "env"},
+	}
+	for settings, want := range tests {
+		_, _, _, err := install.Plan([]byte(settings), options(install.ShellBash))
+
+		if err == nil || !strings.Contains(err.Error(), want.key) || !strings.Contains(err.Error(), want.where) {
+			t.Errorf("Plan(%s) err = %v, want it to name %s in %s", settings, err, want.key, want.where)
+		}
 	}
 }
 

@@ -2,7 +2,7 @@ package install_test
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -160,6 +160,7 @@ func TestRevert_StatusLineForms(t *testing.T) {
 	const (
 		restored = iota
 		removed
+		skipped // starts with loadline but is not a form install writes
 		untouched
 	)
 	tests := []struct {
@@ -168,26 +169,27 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		outcome int
 		want    string // the restored command
 	}{
-		{"bash prefix", `"/opt/loadline/bin/loadline" tap | my-status`, restored, "my-status"},
-		{"bash prefix of an empty command", `"/opt/loadline/bin/loadline" tap | `, restored, ""},
-		{"PowerShell wrapper", `& "C:/x/loadline.exe" tap --run 'echo ''a'' ‘‘b’’'`, restored, "echo 'a' ‘b’"},
+		{"plain bash prefix", `"/opt/loadline/bin/loadline" tap | my-status`, restored, "my-status"},
+		{"plain bash prefix of an empty command", `"/opt/loadline/bin/loadline" tap | `, restored, ""},
+		{"grouped bash prefix", "\"/opt/loadline/bin/loadline\" tap | { a && b\n}", restored, "a && b"},
+		{"grouped bash prefix of a group", "\"/opt/loadline/bin/loadline\" tap | { { a\n}\n}", restored, "{ a\n}"},
+		{"PowerShell form", `& "C:/x/loadline.exe" tap --run-b64 '` + b64("echo 'a' \"b\" ‘c’") + `'`, restored, "echo 'a' \"b\" ‘c’"},
 		{"print, bash", `"C:/Program Files/loadline/loadline.exe" tap --print`, removed, ""},
 		{"print, PowerShell, any case", `& "C:/x/Loadline.EXE" tap --print`, removed, ""},
+		{"no spaces around the pipe", `"C:/x/loadline.exe" tap|foo`, skipped, ""},
+		{"unclosed group", `"C:/x/loadline.exe" tap | { foo`, skipped, ""},
+		{"pipe in PowerShell", `& "C:/x/loadline.exe" tap | foo`, skipped, ""},
+		{"PowerShell quoting of an older form", `& "C:/x/loadline.exe" tap --run 'echo'`, skipped, ""},
+		{"padded base64", `& "C:/x/loadline.exe" tap --run-b64 '` + base64.URLEncoding.EncodeToString([]byte("ab")) + `'`, skipped, ""},
+		{"base64 of invalid UTF-8", `& "C:/x/loadline.exe" tap --run-b64 '` + base64.RawURLEncoding.EncodeToString([]byte{0xff}) + `'`, skipped, ""},
+		{"print with more after it", `"C:/x/loadline.exe" tap --print --wide`, skipped, ""},
+		{"unquoted loadline", `loadline tap | foo`, skipped, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},
-		{"unquoted path", `loadline tap | foo`, untouched, ""},
-		{"no spaces around the pipe", `"C:/x/loadline.exe" tap|foo`, untouched, ""},
-		{"PowerShell call without the wrapper", `& "C:/x/loadline.exe" tap | foo`, untouched, ""},
-		{"unterminated PowerShell string", `& "C:/x/loadline.exe" tap --run 'echo`, untouched, ""},
-		{"PowerShell string that ends early", `& "C:/x/loadline.exe" tap --run 'a'b'`, untouched, ""},
-		{"print with more after it", `"C:/x/loadline.exe" tap --print --wide`, untouched, ""},
+		{"loadline later in the command", `status.sh | "C:/x/loadline.exe" tap`, untouched, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			command, err := json.Marshal(tt.command)
-			if err != nil {
-				t.Fatal(err)
-			}
-			settings := []byte(`{"model": "opus", "statusLine": {"type": "command", "command": ` + string(command) + `, "padding": 1}}`)
+			settings := []byte(`{"model": "opus", "statusLine": {"type": "command", "command": ` + jsonQuote(t, tt.command) + `, "padding": 1}}`)
 
 			got, changes := revert(t, settings, "")
 
@@ -195,6 +197,13 @@ func TestRevert_StatusLineForms(t *testing.T) {
 			case untouched:
 				if !bytes.Equal(got, settings) || len(changes) != 0 {
 					t.Errorf("Revert changed a status line that is not Loadline's: %s, %+v", got, changes)
+				}
+			case skipped:
+				if !bytes.Equal(got, settings) || install.HasEdits(changes) {
+					t.Errorf("Revert edited a status line it does not recognize: %s, %+v", got, changes)
+				}
+				if !hasChange(changes, "statusLine.command", install.ActionSkip) {
+					t.Errorf("changes = %+v, want a skip saying the command was edited", changes)
 				}
 			case removed:
 				if want := `{"model": "opus"}`; string(got) != want {
@@ -218,24 +227,42 @@ func TestRevert_StatusLineForms(t *testing.T) {
 	}
 }
 
-func TestRevert_KeepsTheOriginalEncoding(t *testing.T) {
-	// Encoders differ in what they escape. Whatever the file used must survive
-	// a round trip untouched, including in the PowerShell form, which doubles
-	// the quotes.
+func TestRevert_KeepsTheOriginalEncodingInTheBashForms(t *testing.T) {
+	// Encoders differ in what they escape. The bash forms carry the user's
+	// command as the file encoded it, so a round trip restores those bytes.
 	for _, command := range []string{
 		`"bash ~/s.sh 2\u003e/dev/null \u0026\u0026 echo \/ok"`,
 		`"echo \u0027hi\u0027 \u2019there\u2019 caf\u00e9 \ud83d\ude00 \"q\" \\ \t"`,
 		`"echo 'hi' ’there’ café 😀"`,
+		`"status.sh --plain"`,
 	} {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + command + `}}`)
-		for _, shell := range shells {
-			installed, _, _ := plan(t, settings, options(shell))
+		installed, _, _ := plan(t, settings, options(install.ShellBash))
 
-			got, _ := revert(t, installed, goldenExe)
+		got, _ := revert(t, installed, goldenExe)
 
-			if !bytes.Equal(got, settings) {
-				t.Errorf("shell %d: Revert(Plan(x)) = %s, want %s", shell, got, settings)
-			}
+		if !bytes.Equal(got, settings) {
+			t.Errorf("Revert(Plan(x)) = %s, want %s", got, settings)
+		}
+	}
+}
+
+func TestRevert_RestoresThePowerShellOriginal(t *testing.T) {
+	// The PowerShell form carries the command's text, not its encoding: a
+	// file encoded as Claude Code writes it comes back byte for byte, and
+	// any other encoding comes back as the same text.
+	tests := map[string]string{
+		`"echo 'hi' \"q\" ’there’ café 😀 \\ \t\n"`: `"echo 'hi' \"q\" ’there’ café 😀 \\ \t\n"`,
+		`"a \u003e b \/ c"`: `"a > b / c"`,
+	}
+	for command, want := range tests {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + command + `}}`)
+		installed, _, _ := plan(t, settings, options(install.ShellPowerShell))
+
+		got, _ := revert(t, installed, goldenExe)
+
+		if wantSettings := `{"statusLine": {"type": "command", "command": ` + want + `}}`; string(got) != wantSettings {
+			t.Errorf("Revert(Plan(%s)) = %s, want %s", command, got, wantSettings)
 		}
 	}
 }
@@ -262,7 +289,7 @@ func TestRevert_LeavesEnvThatIsNotLoadlines(t *testing.T) {
 }
 
 func TestRevert_RejectsInvalidJSON(t *testing.T) {
-	for _, settings := range []string{``, `{`, `[]`, `{"a": 1,}`} {
+	for _, settings := range []string{``, `{`, `[]`, `{"a": 1,}`, duplicatedKeys, `{"env": {"A": "1", "A": "2"}}`} {
 		out, changes, err := install.Revert([]byte(settings), goldenExe)
 
 		if !errors.Is(err, install.ErrInvalidSettings) {

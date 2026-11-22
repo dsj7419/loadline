@@ -101,7 +101,24 @@ func (n node) write(b *strings.Builder, l layout, prefix string, inline bool) {
 // generator draws settings files of the shapes Claude Code users have:
 // unrelated keys, hooks of their own, a status line and environment
 // variables, encoded by whichever tool last wrote the file.
-type generator struct{ r *rand.Rand }
+type generator struct {
+	r *rand.Rand
+	// canonical encodes the status-line command as Claude Code writes JSON.
+	// The PowerShell form keeps a command's text rather than its encoding,
+	// so only such files revert to their exact bytes there.
+	canonical bool
+}
+
+// canonicalLiteral encodes s the way JSON.stringify does.
+func canonicalLiteral(s string) string {
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(s); err != nil {
+		panic(err)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
 
 func (g generator) chance(p float64) bool { return g.r.Float64() < p }
 
@@ -202,7 +219,11 @@ func (g generator) hooks() node {
 func (g generator) statusLine() node {
 	line := node{inline: g.chance(0.2)}
 	line.add("type", scalar(`"command"`))
-	line.add("command", scalar(g.literal(g.text(1))))
+	command := g.literal(g.text(1))
+	if g.canonical {
+		command = canonicalLiteral(gjson.Parse(command).Str)
+	}
+	line.add("command", scalar(command))
 	if g.chance(0.5) {
 		line.add("padding", scalar(fmt.Sprint(g.r.IntN(3))))
 	}
@@ -286,10 +307,11 @@ func countLoadlineHandlers(settings []byte, exe string) int {
 func TestPlanRevert_GeneratedSettings(t *testing.T) {
 	g := generator{r: rand.New(rand.NewPCG(2026, 1121))} //nolint:gosec // G404: a fixed seed makes every run check the same cases
 	for i := range 400 {
-		l := g.layout()
-		input := l.render(g.settings())
 		o := options(pick(g, shells))
 		o.Exe = pick(g, []string{goldenExe, spacedExe, otherExe})
+		g.canonical = o.Shell == install.ShellPowerShell
+		l := g.layout()
+		input := l.render(g.settings())
 
 		out, _, _, err := install.Plan(input, o)
 		if err != nil {
@@ -373,7 +395,7 @@ func FuzzPlan(f *testing.F) {
 		if err != nil || !json.Valid(bytes.TrimPrefix(reverted, []byte(utf8BOM))) {
 			t.Fatalf("Revert(%q) = %q, %v", out, reverted, err)
 		}
-		if twice, removed, err := install.Revert(reverted, o.Exe); err != nil || len(removed) != 0 || !bytes.Equal(twice, reverted) {
+		if twice, removed, err := install.Revert(reverted, o.Exe); err != nil || install.HasEdits(removed) || !bytes.Equal(twice, reverted) {
 			t.Fatalf("reverting %q again gave %q, %+v, %v", reverted, twice, removed, err)
 		}
 	})

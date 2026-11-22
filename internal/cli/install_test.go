@@ -129,6 +129,7 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 		"statusLine.command",
 		`x-loadline-token=****`,
 		installedExe(home),
+		"add  bin/" + path2base(installedExe(home)),
 	} {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, got.stdout)
@@ -148,6 +149,111 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 	}
 	if names := entries(t, home); len(names) != 0 {
 		t.Errorf("a dry run wrote %q to the Loadline home, want nothing (no binary, no token)", names)
+	}
+}
+
+func path2base(slashPath string) string { return filepath.Base(filepath.FromSlash(slashPath)) }
+
+func testBinary(t *testing.T) []byte {
+	t.Helper()
+
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestInstall_RestoresTheInstalledBinary(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+		t.Fatalf("install: %s", got.stderr)
+	}
+	exe := filepath.FromSlash(installedExe(home))
+	settings := readSettings(t, dir)
+	name := "bin/" + filepath.Base(exe)
+
+	for _, damage := range []struct {
+		name   string
+		action string
+		apply  func() error
+	}{
+		{"altered", "update", func() error { return os.WriteFile(exe, []byte("an older loadline"), 0o600) }},
+		{"removed", "add", func() error { return os.Remove(exe) }},
+	} {
+		t.Run(damage.name, func(t *testing.T) {
+			if err := damage.apply(); err != nil {
+				t.Fatal(err)
+			}
+
+			dry := run(t, "install", "--config-dir", dir, "--dry-run")
+			if dry.code != 0 || !strings.Contains(dry.stdout, damage.action+"  "+name) || strings.Contains(dry.stdout, "Already installed.") {
+				t.Errorf("dry run: code %d, stdout:\n%s\nwant %s %s listed", dry.code, dry.stdout, damage.action, name)
+			}
+
+			fixed := run(t, "install", "--config-dir", dir, "--yes")
+
+			if fixed.code != 0 {
+				t.Fatalf("install: code %d, stderr %s", fixed.code, fixed.stderr)
+			}
+			if got, err := os.ReadFile(exe); err != nil || !bytes.Equal(got, testBinary(t)) {
+				t.Errorf("the installed binary was not restored (%v)", err)
+			}
+			if got := readSettings(t, dir); got != settings {
+				t.Error("restoring the binary changed settings.json, which was already wired")
+			}
+			if names := entries(t, dir); len(names) != 2 {
+				t.Errorf("config dir holds %q, want no backup for an unchanged settings file", names)
+			}
+		})
+	}
+}
+
+func TestInstall_RejectsAMalformedToken(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	if err := os.WriteFile(filepath.Join(home, "token"), []byte("not-a-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, "token") {
+		t.Errorf("code %d, stderr %q, want a failure about the token", got.code, got.stderr)
+	}
+	if strings.Contains(got.stdout, "not-a-token") {
+		t.Errorf("stdout reveals the token file's contents:\n%s", got.stdout)
+	}
+	if readSettings(t, dir) != ownerSettings {
+		t.Error("settings changed although the token is unusable")
+	}
+	if names := entries(t, home); !slices.Equal(names, []string{"token"}) {
+		t.Errorf("Loadline home holds %q, want only the untouched token file", names)
+	}
+}
+
+func TestInstall_EditsARepeatedConfigDirOnce(t *testing.T) {
+	_, dir := sandbox(t, ownerSettings)
+	path := filepath.Join(dir, "settings.json")
+	same := []string{dir, dir + string(filepath.Separator), filepath.Join(dir, ".")}
+	if runtime.GOOS == "windows" {
+		same = append(same, strings.ToUpper(dir))
+	}
+	args := []string{"install", "--dry-run"}
+	for _, d := range same {
+		args = append(args, "--config-dir", d)
+	}
+
+	got := run(t, args...)
+
+	if got.code != 0 {
+		t.Fatalf("exit code = %d; stderr: %s", got.code, got.stderr)
+	}
+	if n := strings.Count(strings.ToLower(got.stdout), strings.ToLower("--- "+path+"\n")); n != 1 {
+		t.Errorf("the settings file is diffed %d times, want once:\n%s", n, got.stdout)
 	}
 }
 

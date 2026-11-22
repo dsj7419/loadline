@@ -7,14 +7,21 @@ import (
 )
 
 // Revert returns settings with everything of Loadline's taken out, and the
-// changes that makes: every hook handler that runs loadline, loadline.exe or
-// exe with the hook subcommand, along with the matcher groups and events
-// left empty; the tap prefix on the status line, restoring the user's own
-// command, or the whole status line when tap printed its own; and the
-// OpenTelemetry keys, when they are Loadline's. An env, hooks or statusLine
-// object that only Loadline's entries filled is removed too, so reverting a
-// plan gives back the bytes it was made from. Invalid JSON is
-// ErrInvalidSettings.
+// changes that makes:
+//
+//   - every hook handler that runs loadline, loadline.exe or exe with the hook
+//     subcommand;
+//   - the tap prefix on the status line, restoring the user's own command, or
+//     the whole status line when tap printed its own;
+//   - the OpenTelemetry keys, when they are Loadline's.
+//
+// A matcher group, event, hooks or env object that Revert empties is removed
+// as well, even one the user had left empty before install. A status line
+// that starts with loadline but was changed by hand is skipped. Reverting a
+// plan gives back the bytes it was made from, except that the PowerShell
+// form keeps the user's command as text, so its original escapes come back
+// in the form Claude Code writes. Invalid JSON, or an object with a key
+// twice, is ErrInvalidSettings.
 func Revert(settings []byte, exe string) ([]byte, []Change, error) {
 	doc, err := parseDocument(settings)
 	if err != nil {
@@ -115,9 +122,15 @@ func (r *reverter) statusLine() error {
 	if !line.IsObject() || command.Type != gjson.String {
 		return nil
 	}
-	tap, ours := parseTapCommand(command.Raw, r.exe)
-	if !ours {
+	tap, match := parseTapCommand(command.Raw, r.exe)
+	switch match {
+	case foreign:
 		return nil
+	case edited:
+		r.record("statusLine.command", ActionSkip,
+			"it starts with loadline but was changed by hand; remove the loadline part yourself")
+		return nil
+	case tapped:
 	}
 
 	if tap.print {

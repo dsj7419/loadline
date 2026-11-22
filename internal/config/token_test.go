@@ -3,6 +3,8 @@ package config_test
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -208,5 +210,36 @@ func TestEnsureToken_ConcurrentCallersAgreeOnOneToken(t *testing.T) {
 	}
 	if onDisk, err := os.ReadFile(path); err != nil || !bytes.Equal(onDisk, tokens[0]) {
 		t.Errorf("token file holds %q (err %v), callers agreed on %q", onDisk, err, tokens[0])
+	}
+}
+
+func TestReadToken_ReadsWithoutCreating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+
+	if _, err := config.ReadToken(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadToken of a missing file: err = %v, want fs.ErrNotExist", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadToken created %s", path)
+	}
+
+	created := ensureToken(t, path)
+	got, err := config.ReadToken(path)
+	if err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	if !bytes.Equal(got, created) {
+		t.Errorf("ReadToken = %q, want %q", got, created)
+	}
+}
+
+func TestReadToken_RejectsWhatEnsureTokenRejects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("not a token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.ReadToken(path); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadToken of a corrupt file: err = %v, want a format error", err)
 	}
 }

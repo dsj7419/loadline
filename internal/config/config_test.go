@@ -247,3 +247,17 @@ func TestLoad_UnreadableFileIsAnError(t *testing.T) {
 		t.Fatal("Load of a directory succeeded, want a read error rather than defaults")
 	}
 }
+
+func TestValidatePort(t *testing.T) {
+	for _, port := range []int{1024, 8289, 65535} {
+		if err := config.ValidatePort(port); err != nil {
+			t.Errorf("ValidatePort(%d) = %v, want nil", port, err)
+		}
+	}
+	for _, port := range []int{-1, 0, 80, 1023, 65536} {
+		err := config.ValidatePort(port)
+		if err == nil || !strings.Contains(err.Error(), "outside 1024-65535") {
+			t.Errorf("ValidatePort(%d) = %v, want an out-of-range error", port, err)
+		}
+	}
+}

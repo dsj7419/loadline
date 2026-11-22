@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -76,8 +77,8 @@ func parseFlags(flags *flag.FlagSet, args []string) (int, bool) {
 }
 
 // settingsFiles returns the settings.json in each config dir, or in ~/.claude
-// when none is given. Each dir must exist: a missing one is more likely a typo
-// than an account.
+// when none is given, once each however the dir is spelled. Each dir must
+// exist: a missing one is more likely a typo than an account.
 func settingsFiles(dirs []string) ([]string, error) {
 	if len(dirs) == 0 {
 		home, err := os.UserHomeDir()
@@ -88,11 +89,20 @@ func settingsFiles(dirs []string) ([]string, error) {
 	}
 
 	files := make([]string, 0, len(dirs))
+	seen := map[string]bool{}
 	for _, dir := range dirs {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve config dir %s: %w", dir, err)
 		}
+		key := abs
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(abs)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		info, err := os.Stat(abs)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -156,15 +166,19 @@ func planEdits(files []string, plan planner) ([]settingsEdit, error) {
 type reviewOptions struct {
 	dryRun bool
 	yes    bool
-	// nothingToDo is printed when no file needs an edit.
+	// nothingToDo is printed when nothing needs a change.
 	nothingToDo string
+	// binary lists what installing the binary at binaryPath changes.
+	binary     []install.Change
+	binaryPath string
 }
 
-// review shows the edits and their warnings and decides whether to write
+// review shows the changes and their warnings and decides whether to make
 // them. When the command should stop instead, because there is nothing to
-// write, the run is dry or the user declines, it returns false with the exit
-// code.
+// change, the run is dry or the user declines, it returns false with the
+// exit code.
 func review(out *printer, stdio IO, edits []settingsEdit, o reviewOptions) (int, bool) {
+	showChanges(out, o.binaryPath, o.binary)
 	for _, e := range edits {
 		show(out, e)
 		for _, warning := range e.warnings {
@@ -174,9 +188,9 @@ func review(out *printer, stdio IO, edits []settingsEdit, o reviewOptions) (int,
 
 	switch {
 	case out.err != nil:
-		// Nobody saw the changes, so they must not be applied.
+		// Nobody saw the changes, so they must not be made.
 		return out.exit(stdio, exitFailure), false
-	case !slices.ContainsFunc(edits, settingsEdit.pending):
+	case !install.HasEdits(o.binary) && !slices.ContainsFunc(edits, settingsEdit.pending):
 		out.printf("%s\n", o.nothingToDo)
 		return out.exit(stdio, exitOK), false
 	case o.dryRun:
@@ -203,13 +217,21 @@ func show(out *printer, e settingsEdit) {
 	if len(e.changes) == 0 {
 		return
 	}
-	out.printf("%s\n", e.path)
+	showChanges(out, e.path, e.changes)
+	out.printf("%s", install.Diff(e.path, install.MaskToken(e.original), install.MaskToken(e.out)))
+}
+
+// showChanges prints changes as a list under header.
+func showChanges(out *printer, header string, changes []install.Change) {
+	if len(changes) == 0 {
+		return
+	}
+	out.printf("%s\n", header)
 	list := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	for _, c := range e.changes {
-		_, _ = fmt.Fprintf(list, "  %s\t%s\t%s\n", c.Action, c.Path, c.Detail)
+	for _, c := range changes {
+		_, _ = fmt.Fprintf(list, "  %s\t%s\t%s\n", c.Action, c.Path, install.MaskToken([]byte(c.Detail)))
 	}
 	_ = list.Flush()
-	out.printf("%s", install.Diff(e.path, install.MaskToken(e.original), install.MaskToken(e.out)))
 }
 
 // confirm asks whether to apply the changes and reports whether the answer

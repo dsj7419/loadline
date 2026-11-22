@@ -139,6 +139,46 @@ func TestSelfInstall_ReplacesABinaryOfTheSameSize(t *testing.T) {
 	}
 }
 
+func TestPlanSelfInstall(t *testing.T) {
+	dataDir := t.TempDir()
+	src := writeBinary(t, "loadline v2")
+	target := filepath.Join(dataDir, "bin", binaryName())
+	path := "bin/" + binaryName()
+
+	missing, err := install.PlanSelfInstall(src, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0].Path != path || missing[0].Action != install.ActionAdd || !strings.Contains(missing[0].Detail, src) {
+		t.Errorf("without a binary: %+v, want add %s naming the source", missing, path)
+	}
+
+	selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+	older, err := install.PlanSelfInstall(src, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older) != 1 || older[0].Path != path || older[0].Action != install.ActionUpdate {
+		t.Errorf("with an older binary: %+v, want update %s", older, path)
+	}
+
+	selfInstall(t, src, dataDir)
+	current, err := install.PlanSelfInstall(src, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 0 {
+		t.Errorf("with the same binary: %+v, want no change", current)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("planning removed the binary: %v", err)
+	}
+
+	if _, err := install.PlanSelfInstall(filepath.Join(t.TempDir(), "missing"), dataDir); err == nil {
+		t.Error("PlanSelfInstall succeeded without a source binary")
+	}
+}
+
 func TestSelfInstall_MissingSourceFails(t *testing.T) {
 	dataDir := t.TempDir()
 

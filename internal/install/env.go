@@ -60,10 +60,13 @@ func telemetryKeys(env gjson.Result) []string {
 	return keys
 }
 
-var tokenPattern = regexp.MustCompile(`x-loadline-token=[^",\s\\]*`)
+// tokenPattern matches a header's whole value, up to the comma before the
+// next header, the end of the JSON string or the end of the line, taking
+// JSON escapes with it, whatever characters the value holds.
+var tokenPattern = regexp.MustCompile(`x-loadline-token=(?:[^",\\\r\n]|\\.)*`)
 
-// MaskToken replaces every ingest token in text with ****, so that settings
-// and diffs can be shown without revealing it.
+// MaskToken replaces the value of every ingest token header in text with
+// ****, so that settings and diffs can be shown without revealing it.
 func MaskToken(text []byte) []byte {
 	return tokenPattern.ReplaceAllLiteral(text, []byte(headerPrefix+maskedToken))
 }

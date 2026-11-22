@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/install"
@@ -21,14 +20,12 @@ const (
 	// token is created only when install writes the settings, never in a dry
 	// run.
 	tokenPlaceholder = "<created-on-install>" //nolint:gosec // G101: a placeholder shown instead of a token, not a credential
-	// minPort and maxPort are the ports the Loadline config accepts.
-	minPort = 1024
-	maxPort = 65535
 )
 
-// runInstall wires Loadline into each settings file. It shows the changes
-// first and asks unless --yes; --dry-run writes nothing at all: not the
-// settings, not the binary, not the token.
+// runInstall wires Loadline into each settings file and puts the running
+// binary where the settings point. It shows the changes first and asks
+// unless --yes; --dry-run writes nothing at all: not the settings, not the
+// binary, not the token.
 func runInstall(args []string, stdio IO) int {
 	flags := newFlagSet("install", stdio)
 	edit := addEditFlags(flags)
@@ -36,12 +33,22 @@ func runInstall(args []string, stdio IO) int {
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
-	if isSet(flags, "port") && (*port < minPort || *port > maxPort) {
-		_, _ = fmt.Fprintf(stdio.Err, "loadline install: --port %d is outside %d-%d\n", *port, minPort, maxPort)
-		return exitUsage
+	if isSet(flags, "port") {
+		if err := config.ValidatePort(*port); err != nil {
+			_, _ = fmt.Fprintf(stdio.Err, "loadline install: --port: %v\n", err)
+			return exitUsage
+		}
 	}
 
 	paths, err := config.DefaultPaths()
+	if err != nil {
+		return fail(stdio, err)
+	}
+	src, err := os.Executable()
+	if err != nil {
+		return fail(stdio, fmt.Errorf("find the running binary: %w", err))
+	}
+	binary, err := install.PlanSelfInstall(src, paths.DataDir)
 	if err != nil {
 		return fail(stdio, err)
 	}
@@ -61,12 +68,16 @@ func runInstall(args []string, stdio IO) int {
 	out := &printer{w: stdio.Out}
 	if code, proceed := review(out, stdio, edits, reviewOptions{
 		dryRun: edit.dryRun, yes: edit.yes, nothingToDo: "Already installed.",
+		binary: binary, binaryPath: filepath.FromSlash(opts.Exe),
 	}); !proceed {
 		return code
 	}
 
-	if opts, err = prepareInstall(paths, opts); err != nil {
+	if opts, err = prepareInstall(src, paths, opts); err != nil {
 		return fail(stdio, err)
+	}
+	if install.HasEdits(binary) {
+		out.printf("Installed %s\n", filepath.FromSlash(opts.Exe))
 	}
 	// The same plans again, now with the real token in place of the
 	// placeholder the review showed masked.
@@ -102,50 +113,45 @@ func installOptions(paths config.Paths, port int) (install.Options, error) {
 	if err != nil {
 		return install.Options{}, err
 	}
-	return install.Options{
-		Exe:   install.InstalledPath(paths.DataDir),
-		Port:  port,
-		Token: token,
-		Shell: install.DetectShell(os.Getenv, isFile),
-	}, nil
+	return install.Options{Exe: install.InstalledPath(paths.DataDir), Port: port, Token: token}, nil
 }
 
+// installPlanner plans each settings file for the shell Claude Code will run
+// its status line with, which the file's own env can change.
 func installPlanner(opts install.Options) planner {
 	return func(settings []byte) ([]byte, []install.Change, []string, error) {
-		return install.Plan(settings, opts)
+		o := opts
+		o.Shell = install.DetectShell(install.SettingsEnv(settings, os.Getenv), isFile)
+		return install.Plan(settings, o)
 	}
 }
 
 // prepareInstall copies the running binary into place and creates the token,
 // which the settings are about to refer to.
-func prepareInstall(paths config.Paths, opts install.Options) (install.Options, error) {
-	src, err := os.Executable()
+func prepareInstall(src string, paths config.Paths, opts install.Options) (install.Options, error) {
+	exe, err := install.SelfInstall(src, paths.DataDir)
 	if err != nil {
-		return opts, fmt.Errorf("find the running binary: %w", err)
-	}
-	if opts.Exe, err = install.SelfInstall(src, paths.DataDir); err != nil {
 		return opts, err
 	}
 	token, err := config.EnsureToken(paths.TokenFile)
 	if err != nil {
 		return opts, err
 	}
-	opts.Token = string(token)
+	opts.Exe, opts.Token = exe, string(token)
 	return opts, nil
 }
 
+// existingToken returns the ingest token, held to the rule the server holds
+// it to, or the placeholder when there is none yet.
 func existingToken(path string) (string, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	token, err := config.ReadToken(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return tokenPlaceholder, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read the token: %w", err)
+		return "", err
 	}
-	if token := strings.TrimSpace(string(data)); token != "" {
-		return token, nil
-	}
-	return tokenPlaceholder, nil
+	return string(token), nil
 }
 
 func isFile(path string) bool {

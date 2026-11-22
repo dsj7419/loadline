@@ -67,13 +67,16 @@ const newStatusLineRefresh = 10
 //   - Each hook event Loadline listens to gets an async exec-form handler that
 //     runs "<Exe> hook". A Loadline handler that is already there is brought
 //     up to date in place.
-//   - The status line runs through tap in front of the user's own command,
-//     quoted for o.Shell, or tap prints its own line when there is none.
+//   - The status line runs through tap in front of the user's own command, in
+//     the form o.Shell needs, or tap prints its own line when there is none.
+//     A command that starts with loadline but was changed by hand is skipped
+//     with a warning.
 //   - env gets the OpenTelemetry setup, unless telemetry is already configured
 //     by someone else; then it is skipped with a warning.
 //
-// Planning its own output again gives no edits. Invalid JSON, or a hooks or
-// env value of the wrong type, is ErrInvalidSettings.
+// Planning its own output again gives no edits. Invalid JSON, a hooks or env
+// value of the wrong type, or an object with a key twice is
+// ErrInvalidSettings.
 func Plan(settings []byte, o Options) ([]byte, []Change, []string, error) {
 	if err := o.validate(); err != nil {
 		return nil, nil, nil, err
@@ -146,6 +149,12 @@ type planner struct {
 
 func (p *planner) record(path, action, detail string) {
 	p.changes = append(p.changes, Change{Path: path, Action: action, Detail: detail})
+}
+
+// skip records a value left alone, and warns about it.
+func (p *planner) skip(path, reason, warning string) {
+	p.record(path, ActionSkip, reason)
+	p.warnings = append(p.warnings, warning)
 }
 
 func (p *planner) hooks() error {
@@ -263,7 +272,7 @@ type newStatusLine struct {
 func (p *planner) statusLine() error {
 	line := p.doc.get("statusLine")
 	if !line.Exists() {
-		command := tapCommand{print: true}.literal(p.opts.Exe, p.opts.Shell)
+		command, _ := tapCommand{print: true}.literal(p.opts.Exe, p.opts.Shell)
 		value, err := encodeJSON(newStatusLine{Type: "command", Command: json.RawMessage(command), RefreshInterval: newStatusLineRefresh})
 		if err != nil {
 			return err
@@ -276,18 +285,31 @@ func (p *planner) statusLine() error {
 	}
 
 	command := line.Get("command")
-	if !line.IsObject() || command.Type != gjson.String || command.Str == "" {
-		p.record("statusLine", ActionSkip, "it has no command to run")
-		p.warnings = append(p.warnings,
+	if !line.IsObject() || command.Type != gjson.String || strings.TrimSpace(command.Str) == "" {
+		p.skip("statusLine", "it has no command to run",
 			"statusLine has no command, so Loadline left it alone and sessions will report only through hooks")
 		return nil
 	}
 
-	tap, ours := parseTapCommand(command.Raw, p.opts.Exe)
-	if !ours {
+	tap, match := parseTapCommand(command.Raw, p.opts.Exe)
+	switch match {
+	case edited:
+		p.skip("statusLine.command", "it starts with loadline but was changed by hand",
+			"statusLine.command starts with loadline but not as install wrote it, so Loadline left it alone; "+
+				"remove the loadline part to restore your command, then install again")
+		return nil
+	case foreign:
 		tap = tapCommand{original: splitString(command.Raw)}
+	case tapped:
+		// Rebuilt below for this exe and shell.
 	}
-	want := tap.literal(p.opts.Exe, p.opts.Shell)
+	want, ok := tap.literal(p.opts.Exe, p.opts.Shell)
+	if !ok {
+		p.skip("statusLine.command", "it ends in a backslash",
+			"statusLine.command ends in a backslash, which would join it to the line Loadline adds after it, "+
+				"so Loadline left it alone")
+		return nil
+	}
 	if decodeString(want) == command.Str {
 		return nil
 	}
@@ -305,8 +327,7 @@ func (p *planner) env() error {
 	}
 	if !ownsTelemetry(env) {
 		if keys := strings.Join(telemetryKeys(env), ", "); keys != "" {
-			p.record("env", ActionSkip, "telemetry is already configured by "+keys)
-			p.warnings = append(p.warnings, "env already sets "+keys+
+			p.skip("env", "telemetry is already configured by "+keys, "env already sets "+keys+
 				", so Loadline left OpenTelemetry alone and the per-model view will be unavailable")
 			return nil
 		}

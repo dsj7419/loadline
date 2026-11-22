@@ -26,10 +26,45 @@ func TestDetectShell(t *testing.T) {
 		{name: "linux ignores Windows settings", goos: "linux", env: windowsEnv, want: install.ShellBash},
 		{name: "windows without Git", goos: "windows", env: windowsEnv, want: install.ShellPowerShell},
 		{
-			name: "windows with CLAUDE_CODE_GIT_BASH_PATH",
+			name:  "windows with CLAUDE_CODE_GIT_BASH_PATH",
+			goos:  "windows",
+			env:   map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:\git\bin\bash.exe`},
+			files: []string{`E:\git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with CLAUDE_CODE_GIT_BASH_PATH naming sh in any case",
+			goos:  "windows",
+			env:   map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:/git/bin/SH.EXE`},
+			files: []string{`E:/git/bin/SH.EXE`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with CLAUDE_CODE_GIT_BASH_PATH naming bash without .exe",
+			goos:  "windows",
+			env:   map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:\msys\usr\bin\bash`},
+			files: []string{`E:\msys\usr\bin\bash`},
+			want:  install.ShellBash,
+		},
+		{
+			name: "windows with CLAUDE_CODE_GIT_BASH_PATH naming a missing file",
 			goos: "windows",
 			env:  map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:\git\bin\bash.exe`},
-			want: install.ShellBash,
+			want: install.ShellPowerShell,
+		},
+		{
+			name:  "windows with CLAUDE_CODE_GIT_BASH_PATH naming another shell",
+			goos:  "windows",
+			env:   map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:\tools\zsh.exe`},
+			files: []string{`E:\tools\zsh.exe`},
+			want:  install.ShellPowerShell,
+		},
+		{
+			name:  "windows with an invalid CLAUDE_CODE_GIT_BASH_PATH but Git installed",
+			goos:  "windows",
+			env:   map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": `E:\nowhere\bash.exe`, "ProgramFiles": `C:\Program Files`},
+			files: []string{`C:\Program Files\Git\bin\bash.exe`},
+			want:  install.ShellBash,
 		},
 		{
 			name:  "windows with Git in Program Files",
@@ -88,6 +123,55 @@ func TestDetectShell(t *testing.T) {
 
 			if got := install.DetectShellOn(tt.goos, getenv, exists); got != tt.want {
 				t.Errorf("detectShell = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectShell_ReadsTheSettingsEnvFirst(t *testing.T) {
+	const bash = `E:\git\bin\bash.exe`
+	exists := func(path string) bool { return path == bash }
+	tests := []struct {
+		name     string
+		settings string
+		process  map[string]string
+		want     install.Shell
+	}{
+		{
+			name:     "set only in the settings file",
+			settings: `{"env": {"CLAUDE_CODE_GIT_BASH_PATH": "E:\\git\\bin\\bash.exe"}}`,
+			want:     install.ShellBash,
+		},
+		{
+			name:     "set in the settings file under another case",
+			settings: `{"env": {"claude_code_git_bash_path": "E:\\git\\bin\\bash.exe"}}`,
+			want:     install.ShellBash,
+		},
+		{
+			name:     "the settings file overrides the environment",
+			settings: `{"env": {"CLAUDE_CODE_GIT_BASH_PATH": "E:\\nowhere\\bash.exe"}}`,
+			process:  map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": bash},
+			want:     install.ShellPowerShell,
+		},
+		{
+			name:     "the environment applies when the settings file does not set it",
+			settings: `{"env": {"EDITOR": "vim"}}`,
+			process:  map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": bash},
+			want:     install.ShellBash,
+		},
+		{
+			name:     "unreadable settings leave the environment",
+			settings: `{"env": `,
+			process:  map[string]string{"CLAUDE_CODE_GIT_BASH_PATH": bash},
+			want:     install.ShellBash,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := install.SettingsEnv([]byte(tt.settings), func(key string) string { return tt.process[key] })
+
+			if got := install.DetectShellOn("windows", getenv, exists); got != tt.want {
+				t.Errorf("shell = %d, want %d", got, tt.want)
 			}
 		})
 	}

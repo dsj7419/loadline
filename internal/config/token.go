@@ -39,6 +39,13 @@ func EnsureToken(path string) ([]byte, error) {
 	return createToken(path)
 }
 
+// ReadToken returns the ingest token stored at path, holding it to the same
+// rule as EnsureToken, but never creates one: a missing file is an error
+// that matches fs.ErrNotExist.
+func ReadToken(path string) ([]byte, error) {
+	return readToken(path)
+}
+
 func readToken(path string) ([]byte, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
