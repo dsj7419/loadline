@@ -302,6 +302,9 @@ type ingestServer struct {
 	// echoComplete, when set, reports whether the tap's echo is complete;
 	// each ingest request notes what it reports as the request arrives.
 	echoComplete func() bool
+	// noKeepAlive, when set, closes each connection after its answer, so
+	// that no client connection lingers.
+	noKeepAlive bool
 
 	mu    sync.Mutex
 	posts []post
@@ -357,6 +360,7 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 			loadline.ServeHTTP(w, r)
 		}
 	})
+	ts.Config.SetKeepAlivesEnabled(!s.noKeepAlive)
 	ts.Start()
 	// Runs before the server's Close, which waits for held requests.
 	f.t.Cleanup(func() { close(release) })

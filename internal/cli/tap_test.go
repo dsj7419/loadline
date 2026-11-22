@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/cli"
@@ -159,6 +160,57 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 	if !posts[0].answered {
 		t.Error("the tap returned before the server answered its post, want it to wait for the answer")
 	}
+}
+
+// heldWriter is an output the status line has not read yet: a write to it
+// waits until the test releases it.
+type heldWriter struct {
+	release chan struct{}
+	got     bytes.Buffer
+}
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return w.got.Write(p)
+}
+
+// The forward waits for the echo even when the status line is slow to take
+// it: nothing reaches the server while the tap's output waits to be read,
+// and the post follows once it has been. The tap runs in a synctest bubble,
+// so the test waits until the tap can go no further, not for a while. A
+// forward started alongside the echo has reached the server by then.
+func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
+	f := newFixture(t)
+	// The server stays outside the bubble, because its goroutines wait on
+	// the network, which no goroutine in the bubble can end. It closes each
+	// connection after its answer, so that none of the tap's outlives the
+	// bubble.
+	srv := f.serve(func(s *ingestServer) { s.noKeepAlive = true })
+	input := statusInput(t)
+
+	synctest.Test(t, func(t *testing.T) {
+		out := &heldWriter{release: make(chan struct{})}
+		exit := make(chan int)
+		go func() {
+			exit <- cli.RunTap(t.Context(), strings.NewReader(input), out, f.env(), f.paths, f.cfg, cli.TapMode{})
+		}()
+
+		synctest.Wait()
+		if posts := srv.received(); len(posts) != 0 {
+			t.Errorf("server received %d posts while the echo waited to be read, want none", len(posts))
+		}
+		close(out.release)
+		if code := <-exit; code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if echo := out.got.String(); echo != input {
+			t.Errorf("echoed %q, want the input", echo)
+		}
+		if posts := srv.received(); len(posts) != 1 {
+			t.Errorf("server received %d posts once the echo was read, want 1", len(posts))
+		}
+	})
 }
 
 // The status line process does not linger on a server that does not answer:
