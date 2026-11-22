@@ -100,6 +100,10 @@ func IsLink(path string) (bool, error) {
 	return info.Mode()&fs.ModeSymlink != 0, nil
 }
 
+// Transient reports nothing here as a refusal that passes in a moment: a
+// file that is deleted or renamed goes from its name at once.
+func Transient(error) bool { return false }
+
 // EntryExposure says nothing here of a file or folder inside a private
 // folder: the folder's mode 0700 keeps everyone else from reaching it.
 func EntryExposure(string) (string, error) { return "", nil }

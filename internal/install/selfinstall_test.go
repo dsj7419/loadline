@@ -188,3 +188,24 @@ func TestInstalledPath_TheDataDirectoryOwnsItsFolder(t *testing.T) {
 		t.Errorf("datadir.Owns(%q) = false, want true", bin)
 	}
 }
+
+// The copy of the binary belongs to its install until it is moved in, and
+// the preparation of the data directory, which other installs and the
+// server run meanwhile, must know it for one.
+func TestSelfInstall_WritesFirstToAFileTheDataDirectoryLeavesToItsWriter(t *testing.T) {
+	dataDir := t.TempDir()
+	target := filepath.Join(dataDir, "bin", binaryName())
+	var temps []string
+	install.SetRename(t, func(from, to string) error {
+		if to == target {
+			temps = append(temps, from)
+		}
+		return os.Rename(from, to)
+	})
+
+	selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+
+	if len(temps) != 1 || filepath.Dir(temps[0]) != filepath.Dir(target) || !datadir.Temporary(filepath.Base(temps[0])) {
+		t.Errorf("SelfInstall wrote the binary first to %q, want one file beside %s that datadir.Temporary takes", temps, target)
+	}
+}

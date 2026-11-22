@@ -165,6 +165,33 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 	}
 }
 
+// Another Loadline process writes a file in the data directory under a
+// temporary name before it puts it in place, here one that brought an
+// entry for every signed-in user from the drive root. Doctor does not take
+// it for one of Loadline's files that others can get into.
+func TestDoctor_PassesOverAFileAnotherProcessIsWritingInTheDataDir(t *testing.T) {
+	home := sharedHome(t)
+	writeAll(t, map[string]string{
+		filepath.Join(home, "config.json"): fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude")),
+	})
+	dir := t.TempDir()
+	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+		t.Fatalf("install = %d, stderr %q", got.code, got.stderr)
+	}
+	outside := filepath.Join(filepath.Dir(home), "outside")
+	writeAll(t, map[string]string{outside: knownToken})
+	inFlight := filepath.Join(home, ".token-1234")
+	if err := os.Rename(outside, inFlight); err != nil {
+		t.Fatal(err)
+	}
+
+	got := run(t, "doctor", "--config-dir", dir)
+
+	if want := "✔ data directory: " + home + "\n"; !strings.Contains(got.stdout, want) {
+		t.Errorf("doctor stdout:\n%s\nwant the line %q", got.stdout, want)
+	}
+}
+
 // A folder between a drive root and LOADLINE_HOME, as D:\tools is above
 // D:\tools\loadline, inherits the root's "Authenticated Users: Modify",
 // which lets them move it aside and put a binary of their own at the path

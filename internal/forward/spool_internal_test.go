@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/protocol"
 )
 
@@ -61,5 +62,36 @@ func TestSpool_ADrainDuringAPutSeesNoEventYet(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir, badDirName)); !os.IsNotExist(err) {
 		t.Errorf("something was set aside in %s: %v", badDirName, err)
+	}
+}
+
+// A put's temporary file belongs to the put until it is published, and
+// the preparation of the data directory, which the server runs while hooks
+// put, must know it for one.
+func TestSpool_PutsWriteFirstToAFileTheDataDirectoryLeavesToItsWriter(t *testing.T) {
+	s := Spool{Dir: filepath.Join(t.TempDir(), "spool")}
+	env := protocol.Envelope{
+		V: protocol.SchemaVersion, ID: "00000000000000a2", Kind: protocol.KindHook,
+		At: time.Date(2026, time.November, 22, 9, 0, 0, 0, time.UTC), ConfigDir: t.TempDir(),
+		Payload: json.RawMessage(`{"session_id":"s1","hook_event_name":"Stop"}`),
+	}
+	var during []string
+	testHookBeforePublish = func() {
+		entries, err := os.ReadDir(s.Dir)
+		if err != nil {
+			t.Errorf("read the spool during the put: %v", err)
+		}
+		for _, e := range entries {
+			during = append(during, e.Name())
+		}
+	}
+	t.Cleanup(func() { testHookBeforePublish = nil })
+
+	if err := s.Put(env); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	if len(during) != 1 || !datadir.Temporary(during[0]) {
+		t.Errorf("during the put the spool holds %q, want one file that datadir.Temporary takes", during)
 	}
 }

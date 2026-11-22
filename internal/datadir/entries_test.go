@@ -29,6 +29,22 @@ func TestOwns_KnowsLoadlinesEntriesOnly(t *testing.T) {
 	}
 }
 
+func TestTemporary_KnowsTheFilesLoadlineWritesBeforePuttingThemInPlace(t *testing.T) {
+	for _, name := range []string{".token-123456", ".put-123456.tmp", ".loadline-123456.tmp"} {
+		if !datadir.Temporary(name) {
+			t.Errorf("Temporary(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{
+		"token", ".token", "token-123456", ".put-123456.json", "put-123456.tmp", ".loadline-123456.exe",
+		"loadline.exe", "loadline.exe.old", "1-0000000a.json", "loadline.log.1", ".DS_Store",
+	} {
+		if datadir.Temporary(name) {
+			t.Errorf("Temporary(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestSecure_RefusesAFolderThatHoldsOtherThings(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "tools")
 	notes := filepath.Join(home, "shared", "notes.txt")

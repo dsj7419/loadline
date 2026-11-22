@@ -37,9 +37,11 @@ func privateDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 	return sd, nil
 }
 
-// Private gives dir the access list of privateDescriptor. Windows applies it
-// to everything dir already holds, replacing what each of those inherited;
-// access a file was given explicitly stays.
+// Private gives dir the access list of privateDescriptor, unless it has that
+// list already. Windows applies a new list to everything dir holds,
+// replacing what each of those inherited; access a file was given explicitly
+// stays. Left as it is, a dir that is private already passes nothing again
+// to the files that other Loadline processes may be writing in it.
 func Private(dir string) error {
 	sd, err := privateDescriptor()
 	if err != nil {
@@ -49,13 +51,65 @@ func Private(dir string) error {
 	if err != nil {
 		return fmt.Errorf("make %s private: %w", dir, err)
 	}
-	err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	private, err := hasList(dir, dacl)
+	if err == nil && !private {
+		err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	}
 	runtime.KeepAlive(sd)
 	if err != nil {
 		return fmt.Errorf("make %s private: %w", dir, err)
 	}
 	return nil
+}
+
+// hasList reports whether path has a protected access list that holds the
+// entries of want, in the same order, and nothing else.
+func hasList(path string, want *windows.ACL) (bool, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false, err
+	}
+	defer runtime.KeepAlive(sd)
+	control, _, err := sd.Control()
+	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
+		return false, err
+	}
+	have, _, err := sd.DACL()
+	switch {
+	case errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND), err == nil && have == nil:
+		return false, nil
+	case err != nil:
+		return false, err
+	case have.AceCount != want.AceCount:
+		return false, nil
+	}
+	for i := range uint32(want.AceCount) {
+		var haveACE, wantACE *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(have, i, &haveACE); err != nil {
+			return false, err
+		}
+		if err := windows.GetAce(want, i, &wantACE); err != nil {
+			return false, err
+		}
+		if !sameEntry(haveACE, wantACE) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// sameEntry reports whether have is the entry want, an allow entry, is: of
+// its kind, for its trustee, with its rights, passed down as it is.
+func sameEntry(have, want *windows.ACCESS_ALLOWED_ACE) bool {
+	return have.Header.AceType == want.Header.AceType && have.Header.AceFlags == want.Header.AceFlags &&
+		have.Mask == want.Mask && entrySID(have).Equals(entrySID(want))
+}
+
+// entrySID returns the trustee of ace, an allow entry, or any other laid out
+// as one up to its SID.
+func entrySID(ace *windows.ACCESS_ALLOWED_ACE) *windows.SID {
+	return (*windows.SID)(unsafe.Pointer(&ace.SidStart)) //nolint:gosec // G103: an allow entry's SID starts at SidStart
 }
 
 // MkdirAll creates dir and every missing folder above it, each with the
@@ -143,6 +197,16 @@ func IsLink(path string) (bool, error) {
 		return attrs.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
 	}
 	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0, nil
+}
+
+// Transient reports whether err may be a refusal that passes in a moment.
+// Windows refuses to open a file whose deletion is pending, until the last
+// handle on it closes, with the same "access denied" as a file the user may
+// not open, and one that another process holds without sharing it with a
+// sharing violation. err does not tell which it is, so a caller tries again
+// for a short while and then takes err as it is.
+func Transient(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
 
 // EntryExposure is Exposure for a file or folder inside a private folder:
@@ -236,7 +300,7 @@ func othersAllowed(path string, counts func(rights windows.ACCESS_MASK, flags ui
 		if !grants(ace) || !counts(ace.Mask, ace.Header.AceFlags) {
 			continue
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)) //nolint:gosec // G103: an allow entry's SID starts at SidStart
+		sid := entrySID(ace)
 		if slices.ContainsFunc(trusted, sid.Equals) || isCreatorPlaceholder(sid) {
 			continue
 		}

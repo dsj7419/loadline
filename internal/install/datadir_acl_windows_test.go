@@ -109,3 +109,25 @@ func TestSelfInstall_AnUpgradeMakesAnOlderBinDirPrivate(t *testing.T) {
 		}
 	}
 }
+
+// Two installs at once each copy the binary to a file of their own in bin
+// before moving it in. An upgrade finds bin private already and leaves the
+// other's file as it is: its access list, which it brought from a shared
+// folder as a mark, is not rewritten.
+func TestSelfInstall_AnUpgradeLeavesTheFileAnotherInstallIsWritingAlone(t *testing.T) {
+	dir := sharedDataDir(t)
+	selfInstall(t, writeBinary(t, "loadline v1"), dir)
+	inFlight := filepath.Join(dir, "bin", ".loadline-1234.tmp")
+	outside := filepath.Join(filepath.Dir(dir), "outside")
+	writeFile(t, outside, []byte("loadline v2, half copied"))
+	if err := os.Rename(outside, inFlight); err != nil {
+		t.Fatal(err)
+	}
+	before := fspermtest.AccessList(t, inFlight)
+
+	selfInstall(t, writeBinary(t, "loadline v3"), dir)
+
+	if after := fspermtest.AccessList(t, inFlight); after != before {
+		t.Errorf("the upgrade changed the access list of %s, another install's, from %s to %s", inFlight, before, after)
+	}
+}

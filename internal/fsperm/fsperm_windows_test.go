@@ -2,6 +2,7 @@ package fsperm_test
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -103,6 +104,192 @@ func TestPrivate_MissingDirFails(t *testing.T) {
 
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Private = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// moveIn writes a file in a folder that lets every signed-in user modify
+// what is created below it and moves it to path, which keeps what it
+// inherited there: its access list is then not what the folder at path
+// passes down, which shows whether anything rewrote it since.
+func moveIn(t *testing.T, path string) {
+	t.Helper()
+	outside := filepath.Join(sharedRoot(t), filepath.Base(path))
+	write(t, outside)
+	if err := os.Rename(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
+		t.Fatalf("%s admits nobody else, so the test proves nothing", path)
+	}
+}
+
+// Applying a list to a folder makes Windows apply it to everything the
+// folder holds again, rewriting what each file inherited, files another
+// Loadline process is writing at that moment among them. A folder that has
+// the private list already is left as it is.
+func TestPrivate_ChangesNothingInAFolderThatIsPrivateAlready(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "loadline")
+	if err := fsperm.MkdirAll(root); err != nil {
+		t.Fatal(err)
+	}
+	inFlight := filepath.Join(root, ".token-1234")
+	moveIn(t, inFlight)
+	before := fspermtest.AccessList(t, inFlight)
+
+	if err := fsperm.Private(root); err != nil {
+		t.Fatalf("Private: %v", err)
+	}
+
+	if after := fspermtest.AccessList(t, inFlight); after != before {
+		t.Errorf("Private of the private %s rewrote the access list of %s from %s to %s", root, inFlight, before, after)
+	}
+}
+
+// A folder that keeps nothing of what its parent passes down has the
+// private list only when it has that list itself. Any other list of its
+// own is replaced with it.
+func TestPrivate_ReplacesAnyOtherListOfTheFoldersOwn(t *testing.T) {
+	user := userSID(t)
+	reference := filepath.Join(t.TempDir(), "reference")
+	if err := os.Mkdir(reference, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsperm.Private(reference); err != nil {
+		t.Fatal(err)
+	}
+	want := fspermtest.AccessList(t, reference)
+
+	for name, list := range map[string]string{
+		"one more entry":        "D:P(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;AU)",
+		"another trustee":       "D:P(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;AU)",
+		"fewer rights":          "D:P(A;OICI;FR;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+		"nothing passed down":   "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)",
+		"a denial, not a grant": "D:P(D;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "loadline")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			setList(t, root, list, windows.PROTECTED_DACL_SECURITY_INFORMATION)
+
+			if err := fsperm.Private(root); err != nil {
+				t.Fatalf("Private: %v", err)
+			}
+
+			if got := fspermtest.AccessList(t, root); got != want {
+				t.Errorf("after Private, %s, which had %s, has %s; want %s", root, list, got, want)
+			}
+		})
+	}
+}
+
+// A folder with the private entries that still takes what its parent
+// passes down is not private either: it takes whatever its parent passes
+// down later.
+func TestPrivate_ProtectsAFolderWithThePrivateEntriesThatStillInherits(t *testing.T) {
+	user := userSID(t)
+	// A parent that passes nothing down, so that the folder's list holds
+	// the private entries alone.
+	parent := t.TempDir()
+	setList(t, parent, "D:P(A;;FA;;;"+user+")", windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	root := filepath.Join(parent, "loadline")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setList(t, root, "D:(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+		windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
+
+	if err := fsperm.Private(root); err != nil {
+		t.Fatalf("Private: %v", err)
+	}
+
+	if !fspermtest.Protected(t, root) {
+		t.Errorf("%s still takes what its parent passes down after Private", root)
+	}
+}
+
+func userSID(t *testing.T) string {
+	t.Helper()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user.User.Sid.String()
+}
+
+func setList(t *testing.T, path, sddl string, protection windows.SECURITY_INFORMATION) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|protection, nil, nil, dacl, nil); err != nil {
+		t.Fatalf("set the access list of %s to %s: %v", path, sddl, err)
+	}
+}
+
+// Windows refuses to open a file whose deletion is pending, which another
+// process deleting it causes for a moment, with "access denied". Making
+// the folder private passes over such a file.
+func TestPrivate_TakesAFolderWhileAFileInItIsBeingDeleted(t *testing.T) {
+	root := sharedRoot(t)
+	going := filepath.Join(root, "spool", "1-0000000a.json")
+	write(t, going)
+	fspermtest.DeletePending(t, going)
+
+	if err := fsperm.Private(root); err != nil {
+		t.Errorf("Private: %v", err)
+	}
+}
+
+// Every way of looking at a file whose deletion is pending is refused in a
+// way Transient takes for one that may pass, and once the file is gone, the
+// answer is that it does not exist, which is no refusal.
+func TestTransient_IsHowWindowsRefusesAFileBeingDeleted(t *testing.T) {
+	going := filepath.Join(t.TempDir(), ".token-1234")
+	write(t, going)
+	release := fspermtest.DeletePending(t, going)
+
+	_, linkErr := fsperm.IsLink(going)
+	_, exposureErr := fsperm.Exposure(going)
+	for name, err := range map[string]error{
+		"IsLink":        linkErr,
+		"Exposure":      exposureErr,
+		"ClearExplicit": fsperm.ClearExplicit(going),
+	} {
+		if !fsperm.Transient(err) {
+			t.Errorf("%s of a file being deleted = %v, want a refusal Transient takes", name, err)
+		}
+	}
+
+	release()
+	_, err := fsperm.IsLink(going)
+	if !errors.Is(err, fs.ErrNotExist) || fsperm.Transient(err) {
+		t.Errorf("IsLink of the deleted file = %v, want fs.ErrNotExist, which is not transient", err)
+	}
+}
+
+func TestTransient_TakesOnlyARefusalThatMayPass(t *testing.T) {
+	for name, tt := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"access denied":            {&fs.PathError{Op: "open", Path: "token", Err: windows.ERROR_ACCESS_DENIED}, true},
+		"sharing violation":        {fmt.Errorf("read the access list of token: %w", windows.ERROR_SHARING_VIOLATION), true},
+		"not found":                {&fs.PathError{Op: "open", Path: "token", Err: windows.ERROR_FILE_NOT_FOUND}, false},
+		"invalid parameter":        {windows.ERROR_INVALID_PARAMETER, false},
+		"an error of another kind": {errors.New("access denied"), false},
+		"none":                     {nil, false},
+	} {
+		if got := fsperm.Transient(tt.err); got != tt.want {
+			t.Errorf("%s: Transient(%v) = %t, want %t", name, tt.err, got, tt.want)
+		}
 	}
 }
 

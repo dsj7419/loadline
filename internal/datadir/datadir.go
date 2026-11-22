@@ -38,9 +38,14 @@ func Secure(dir, top string) error {
 // that holds anything that is not Loadline's, which making the dir private
 // would take other users' access to, and a link among Loadline's own files.
 // It then creates dir, and each missing folder above it, private to the
-// user, or makes the existing dir private and takes off Loadline's own files
-// what access they were given explicitly, which making the folder private
-// leaves.
+// user, or makes the existing dir private and then, from each of Loadline's
+// own files and folders whose access list still lets anyone else in, takes
+// what access it was given explicitly, which making the dir private leaves.
+//
+// Several Loadline processes may run it at once, and write files in dir
+// meanwhile (Temporary), which it leaves alone. It changes nothing that is
+// private already: Windows passes a new access list on a folder down to
+// everything in it, those files among them.
 func Make(dir string) error {
 	problem, err := contentProblem(dir)
 	if err != nil {
@@ -63,11 +68,31 @@ func Make(dir string) error {
 		return errors.New(linkProblem(link))
 	}
 	for _, path := range paths {
-		if err := fsperm.ClearExplicit(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := clearOthers(path); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// clearOthers takes off path, one of Loadline's files or folders in the
+// private data directory, what access it was given explicitly, when its
+// access list lets anyone else in, so that only what the data directory
+// passes down applies to it. One that lets nobody else in is left as it is,
+// such as a folder Loadline made private with a list of its own. A path
+// that is being deleted is waited for (settle), and once gone, left out.
+func clearOthers(path string) error {
+	err := settle(func() error {
+		found, err := fsperm.EntryExposure(path)
+		if err != nil || found == "" {
+			return err
+		}
+		return fsperm.ClearExplicit(path)
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // Verify returns the error Secure would refuse dir with, which says what to
@@ -106,15 +131,27 @@ func Check(dir, top string) (string, error) {
 		return "", err
 	}
 	for _, path := range paths {
-		problem, err := exposed(path, fsperm.EntryExposure)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil || problem != "" {
+		if problem, err := entryProblem(path); err != nil || problem != "" {
 			return problem, err
 		}
 	}
 	return "", nil
+}
+
+// entryProblem reports path, one of Loadline's files or folders in the data
+// directory, as not private when its access list lets anyone else in, or ""
+// when it does not. A path that is being deleted is waited for (settle),
+// and once gone, has no problem.
+func entryProblem(path string) (string, error) {
+	var problem string
+	err := settle(func() (err error) {
+		problem, err = exposed(path, fsperm.EntryExposure)
+		return err
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return problem, err
 }
 
 // refusal reports what Verify refuses dir for, or "" when nothing.

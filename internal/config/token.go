@@ -16,6 +16,11 @@ import (
 // tokenBytes is the amount of randomness in an ingest token.
 const tokenBytes = 32
 
+// testHookBeforePublish, when a test sets it, runs once a new token is
+// written to its temporary file, at temp, and before it is linked into
+// place.
+var testHookBeforePublish func(temp string)
+
 // EnsureToken returns the ingest token stored at path, creating it first when
 // the file does not exist. The token is tokenBytes random bytes, hex-encoded.
 // Creating it first makes the directory that holds it private to the user.
@@ -85,6 +90,9 @@ func createToken(path string) ([]byte, error) {
 		_ = os.Remove(tempPath)
 	}()
 
+	if testHookBeforePublish != nil {
+		testHookBeforePublish(tempPath)
+	}
 	if err := os.Link(tempPath, path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return readToken(path)

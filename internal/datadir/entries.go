@@ -46,6 +46,31 @@ func Owns(name string) bool {
 	return err == nil
 }
 
+// tempNames are the names of the files Loadline writes before it puts them
+// in place under their own: the token's (config), a spooled event's
+// (forward) and the installed binary's (install), each a prefix and a
+// suffix around what os.CreateTemp makes unique.
+var tempNames = [...]struct{ prefix, suffix string }{
+	{tokenTempPrefix, ""},
+	{".put-", ".tmp"},
+	{".loadline-", ".tmp"},
+}
+
+// Temporary reports whether name is that of a file Loadline writes before it
+// puts it in place under its own name. Such a file belongs to the process
+// writing it, which may be another Loadline process at work right now, and
+// which renames, links or deletes it at any moment. The preparation and the
+// check of the data directory leave it alone, and judge it once it is in
+// place.
+func Temporary(name string) bool {
+	for _, temp := range tempNames {
+		if strings.HasPrefix(name, temp.prefix) && strings.HasSuffix(name, temp.suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // systemNames are what Windows Explorer and the macOS Finder leave in a
 // folder its user has looked at, which does not make it anyone else's.
 var systemNames = []string{".DS_Store", "desktop.ini", "Thumbs.db"}
@@ -99,10 +124,10 @@ func linkProblem(path string) string {
 }
 
 // ownPaths returns what Loadline keeps in dir: each entry it owns, and
-// everything below the folders among them. It follows no link: it stops at
-// the first and returns it. A dir that does not exist holds nothing, and an
-// entry that goes while it looks, as a spooled event does once drained, is
-// left out.
+// everything below the folders among them, except the files that are still
+// being written (Temporary). It follows no link: it stops at the first and
+// returns it. A dir that does not exist holds nothing, and an entry that
+// goes while it looks, as a spooled event does once drained, is left out.
 func ownPaths(dir string) (paths []string, link string, err error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -125,9 +150,26 @@ func ownPaths(dir string) (paths []string, link string, err error) {
 }
 
 // walk returns path and, when it is a folder, everything below it, stopping
-// at the first link.
+// at the first link and passing over the files that are still being
+// written.
 func walk(path string) (paths []string, link string, err error) {
-	isLink, err := fsperm.IsLink(path)
+	if Temporary(filepath.Base(path)) {
+		// Not even looked at: it is its writer's, and on Windows, looking
+		// at one a moment after its writer deleted it fails while the
+		// deletion is pending.
+		return nil, "", nil
+	}
+	var isLink bool
+	var info fs.FileInfo
+	err = settle(func() (err error) {
+		if isLink, err = fsperm.IsLink(path); err != nil || isLink {
+			return err
+		}
+		if info, err = os.Lstat(path); err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		return nil
+	})
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, "", nil
@@ -135,13 +177,6 @@ func walk(path string) (paths []string, link string, err error) {
 		return nil, "", err
 	case isLink:
 		return nil, path, nil
-	}
-	info, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, "", nil
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("read %s: %w", path, err)
 	}
 	paths = []string{path}
 	if !info.IsDir() {

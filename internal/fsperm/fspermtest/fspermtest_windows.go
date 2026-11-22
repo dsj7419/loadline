@@ -2,6 +2,7 @@ package fspermtest
 
 import (
 	"runtime"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -125,6 +126,54 @@ func Others(tb testing.TB, path string, mask windows.ACCESS_MASK) []string {
 		others = append(others, name(sid))
 	}
 	return others
+}
+
+// AccessList returns the access list of path in the security descriptor
+// string format, to tell whether anything changed it.
+func AccessList(tb testing.TB, path string) string {
+	tb.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		tb.Fatalf("read the access list of %s: %v", path, err)
+	}
+	return sd.String()
+}
+
+// DeletePending marks path, a file the test created, for deletion while
+// holding it open, as a process that deletes a file does for a moment and
+// as long as another holds it: until the returned release closes it, which
+// deletes it, Windows refuses to open it, with "access denied". The end of
+// the test releases it if the test does not.
+func DeletePending(tb testing.TB, path string) (release func()) {
+	tb.Helper()
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.DELETE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		tb.Fatalf("open %s to delete it: %v", path, err)
+	}
+	// FILE_DISPOSITION_INFO is one BOOLEAN. Without the POSIX semantics of
+	// FileDispositionInfoEx, the name stays in its folder until the handle
+	// closes.
+	deleteFile := byte(1)
+	if err := windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &deleteFile, 1); err != nil {
+		_ = windows.CloseHandle(handle)
+		tb.Fatalf("mark %s for deletion: %v", path, err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			if err := windows.CloseHandle(handle); err != nil {
+				tb.Errorf("close %s: %v", path, err)
+			}
+		})
+	}
+	tb.Cleanup(release)
+	return release
 }
 
 // Protected reports whether the access list of path ignores what its parent

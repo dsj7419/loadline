@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/datadir"
 )
 
 func ensureToken(t *testing.T, path string) []byte {
@@ -212,6 +213,21 @@ func TestEnsureToken_ConcurrentCallersAgreeOnOneToken(t *testing.T) {
 	}
 	if onDisk, err := os.ReadFile(path); err != nil || !bytes.Equal(onDisk, tokens[0]) {
 		t.Errorf("token file holds %q (err %v), callers agreed on %q", onDisk, err, tokens[0])
+	}
+}
+
+// The file a token is written to before it is linked into place belongs to
+// its caller while it is there, and the preparation of the data directory,
+// which other callers run meanwhile, must know it for one.
+func TestEnsureToken_WritesFirstToAFileTheDataDirectoryLeavesToItsWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	var temps []string
+	config.SetBeforePublish(t, func(temp string) { temps = append(temps, temp) })
+
+	ensureToken(t, path)
+
+	if len(temps) != 1 || filepath.Dir(temps[0]) != filepath.Dir(path) || !datadir.Temporary(filepath.Base(temps[0])) {
+		t.Errorf("EnsureToken wrote the token first to %q, want one file beside %s that datadir.Temporary takes", temps, path)
 	}
 }
 
