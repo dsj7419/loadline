@@ -178,6 +178,33 @@ func TestScenario_BShowsBothWindowsOnPace(t *testing.T) {
 	}
 }
 
+// The page colors a pace by band, and the demo shows a window in each,
+// whenever in the hour, and whatever the day, it starts.
+func TestScenario_ShowsAPaceInEachBand(t *testing.T) {
+	tokyo := time.FixedZone("Tokyo", 9*3600)
+	for _, at := range []time.Time{now, now.Add(9 * time.Minute), now.Add(59 * time.Minute), time.Date(2026, 11, 22, 0, 5, 0, 0, tokyo)} {
+		bands := make(map[string][]float64)
+		for _, a := range seeded(t, at).Accounts {
+			for _, w := range []*tracker.WindowView{a.FiveHour, a.SevenDay} {
+				switch {
+				case w == nil || w.Pace == nil:
+				case *w.Pace < 0.9:
+					bands["below 0.9"] = append(bands["below 0.9"], *w.Pace)
+				case *w.Pace <= 1.2:
+					bands["0.9 to 1.2"] = append(bands["0.9 to 1.2"], *w.Pace)
+				default:
+					bands["above 1.2"] = append(bands["above 1.2"], *w.Pace)
+				}
+			}
+		}
+		for _, band := range []string{"below 0.9", "0.9 to 1.2", "above 1.2"} {
+			if len(bands[band]) == 0 {
+				t.Errorf("at %v no window has a pace %s; the paces are %v", at, band, bands)
+			}
+		}
+	}
+}
+
 func TestScenario_APIAccountSpendsAcrossDays(t *testing.T) {
 	api := accountByLabel(t, seeded(t, now), "API")
 

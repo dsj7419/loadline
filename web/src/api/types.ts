@@ -104,6 +104,12 @@ export type WindowView = {
   readonly observedAt: Timestamp | null;
   /** Null while the trend is unknown. */
   readonly projection: ProjectionView | null;
+  /**
+   * How fast the usage has burned against the pace that reaches 100% at
+   * reset: 1 is on that pace. Left out until an hour of the window has gone,
+   * and while the reset time is unknown. Unrounded.
+   */
+  readonly pace?: number;
 };
 
 /** Where a window's usage is heading. */

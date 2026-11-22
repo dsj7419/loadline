@@ -25,14 +25,15 @@ import {
 export type Schema =
   | { readonly kind: 'text' | 'timestamp' | 'finite' | 'integer' | 'flag' }
   | { readonly kind: 'enum'; readonly values: readonly string[] }
-  | { readonly kind: 'nullable' | 'array'; readonly of: Schema }
+  | { readonly kind: 'nullable' | 'optional' | 'array'; readonly of: Schema }
   | { readonly kind: 'object'; readonly fields: Readonly<Record<string, Schema>> };
 
 declare const describes: unique symbol;
 
 // A schema that describes values of type T. The phantom member makes the
 // compiler hold each schema below to its type exactly: a field cannot be
-// missing, extra, nullable when the type is not, or the other way round.
+// missing, extra, nullable or optional when the type is not, or the other way
+// round.
 // Because Timestamp and Int are branded, a timestamp field cannot take the
 // text schema, nor an integer field the finite one.
 type SchemaOf<T> = Schema & { readonly [describes]?: (value: T) => T };
@@ -49,6 +50,12 @@ function oneOf<const T extends string>(values: readonly T[]): SchemaOf<T> {
 
 function nullable<T>(of: SchemaOf<T>): SchemaOf<T | null> {
   return { kind: 'nullable', of };
+}
+
+// A field the server leaves out, rather than sending null, when it has no
+// value for it.
+function optional<T>(of: SchemaOf<T>): SchemaOf<T | undefined> {
+  return { kind: 'optional', of };
 }
 
 function listOf<T>(of: SchemaOf<T>): SchemaOf<readonly T[]> {
@@ -81,6 +88,7 @@ const windowView = shape<WindowView>({
   resetsAt: nullable(timestamp),
   observedAt: nullable(timestamp),
   projection: nullable(projectionView),
+  pace: optional(finite),
 });
 
 const creditsView = shape<CreditsView>({
@@ -164,9 +172,10 @@ export const viewSchema: Schema = shape<View>({
 });
 
 /**
- * Reports whether x is a View. Every field must be present with the right
- * type; fields it does not know are allowed, so that a page left open across
- * an upgrade keeps working.
+ * Reports whether x is a View. Every field the server always sends must be
+ * present, and every field present must have the right type; fields it does
+ * not know are allowed, so that a page left open across an upgrade keeps
+ * working.
  */
 export function isView(x: unknown): x is View {
   return matches(viewSchema, x);
@@ -188,10 +197,13 @@ function matches(schema: Schema, value: unknown): boolean {
       return typeof value === 'string' && schema.values.includes(value);
     case 'nullable':
       return value === null || matches(schema.of, value);
+    case 'optional':
+      return value === undefined || matches(schema.of, value);
     case 'array':
       return Array.isArray(value) && value.every((item: unknown) => matches(schema.of, item));
     case 'object':
-      // A missing field reads as undefined, which no schema accepts.
+      // A missing field reads as undefined, which only an optional schema
+      // accepts.
       return isRecord(value) && Object.entries(schema.fields).every(([key, field]) => matches(field, value[key]));
   }
 }

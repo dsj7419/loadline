@@ -13,6 +13,8 @@ test('dashboard renders demo state', async ({ dashboard: page }) => {
   await expect(main).toContainText('100%');
   await expect(main).toContainText(/Credits ≈ \$\d+\.\d\d of \$20 used/);
   await expect(main.getByText('On credits')).toBeVisible();
+  // Main used its week up well before the reset.
+  await expect(main.getByText('×1.4')).toBeVisible();
 });
 
 test('keyboard can open and close detail', async ({ dashboard: page }) => {

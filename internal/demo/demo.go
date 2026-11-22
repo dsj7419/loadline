@@ -59,10 +59,11 @@ func Credits(now time.Time) map[domain.ConfigDir][]domain.CreditGrant {
 // Main is an Ultra subscription that reached its weekly limit 18 minutes ago,
 // well before the week resets, and has worked on its usage credits since:
 // about $6.20 of its $20. B is a subscription with a 5-hour window as well,
-// comfortably on pace; API is billed per token, under its daily budget
-// with spend spread over the past fortnight. The sessions are one waiting on
-// a permission prompt, one working with two subagents, one compacting, one
-// idle and one parked background session.
+// both on course to stay under their limits; API is billed per token, under
+// its daily budget with spend spread over the past fortnight. Between them,
+// the windows show a pace in each of the bands the page colors. The sessions
+// are one waiting on a permission prompt, one working with two subagents, one
+// compacting, one idle and one parked background session.
 func Scenario(now time.Time) (accounts []domain.Account, events []domain.Event, api []domain.APIRequest) {
 	s := script{now: now, midnight: startOfDay(now)}
 	s.copperLantern()
@@ -290,7 +291,9 @@ func (s *script) harborAPI() {
 }
 
 // tidewater is compacting a nearly full context, and its status lines carry
-// both of B's windows.
+// both of B's windows. The 5-hour window has burned at about the pace that
+// would use it up by its reset, which the page shows as about ×1.0, though
+// its last hour heads for some 77%.
 func (s *script) tidewater() {
 	x := session{
 		id: "c7b2d915-6e3a-4a0f-8c47-1b9e5d2f6a83", dir: dirB, pid: 9120, name: "tidewater", email: "dev.b@example.com",
@@ -307,11 +310,11 @@ func (s *script) tidewater() {
 		ago            time.Duration
 		week, fiveHour float64
 	}{
-		{65 * time.Minute, 3.6, 30},
-		{50 * time.Minute, 3.7, 32},
-		{35 * time.Minute, 3.8, 34},
-		{20 * time.Minute, 3.9, 36},
-		{5 * time.Minute, 4, 38},
+		{65 * time.Minute, 3.6, 52},
+		{50 * time.Minute, 3.7, 54},
+		{35 * time.Minute, 3.8, 56},
+		{20 * time.Minute, 3.9, 58},
+		{5 * time.Minute, 4, 60},
 	} {
 		s.status(x, sample.ago, cost, &domain.Limits{
 			SevenDay: &domain.Window{UsedPct: sample.week, ResetsAt: weekResets},

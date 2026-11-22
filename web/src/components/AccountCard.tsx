@@ -2,7 +2,7 @@ import type { ReadonlySignal } from '@preact/signals';
 import { useId } from 'preact/hooks';
 import type { AccountView, CreditsView, WindowView } from '../api/types';
 import { isCurrent, windowNote } from '../model/describe';
-import { formatPct, formatUSD, formatUSDBrief, formatWhen } from '../model/format';
+import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
 import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
@@ -122,8 +122,37 @@ function WindowGauge({ label, window, ownerId, now }: WindowGaugeProps) {
           {note.text}
         </p>
       )}
+      {window.pace !== undefined && <Pace pace={window.pace} />}
     </Gauge>
   );
+}
+
+// How fast a window is burning, as a multiplier of the pace that reaches 100%
+// at reset. A screen reader hears it in words rather than as a × sign, and
+// the tooltip, on the figure itself, is not read out a second time.
+function Pace({ pace }: { readonly pace: number }) {
+  const shown = formatPace(pace);
+  return (
+    <>
+      <span
+        class={`pace num tone-${paceTone(pace)}`}
+        aria-hidden="true"
+        title={`Burning ${shown}× faster than the pace that reaches 100% at reset.`}
+      >
+        ×{shown}
+      </span>
+      <span class="visually-hidden">Pace {shown} times the rate that reaches 100% at reset</span>
+    </>
+  );
+}
+
+// A pace of 1 uses the window up just as it resets. Near it is worth
+// watching; well past it, the limit comes first.
+function paceTone(pace: number): Tone {
+  if (pace > 1.2) {
+    return 'bad';
+  }
+  return pace >= 0.9 ? 'warn' : 'ok';
 }
 
 function usageTone(pct: number): Tone {

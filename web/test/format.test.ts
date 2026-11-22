@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   formatDuration,
+  formatPace,
   formatPct,
   formatRelative,
   formatReset,
@@ -116,6 +117,32 @@ describe('formatUSDBrief', () => {
 
   it.each(notNumbers)('shows %s as a dash', (n) => {
     expect(formatUSDBrief(n)).toBe('—');
+  });
+});
+
+describe('formatPace', () => {
+  it.each<[number, string]>([
+    [0, '0.0'],
+    [0.04, '0.0'],
+    [0.86, '0.9'],
+    [1, '1.0'],
+    [1.44, '1.4'],
+    [9.94, '9.9'],
+    [9.96, '10'],
+    [10, '10'],
+    [12.4, '12'],
+    [12.5, '13'],
+    [99, '99'],
+    [99.4, '99'],
+    [99.5, '99+'],
+    [1680, '99+'],
+    [1e300, '99+'],
+  ])('shows %s as %s', (n, want) => {
+    expect(formatPace(n)).toBe(want);
+  });
+
+  it.each([...notNumbers, -0.5])('shows %s as a dash', (n) => {
+    expect(formatPace(n)).toBe('—');
   });
 });
 

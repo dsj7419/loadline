@@ -22,7 +22,8 @@
           "atReset": 100,
           "eta": "2026-11-21T20:00:00Z",
           "runsOutBeforeReset": true
-        }
+        },
+        "pace": 1.288
       },
       "spendTodayUSD": 4,
       "spendWeekUSD": 4.75,
@@ -88,7 +89,8 @@
         "usedPct": 10,
         "resetsAt": "2026-11-21T21:00:00Z",
         "observedAt": "2026-11-21T18:00:00Z",
-        "projection": null
+        "projection": null,
+        "pace": 0.25
       },
       "sevenDay": {
         "usedPct": 4,
@@ -99,7 +101,8 @@
           "atReset": 4,
           "eta": null,
           "runsOutBeforeReset": false
-        }
+        },
+        "pace": 0.14
       },
       "spendTodayUSD": 6,
       "spendWeekUSD": 6,

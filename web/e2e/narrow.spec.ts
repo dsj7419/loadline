@@ -24,6 +24,14 @@ test.describe('long text and large amounts', () => {
       viewOf({
         accounts: [
           accountOf({
+            // The page's clock is real, so the window resets far ahead.
+            sevenDay: {
+              usedPct: 1000,
+              resetsAt: '2099-01-01T00:00:00Z',
+              observedAt: '2026-11-21T18:00:00Z',
+              projection: { ratePerHour: 1e300, atReset: 100, eta: '2098-12-31T00:00:00Z', runsOutBeforeReset: true },
+              pace: 1e300,
+            },
             credits: {
               balanceUSD: 1e21,
               spentUSD: 1e300,
@@ -67,6 +75,9 @@ test.describe('long text and large amounts', () => {
     await page.goto(server.url);
     await expect(page.getByRole('button', { name: /harbor-api/ })).toBeVisible();
     expect(await sidewaysOverflow(page360(page))).toBe(0);
+    const card = page.getByRole('article', { name: 'Main', exact: true });
+    await expect(card.getByText('×99+')).toBeVisible();
+    expect(await sidewaysOverflow(card)).toBe(0);
 
     await page.getByRole('button', { name: /harbor-api/ }).click();
     const dialog = page.getByRole('dialog');

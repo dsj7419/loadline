@@ -58,6 +58,8 @@ function undescribed(schema: Schema, value: unknown, path: Path = []): Path[] {
   switch (schema.kind) {
     case 'nullable':
       return value === null ? [] : undescribed(schema.of, value, path);
+    case 'optional':
+      return value === undefined ? [] : undescribed(schema.of, value, path);
     case 'array':
       return Array.isArray(value)
         ? value.flatMap((item: unknown, index) => undescribed(schema.of, item, [...path, index]))
@@ -74,6 +76,34 @@ function undescribed(schema: Schema, value: unknown, path: Path = []): Path[] {
   }
 }
 
+// The paths to the fields in the payload that the schema lets the server
+// leave out, in the order the payload holds them.
+function optionalIn(schema: Schema, value: unknown, path: Path = []): Path[] {
+  switch (schema.kind) {
+    case 'nullable':
+      return value === null ? [] : optionalIn(schema.of, value, path);
+    case 'optional':
+      return value === undefined ? [] : optionalIn(schema.of, value, path);
+    case 'array':
+      return Array.isArray(value)
+        ? value.flatMap((item: unknown, index) => optionalIn(schema.of, item, [...path, index]))
+        : [];
+    case 'object':
+      return isObject(value)
+        ? Object.entries(value).flatMap(([key, field]) => {
+            const fieldSchema = schema.fields[key];
+            if (fieldSchema === undefined) {
+              return [];
+            }
+            const here = fieldSchema.kind === 'optional' ? [[...path, key]] : [];
+            return [...here, ...optionalIn(fieldSchema, field, [...path, key])];
+          })
+        : [];
+    default:
+      return [];
+  }
+}
+
 // The value lists of every enum in schema.
 function* enumsIn(schema: Schema): Generator<readonly string[]> {
   switch (schema.kind) {
@@ -81,6 +111,7 @@ function* enumsIn(schema: Schema): Generator<readonly string[]> {
       yield schema.values;
       return;
     case 'nullable':
+    case 'optional':
     case 'array':
       yield* enumsIn(schema.of);
       return;
@@ -137,6 +168,11 @@ describe('the View contract', () => {
             collect(schema.of, value);
           }
           return;
+        case 'optional':
+          if (value !== undefined) {
+            collect(schema.of, value);
+          }
+          return;
         case 'array':
           if (Array.isArray(value)) {
             value.forEach((item: unknown) => {
@@ -171,11 +207,19 @@ describe('the View contract', () => {
     expect(accepted).toEqual([]);
   });
 
-  it('rejects the payload when any one field is missing', () => {
+  it('rejects the payload when any one field is missing, but for those the server may leave out', () => {
     const accepted = everyField
       .filter(({ path }) => isView(edit(golden, path, absent)))
       .map(({ path }) => show(path));
-    expect(accepted).toEqual([]);
+    expect(accepted).toEqual(optionalIn(viewSchema, golden).map(show));
+  });
+
+  // Without this, marking any field optional would also excuse it from the
+  // sweep above.
+  it("lets the server leave out a window's pace, and nothing else", () => {
+    const optional = optionalIn(viewSchema, golden).map(show);
+    expect(optional).not.toEqual([]);
+    expect(optional.filter((path) => !/\.(fiveHour|sevenDay)\.pace$/.test(path))).toEqual([]);
   });
 
   it.each<[string, Path, unknown]>([
@@ -195,6 +239,8 @@ describe('the View contract', () => {
     ['a fractional token count', ['models', 0, 'input'], 10.25],
     ['a fractional number of days of credit history', ['accounts', 0, 'credits', 'days'], 7.5],
     ['a list element of the wrong type', ['alerts', 0], 'needs_you'],
+    ['null for a pace, which the server leaves out instead', ['accounts', 0, 'sevenDay', 'pace'], null],
+    ['an infinite pace', ['accounts', 0, 'sevenDay', 'pace'], Number.POSITIVE_INFINITY],
   ])('rejects %s', (_, path, replacement) => {
     expect(isView(edit(golden, path, replacement))).toBe(false);
   });
@@ -206,6 +252,7 @@ describe('the View contract', () => {
     ['an unknown observation time', ['accounts', 0, 'fiveHour', 'observedAt'], null],
     ['a timestamp with a fraction and an offset', ['generatedAt'], '2026-11-21T19:00:00.123456789+01:00'],
     ['empty lists', ['sessions'], []],
+    ['a window without a pace', ['accounts', 0, 'sevenDay', 'pace'], absent],
   ])('accepts %s', (_, path, replacement) => {
     expect(isView(edit(golden, path, replacement))).toBe(true);
   });

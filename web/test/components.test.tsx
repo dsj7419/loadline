@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionStates, type View } from '../src/api/types';
 import { AccountCard } from '../src/components/AccountCard';
 import { App } from '../src/components/App';
-import { Gauge } from '../src/components/Gauge';
+import { Gauge, type Tone } from '../src/components/Gauge';
 import { ModelsBar } from '../src/components/ModelsBar';
 import { browserOptIn, createNotifier, type NotificationApi, type OptInStore } from '../src/components/Notifier';
 import { SessionRow } from '../src/components/SessionRow';
@@ -48,6 +48,24 @@ function pressKey(key: string, init: KeyboardEventInit = {}): void {
 function wholeText(text: string): (content: string, element: Element | null) => boolean {
   return (_, element) =>
     element !== null && element.textContent === text && [...element.children].every((child) => child.textContent !== text);
+}
+
+// The text in element, leaving out each child element that keep turns away,
+// with all it holds.
+function textOf(element: Element, keep: (child: Element) => boolean): string {
+  return [...element.childNodes]
+    .map((node) => (node instanceof Element ? (keep(node) ? textOf(node, keep) : '') : (node.textContent ?? '')))
+    .join('');
+}
+
+// What a sighted user reads: all but the text set aside for screen readers.
+function seenText(element: Element): string {
+  return textOf(element, (child) => !child.classList.contains('visually-hidden'));
+}
+
+// What a screen reader reads: all but what aria-hidden hides.
+function spokenText(element: Element): string {
+  return textOf(element, (child) => child.getAttribute('aria-hidden') !== 'true');
 }
 
 function memoryOptIn(initial = false): { store: OptInStore; saved: boolean[] } {
@@ -610,6 +628,48 @@ describe('AccountCard', () => {
     };
     render(<AccountCard range="today" account={accountOf({ sevenDay: runningOut })} now={signal(now)} />);
     expect(screen.getByText('+2.1%/h · runs out Sun 14:00 · resets Mon 09:00')).toBeTruthy();
+  });
+
+  it('shows how fast each window is burning after when it resets', () => {
+    const account = accountOf({ fiveHour: { ...fiveHour, pace: 0.41 }, sevenDay: { ...week, pace: 1.44 } });
+    render(<AccountCard range="today" account={account} now={signal(now)} />);
+
+    const card = screen.getByRole('article', { name: 'Main' });
+    expect(seenText(card)).toMatch(/5-hour\s*38%\s*resets Sat 20:10\s*×0\.4\s*Weekly\s*93%\s*resets Mon 09:00\s*×1\.4/);
+  });
+
+  it.each<[number, string]>([
+    [1.44, '1.4'],
+    [12.4, '12'],
+    [1680, '99+'],
+  ])('explains a pace of %s in a tooltip, and to a screen reader in words', (pace, shown) => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
+
+    const multiplier = screen.getByText(`×${shown}`);
+    expect(multiplier.getAttribute('title')).toBe(`Burning ${shown}× faster than the pace that reaches 100% at reset.`);
+    const spoken = spokenText(screen.getByRole('article', { name: 'Main' }));
+    expect(spoken).toContain(`Pace ${shown} times the rate that reaches 100% at reset`);
+    expect(spoken).not.toContain('×');
+  });
+
+  it.each<[number, string, Tone]>([
+    [0.89, '×0.9', 'ok'],
+    [0.9, '×0.9', 'warn'],
+    [1.2, '×1.2', 'warn'],
+    [1.21, '×1.2', 'bad'],
+  ])('colours a pace of %s, shown as %s, as %s', (pace, shown, tone) => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
+
+    const tones = [...screen.getByText(shown).classList].filter((name) => name.startsWith('tone-'));
+    expect(tones).toEqual([`tone-${tone}`]);
+  });
+
+  it('shows no pace for a window without one', () => {
+    render(<AccountCard range="today" account={accountOf({ fiveHour, sevenDay: week })} now={signal(now)} />);
+
+    const text = screen.getByRole('article', { name: 'Main' }).textContent;
+    expect(text).not.toContain('×');
+    expect(text).not.toContain('times the rate');
   });
 
   it("shows an API account's spend against its daily budget, as an estimate", () => {

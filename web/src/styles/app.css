@@ -466,7 +466,11 @@ button.notify:hover {
   );
 }
 
+/* The note under a bar, with any figure that follows it held at the right. */
 .gauge-note {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   margin-top: 7px;
   font-size: 12.5px;
   color: var(--muted);
@@ -476,6 +480,7 @@ button.notify:hover {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -486,6 +491,14 @@ button.notify:hover {
 .note-bad {
   font-weight: 500;
   color: var(--bad);
+}
+
+/* How fast a window is burning, after when it resets. */
+.pace {
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--tone);
 }
 
 /* Spend */

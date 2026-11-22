@@ -76,6 +76,10 @@ type WindowView struct {
 	ObservedAt Timestamp `json:"observedAt"`
 	// Projection is null while the trend is unknown.
 	Projection *ProjectionView `json:"projection"`
+	// Pace is how fast the usage has burned against the pace that reaches
+	// 100% at reset, as of GeneratedAt (see domain.Pace). It is left out
+	// while there is none, and the page rounds it.
+	Pace *float64 `json:"pace,omitempty"`
 }
 
 // ProjectionView is where a window's usage is heading.
@@ -242,7 +246,7 @@ func (t *Tracker) buildView(now time.Time) View {
 		spend := usage.account(dir)
 
 		labels[dir] = account.Label
-		view := t.accountView(account, projections, spend)
+		view := t.accountView(account, projections, spend, now)
 		// Usage credits are a subscription's; no other account has them.
 		if account.Auth == domain.AuthSubscription {
 			credits, show := entry.creditEstimate(t.cfg.Credits[dir], now)
@@ -304,15 +308,15 @@ func (t *Tracker) shownSessions() []*sessionEntry {
 	return shown
 }
 
-func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spend accountUsage) AccountView {
+func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spend accountUsage, now time.Time) AccountView {
 	return AccountView{
 		Dir:           a.Dir,
 		Label:         a.Label,
 		Email:         a.Email,
 		Plan:          a.Plan,
 		Auth:          a.Auth,
-		FiveHour:      windowView(a.Limits.FiveHour, a.Limits.ObservedAt, p.FiveHour),
-		SevenDay:      windowView(a.Limits.SevenDay, a.Limits.ObservedAt, p.SevenDay),
+		FiveHour:      windowView(a.Limits.FiveHour, domain.FiveHourLength, a.Limits.ObservedAt, p.FiveHour, now),
+		SevenDay:      windowView(a.Limits.SevenDay, domain.SevenDayLength, a.Limits.ObservedAt, p.SevenDay, now),
 		SpendTodayUSD: spend.spendTodayUSD,
 		SpendWeekUSD:  spend.spendWeekUSD,
 		SpendMonthUSD: spend.spendMonthUSD,
@@ -322,11 +326,15 @@ func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spen
 	}
 }
 
-func windowView(w *domain.Window, observedAt time.Time, p domain.Projection) *WindowView {
+// windowView shows w, a window of the given length, as of now.
+func windowView(w *domain.Window, length time.Duration, observedAt time.Time, p domain.Projection, now time.Time) *WindowView {
 	if w == nil {
 		return nil
 	}
 	view := &WindowView{UsedPct: w.UsedPct, ResetsAt: Timestamp(w.ResetsAt), ObservedAt: Timestamp(observedAt)}
+	if pace, ok := domain.Pace(w.UsedPct, w.ResetsAt, length, now); ok {
+		view.Pace = &pace
+	}
 	if p.Known {
 		view.Projection = &ProjectionView{
 			RatePerHour:        p.RatePerHour,

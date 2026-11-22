@@ -261,9 +261,11 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 			windows = append(windows, w)
 		}
 	}
-	var unknownReset, noProjection, withETA, withoutETA bool
+	var unknownReset, noProjection, withETA, withoutETA, withPace, withoutPace bool
 	for _, w := range windows {
 		unknownReset = unknownReset || time.Time(w.ResetsAt).IsZero()
+		withPace = withPace || w.Pace != nil
+		withoutPace = withoutPace || w.Pace == nil
 		if w.Projection == nil {
 			noProjection = true
 			continue
@@ -274,6 +276,11 @@ func assertGoldenCoverage(t *testing.T, v tracker.View) {
 	if !noWindow || !unknownReset || !noProjection || !withETA || !withoutETA {
 		t.Errorf("windows: one missing %v, unknown reset %v, without projection %v, projection with ETA %v and without %v; want all",
 			noWindow, unknownReset, noProjection, withETA, withoutETA)
+	}
+	// The page's contract test needs a window without a pace to prove the
+	// guard accepts one, and one with a pace to prove it checks it.
+	if !withPace || !withoutPace {
+		t.Errorf("windows: with a pace %v, without %v; want both", withPace, withoutPace)
 	}
 
 	var lost, subagents, share, waitReason, backgroundWithoutProcess bool
@@ -335,6 +342,60 @@ func assertCreditsCoverage(t *testing.T, v tracker.View) {
 	}
 	if !estimatedOn || !reportedOff || !none {
 		t.Errorf("credits: estimated while on them %v, reported while off them %v, none %v; want all", estimatedOn, reportedOff, none)
+	}
+}
+
+func TestView_PaceAsOfTheTrackersNow(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	// Half the week used with half of it left, and a 5-hour window half an
+	// hour in, too early for a pace.
+	h.tr.Apply(withWindows(statusLine(0, s1), window(5, at(0).Add(4*time.Hour+30*time.Minute)), window(50, at(0).Add(84*time.Hour))))
+
+	a := h.account(dirA)
+	if a.SevenDay == nil || a.SevenDay.Pace == nil || !near(*a.SevenDay.Pace, 1) {
+		t.Errorf("weekly window %+v, want a pace of 1", a.SevenDay)
+	}
+	if a.FiveHour == nil || a.FiveHour.Pace != nil {
+		t.Errorf("5-hour window %+v, want one without a pace", a.FiveHour)
+	}
+
+	// No status line since: the same usage over more of the week is a slower
+	// pace, and the 5-hour window has reset.
+	h.clock.Set(at(0).Add(42 * time.Hour))
+	a = h.account(dirA)
+	if a.SevenDay == nil || a.SevenDay.Pace == nil || !near(*a.SevenDay.Pace, 0.5/0.75) {
+		t.Errorf("weekly window %+v a day and a half later, want a pace of 2/3", a.SevenDay)
+	}
+	if a.FiveHour != nil {
+		t.Errorf("5-hour window %+v after its reset, want none", a.FiveHour)
+	}
+}
+
+func TestView_PaceIsLeftOutOfTheJSONWhenThereIsNone(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.Apply(withWindows(statusLine(0, s1), window(5, time.Time{}), window(0, at(0).Add(84*time.Hour))))
+
+	data, err := json.Marshal(h.tr.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Accounts []struct {
+			FiveHour map[string]json.RawMessage `json:"fiveHour"`
+			SevenDay map[string]json.RawMessage `json:"sevenDay"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Accounts) != 1 {
+		t.Fatalf("view %s, want one account", data)
+	}
+	if pace, ok := got.Accounts[0].FiveHour["pace"]; ok {
+		t.Errorf("a window with an unknown reset has the pace %s, want the key left out", pace)
+	}
+	if pace := string(got.Accounts[0].SevenDay["pace"]); pace != "0" {
+		t.Errorf("a window with nothing used has the pace %q, want 0", pace)
 	}
 }
 
