@@ -78,6 +78,10 @@ function wrongTypeFor(value: unknown): unknown {
   return typeof value === 'string' ? 0 : 'wrong';
 }
 
+// The sweeps below change these one at a time.
+const everyValue = [...valuesIn(golden)];
+const everyField = everyValue.filter(({ path }) => typeof path.at(-1) === 'string');
+
 describe('the View contract', () => {
   it('accepts the payload the server sends', () => {
     expect(isView(golden)).toBe(true);
@@ -87,16 +91,26 @@ describe('the View contract', () => {
     expect(undescribed(viewSchema, golden).map(show)).toEqual([]);
   });
 
+  it('would report a field the schema does not describe', () => {
+    const extended = edit(golden, ['sessions', 0, 'addedLater'], 1);
+    expect(undescribed(viewSchema, extended).map(show)).toEqual(['.sessions[0].addedLater']);
+  });
+
+  it('sweeps every value and every field, down to the deepest', () => {
+    const deepest = '.sessions[0].timeline[0].reason';
+    expect(everyValue.map(({ path }) => show(path))).toContain(deepest);
+    expect(everyField.map(({ path }) => show(path))).toContain(deepest);
+  });
+
   it('rejects the payload when any one value has the wrong type', () => {
-    const accepted = [...valuesIn(golden)]
+    const accepted = everyValue
       .filter(({ path, value }) => isView(edit(golden, path, wrongTypeFor(value))))
       .map(({ path }) => show(path));
     expect(accepted).toEqual([]);
   });
 
   it('rejects the payload when any one field is missing', () => {
-    const accepted = [...valuesIn(golden)]
-      .filter(({ path }) => typeof path.at(-1) === 'string')
+    const accepted = everyField
       .filter(({ path }) => isView(edit(golden, path, absent)))
       .map(({ path }) => show(path));
     expect(accepted).toEqual([]);
@@ -134,7 +148,9 @@ describe('the View contract', () => {
     expect(isView(edit(golden, ['sessions', 0, 'addedLater'], 1))).toBe(true);
   });
 
-  it.each([null, [], 'view', 42])('rejects %j as a payload', (payload) => {
+  // Each row is wrapped because it.each spreads an array row into arguments,
+  // which would turn the [] row into a call with no payload at all.
+  it.each<[unknown]>([[null], [[]], ['view'], [42]])('rejects %j as a payload', (payload) => {
     expect(isView(payload)).toBe(false);
   });
 });

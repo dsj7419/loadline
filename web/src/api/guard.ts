@@ -5,6 +5,7 @@ import {
   sessionStates,
   type AccountView,
   type AlertView,
+  type Int,
   type ModelTotal,
   type ProjectionView,
   type SessionView,
@@ -30,12 +31,14 @@ declare const describes: unique symbol;
 // A schema that describes values of type T. The phantom member makes the
 // compiler hold each schema below to its type exactly: a field cannot be
 // missing, extra, nullable when the type is not, or the other way round.
+// Because Timestamp and Int are branded, a timestamp field cannot take the
+// text schema, nor an integer field the finite one.
 type SchemaOf<T> = Schema & { readonly [describes]?: (value: T) => T };
 
 const text: SchemaOf<string> = { kind: 'text' };
 const timestamp: SchemaOf<Timestamp> = { kind: 'timestamp' };
 const finite: SchemaOf<number> = { kind: 'finite' };
-const integer: SchemaOf<number> = { kind: 'integer' };
+const integer: SchemaOf<Int> = { kind: 'integer' };
 const flag: SchemaOf<boolean> = { kind: 'flag' };
 
 function oneOf<const T extends string>(values: readonly T[]): SchemaOf<T> {

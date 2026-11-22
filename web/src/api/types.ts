@@ -22,8 +22,16 @@ export type AuthKind = (typeof authKinds)[number];
 export const alertKinds = ['needs_you', 'runs_out', 'budget', 'weekly_threshold', 'context_high'] as const;
 export type AlertKind = (typeof alertKinds)[number];
 
-/** An RFC 3339 time. */
-export type Timestamp = string;
+declare const brand: unique symbol;
+
+/**
+ * An RFC 3339 time. The brand keeps plain strings out, so only a value that
+ * isView has checked can be a Timestamp.
+ */
+export type Timestamp = string & { readonly [brand]: 'Timestamp' };
+
+/** A whole number: a count, a token total or a pid. Branded like Timestamp. */
+export type Int = number & { readonly [brand]: 'Int' };
 
 /** Everything the dashboard shows, as of generatedAt. */
 export type View = {
@@ -87,20 +95,20 @@ export type SessionView = {
   readonly waitReason: string;
   readonly name: string;
   readonly project: string;
-  readonly pid: number;
+  readonly pid: Int;
   readonly startedAt: Timestamp;
   readonly stateAt: Timestamp;
   readonly lastSeenAt: Timestamp;
-  readonly subagents: number;
+  readonly subagents: Int;
   readonly model: string;
   readonly effort: string;
   readonly contextPct: number;
   /** Tokens left in the context window; 0 when its size is unknown. */
-  readonly contextLeft: number;
+  readonly contextLeft: Int;
   readonly costUSD: number;
   readonly cacheHitRatio: number;
-  readonly linesAdded: number;
-  readonly linesRemoved: number;
+  readonly linesAdded: Int;
+  readonly linesRemoved: Int;
   /** The session's estimated fraction of its account's recent spend. */
   readonly share: number;
   readonly lost: boolean;
@@ -121,12 +129,12 @@ export type TransitionView = {
 /** The usage of one model. */
 export type ModelTotal = {
   readonly model: string;
-  readonly input: number;
-  readonly output: number;
-  readonly cacheRead: number;
-  readonly cacheWrite: number;
+  readonly input: Int;
+  readonly output: Int;
+  readonly cacheRead: Int;
+  readonly cacheWrite: Int;
   readonly costUSD: number;
-  readonly requests: number;
+  readonly requests: Int;
 };
 
 /** Something the user should look at. Account alerts have an empty session. */
