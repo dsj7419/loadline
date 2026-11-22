@@ -165,6 +165,9 @@ func refusal(dir, top string) (string, error) {
 
 // contentProblem reports what Make refuses dir for, or "" when nothing.
 func contentProblem(dir string) (string, error) {
+	if problem, err := dirLinkProblem(dir); err != nil || problem != "" {
+		return problem, err
+	}
 	foreign, err := foreignEntry(dir)
 	if err != nil {
 		return "", err
@@ -185,6 +188,27 @@ func contentProblem(dir string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// dirLinkProblem reports dir as a link, naming where it leads, or "" when it
+// is not one or does not exist. Made private, a link would admit only the
+// user while the folder it leads to, which then holds the token and the
+// binary every hook runs, stayed as open as it is.
+func dirLinkProblem(dir string) (string, error) {
+	link, err := fsperm.IsLink(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), err == nil && !link:
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	// Where it leads only helps say what to do: a link that cannot be read
+	// is refused just the same.
+	problem := dir + " is a link, which the data directory must never be: set LOADLINE_HOME to the folder it leads to itself"
+	if target, err := os.Readlink(dir); err == nil {
+		problem = dir + " is a link to " + target + ", which the data directory must never be: set LOADLINE_HOME to " + target + " itself"
+	}
+	return problem, nil
 }
 
 // ownerProblem reports path, one of Loadline's files or folders, as

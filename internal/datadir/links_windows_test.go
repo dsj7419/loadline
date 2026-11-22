@@ -1,8 +1,9 @@
 package datadir_test
 
-// A junction named like a file Loadline writes before it puts it in place.
-// Only a regular file of that name is another process's to leave alone; a
-// junction is a link among Loadline's own paths, which is refused.
+// Links in and around the data directory: a junction named like a file
+// Loadline writes before it puts it in place, which is a link among
+// Loadline's own paths and refused, a junction above the data directory,
+// and a data directory that is itself a link.
 
 import (
 	"os"
@@ -10,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/dsj7419/loadline/internal/datadir"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
 
@@ -110,5 +114,123 @@ func TestCheck_ReportsAJunctionNamedLikeAFileBeingWritten(t *testing.T) {
 
 	if err != nil || !strings.Contains(got, link+" is a link") {
 		t.Errorf("Check = %q, %v; want it to report %s as a link", got, err, link)
+	}
+}
+
+// openItself opens the junction at path itself, not the folder it leads to.
+func openItself(t *testing.T, path string, access uint32) windows.Handle {
+	t.Helper()
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, access,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatalf("open the junction %s: %v", path, err)
+	}
+	return handle
+}
+
+// setListOfLink gives the junction at path itself the protected access list
+// sddl describes.
+func setListOfLink(t *testing.T, path, sddl string) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := openItself(t, path, windows.READ_CONTROL|windows.WRITE_DAC)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		t.Fatalf("give the junction %s the access list %s: %v", path, sddl, err)
+	}
+}
+
+// A junction is a folder of its own, with an access list of its own, which
+// Windows reads for its name. One above the data directory that every
+// signed-in user may delete is a folder above it that others can move aside.
+func TestVerify_RefusesAJunctionAboveThatOthersCanDelete(t *testing.T) {
+	top := privateTop(t)
+	target := filepath.Join(top, "safe")
+	if err := fsperm.MkdirAll(target); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(top, "tools")
+	junction(t, link, target)
+	setListOfLink(t, link, "D:P(A;;FA;;;"+fspermtest.UserSID(t)+")(A;;SD;;;AU)")
+
+	err := datadir.Verify(filepath.Join(link, "loadline"), top)
+
+	if err == nil || !strings.Contains(err.Error(), link+" lets ") {
+		t.Errorf("Verify = %v, want it to refuse %s, which every signed-in user may delete", err, link)
+	}
+}
+
+// linkedHome returns a data directory that is a junction, in a private
+// folder, to a folder made the ordinary way in what stands for the root of
+// a second drive, which lets every signed-in user modify what it holds.
+func linkedHome(t *testing.T) (top, home, target string) {
+	t.Helper()
+	top = privateTop(t)
+	drive := filepath.Join(top, "drive")
+	if err := fsperm.MkdirAll(drive); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, drive, 0x1301bf, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT|windows.INHERIT_ONLY)
+	target = filepath.Join(drive, "loadline-data")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(top, "profile")
+	if err := fsperm.MkdirAll(profile); err != nil {
+		t.Fatal(err)
+	}
+	home = filepath.Join(profile, "loadline")
+	junction(t, home, target)
+	return top, home, target
+}
+
+// The same folder, named itself, is a data directory like any other, and is
+// made private.
+func TestSecure_MakesTheFolderALinkLeadsToPrivateWhenNamedItself(t *testing.T) {
+	top, _, target := linkedHome(t)
+
+	if err := datadir.Secure(target, top); err != nil {
+		t.Fatalf("Secure(%s) = %v", target, err)
+	}
+
+	if others := fspermtest.Others(t, target, fspermtest.Any); len(others) != 0 {
+		t.Errorf("%s admits %v after Secure", target, others)
+	}
+}
+
+// A data directory that is itself a link is made private as the link, while
+// the folder it leads to, which holds the token and the binary, keeps what
+// it had. Install, the server and the creation of the token refuse it,
+// saying where it leads, and doctor reports it.
+func TestSecure_RefusesADataDirectoryThatIsALink(t *testing.T) {
+	top, home, target := linkedHome(t)
+	before := fspermtest.AccessList(t, target)
+	want := home + " is a link to " + target
+
+	for step, err := range map[string]error{
+		"Verify": datadir.Verify(home, top), "Make": datadir.Make(home), "Secure": datadir.Secure(home, top),
+	} {
+		if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), "set LOADLINE_HOME to "+target) {
+			t.Errorf("%s = %v; want it refused, starting %q and suggesting %s", step, err, want, target)
+		}
+	}
+	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, want) {
+		t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
+	}
+	if after := fspermtest.AccessList(t, target); after != before {
+		t.Errorf("the access list of %s, where the link leads, went from %s to %s", target, before, after)
 	}
 }

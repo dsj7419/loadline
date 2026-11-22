@@ -79,3 +79,20 @@ func TestSecure_RefusesASymlinkNamedLikeAFileBeingWritten(t *testing.T) {
 		t.Errorf("Secure = %v, want it refused, naming %s as a link", err, link)
 	}
 }
+
+// A data directory that is itself a symbolic link is refused, naming where
+// it leads: making it private would change the mode of the folder it leads
+// to, but Loadline's files would then be wherever the link points next.
+func TestSecure_RefusesADataDirectoryThatIsASymlink(t *testing.T) {
+	target := t.TempDir()
+	home := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Symlink(target, home); err != nil {
+		t.Fatal(err)
+	}
+
+	err := datadir.Secure(home, filepath.Dir(home))
+
+	if want := home + " is a link to " + target; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
+	}
+}

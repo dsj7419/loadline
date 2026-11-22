@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
 
@@ -262,5 +266,92 @@ func TestDoctor_ReportsADataDirOthersCanMoveAside(t *testing.T) {
 	want := "✖ data directory: " + tools + " lets "
 	if got.code != 1 || !strings.Contains(got.stdout, want) || !strings.Contains(got.stdout, "replace the binary every hook runs") {
 		t.Errorf("doctor = %d, stdout:\n%s\nwant 1 and a line that starts %q", got.code, got.stdout, want)
+	}
+}
+
+// junction makes link a directory junction to target, as any user may in a
+// folder they can create directories in.
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	//nolint:gosec // G204: the paths are the test's own temporary folders
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+}
+
+// linkedHome points LOADLINE_HOME at a junction, in a private folder, to a
+// folder made in what stands for the root of a second drive, which lets
+// every signed-in user modify what it holds, and returns both.
+func linkedHome(t *testing.T) (home, target string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "root")
+	for _, dir := range []string{root, filepath.Join(root, "drive"), filepath.Join(root, "profile")} {
+		if err := fsperm.MkdirAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(cli.TrustFoldersFrom(root))
+	fspermtest.Grant(t, filepath.Join(root, "drive"), 0x1301bf, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT|windows.INHERIT_ONLY)
+	target = filepath.Join(root, "drive", "loadline-data")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home = filepath.Join(root, "profile", "loadline")
+	junction(t, home, target)
+	t.Setenv("LOADLINE_HOME", home)
+	return home, target
+}
+
+// Install would make the link private and leave the folder it leads to,
+// which would hold the token and the binary, as open as it is. It refuses,
+// saying where the link leads, and writes nothing.
+func TestInstall_RefusesADataDirThatIsALink(t *testing.T) {
+	home, target := linkedHome(t)
+	dir := t.TempDir()
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 1 || !strings.Contains(got.stderr, home+" is a link to "+target) {
+		t.Errorf("install = %d, stderr %q; want 1 and %s refused as a link to %s", got.code, got.stderr, home, target)
+	}
+	for _, path := range []string{filepath.Join(target, "token"), filepath.Join(target, "bin"), filepath.Join(dir, "settings.json")} {
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("install wrote %s although it refused", path)
+		}
+	}
+}
+
+// A link is no folder others could move aside, which a demo lets pass: the
+// demo refuses it too.
+func TestServe_DemoRefusesADataDirThatIsALink(t *testing.T) {
+	f := newServeFixture(t)
+	target := filepath.Join(t.TempDir(), "real")
+	if err := fsperm.MkdirAll(target); err != nil {
+		t.Fatal(err)
+	}
+	// The token is there already, so it is the server's own check that
+	// finds the link, not the token's creation.
+	writeAll(t, map[string]string{filepath.Join(target, "token"): knownToken})
+	data := filepath.Join(filepath.Dir(f.paths.DataDir), "linked")
+	junction(t, data, target)
+	f.paths = config.Paths{
+		DataDir:    data,
+		ConfigFile: f.paths.ConfigFile,
+		TokenFile:  filepath.Join(data, "token"),
+		SpoolDir:   filepath.Join(data, "spool"),
+		DBFile:     filepath.Join(data, "loadline.db"),
+	}
+	o := f.options()
+	o.Demo = true
+	var stderr strings.Builder
+	// Bounded, so that a demo that wrongly starts gives way to the check.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	code := cli.Serve(ctx, o, cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: &stderr})
+
+	if code != 1 || !strings.Contains(stderr.String(), data+" is a link to "+target) {
+		t.Errorf("demo Serve = %d, stderr %q; want 1 and %s refused as a link", code, stderr.String(), data)
 	}
 }
