@@ -182,6 +182,23 @@ func TestCheck_SaysWhyInstallWouldRefuseADataDirectoryNotMadeYet(t *testing.T) {
 	}
 }
 
+// Only a data directory that is missing is judged as one install would make.
+// One that cannot be read for another reason, here a name Windows refuses,
+// is an error, below a folder others can move aside too.
+func TestCheck_ADataDirectoryItCannotReadIsNoneNotMadeYet(t *testing.T) {
+	top := driveRoot(t)
+	tools := filepath.Join(top, "tools")
+	if err := os.Mkdir(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := datadir.Check(filepath.Join(tools, "load<line"), top)
+
+	if got != "" || err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Check = %q, %v; want an error that is not fs.ErrNotExist", got, err)
+	}
+}
+
 // junction makes link a directory junction to target, as any user may in a
 // folder they can create directories in.
 func junction(t *testing.T, link, target string) {
@@ -315,6 +332,26 @@ func TestSecure_LeavesAFileAnotherProcessIsWritingAlone(t *testing.T) {
 				t.Errorf("the access list of %s, another process's, went from %s to %s", path, before, after)
 			}
 		})
+	}
+}
+
+// One begun before its folder was private took what the folder passed down
+// then. Once Secure has judged everything else, the data directory passes
+// its new list down to it too.
+func TestSecure_PassesTheListDownToAFileBegunBeforeTheDirectoryWasPrivate(t *testing.T) {
+	dir, parent := openDataDir(t, privateTop(t))
+	path := filepath.Join(dir, ".token-1234")
+	writeFile(t, path)
+	if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
+		t.Fatalf("%s admits nobody else, so the test proves nothing", path)
+	}
+
+	if err := datadir.Secure(dir, parent); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+		t.Errorf("%s admits %v, want the list the data directory passes down", path, others)
 	}
 }
 

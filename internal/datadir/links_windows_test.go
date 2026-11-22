@@ -321,6 +321,10 @@ func TestSecure_RefusesALinkedDataDirectoryThatLeadsNowhere(t *testing.T) {
 	if _, err := os.Stat(target); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("%s was made where the link leads (%v)", target, err)
 	}
+	// Doctor reports a link, which it is, not a directory not made yet.
+	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, home+" is a link") {
+		t.Errorf("Check = %q, %v; want it reported as a link", got, err)
+	}
 }
 
 // A file of Loadline's with a second name, a hard link to a file elsewhere,
@@ -405,8 +409,38 @@ func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *t
 	if after := fspermtest.AccessList(t, doc); after != before {
 		t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
 	}
+	// The directory itself is private first, refused or not.
+	if others := fspermtest.Others(t, dir, fspermtest.Any); len(others) > 0 || !fspermtest.Protected(t, dir) {
+		t.Errorf("%s admits %v (protected: %t), want the private list", dir, others, fspermtest.Protected(t, dir))
+	}
 	if got, err := datadir.Check(dir, parent); err != nil || !strings.HasPrefix(got, event+" has another name") {
 		t.Errorf("Check = %q, %v; want it to report %s", got, err, event)
+	}
+}
+
+// Secure puts nothing back on Loadline's files until it has judged them all:
+// a refused Secure has changed only the lists it had to change to look into
+// a folder. The binary, which the walk comes to before the spool, keeps the
+// entry it was given.
+func TestSecure_PutsNothingBackUntilItHasFoundNothingToRefuse(t *testing.T) {
+	home, top := loadlineHome(t)
+	_, doc := elsewhere(t, top)
+	binary := filepath.Join(home, "bin", "loadline.exe")
+	fspermtest.Grant(t, binary, windows.FILE_GENERIC_READ, windows.NO_INHERITANCE)
+	spool := filepath.Join(home, "spool")
+	if err := os.Link(doc, filepath.Join(spool, "1-0000000b.json")); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	fspermtest.SetAccessListAsIs(t, spool, "D:P(A;OICI;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+	before := fspermtest.AccessList(t, binary)
+
+	if err := datadir.Secure(home, top); err == nil {
+		t.Fatal("Secure succeeded, want it refused for the hard link in the spool")
+	}
+
+	if after := fspermtest.AccessList(t, binary); after != before {
+		t.Errorf("the refused Secure changed the access list of %s from %s to %s", binary, before, after)
 	}
 }
 
