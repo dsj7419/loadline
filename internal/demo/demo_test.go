@@ -274,6 +274,10 @@ func TestScenario_SessionsShowWhatThePageDraws(t *testing.T) {
 	}
 }
 
+// The demo raises the alerts that notify which its story holds: a session
+// waiting on you, and Main on its credits. Main has used its week up, which
+// its credits and weekly alerts say, so no alert says it is on pace to; B
+// stays under its limits.
 func TestScenario_RaisesTheAlertsThatNotify(t *testing.T) {
 	v := seeded(t, now)
 
@@ -281,10 +285,13 @@ func TestScenario_RaisesTheAlertsThatNotify(t *testing.T) {
 	for _, a := range v.Alerts {
 		kinds[a.Kind] = true
 	}
-	for _, want := range []domain.AlertKind{domain.AlertNeedsYou, domain.AlertRunsOut, domain.AlertCreditsActive} {
+	for _, want := range []domain.AlertKind{domain.AlertNeedsYou, domain.AlertCreditsActive, domain.AlertWeeklyThreshold} {
 		if !kinds[want] {
 			t.Errorf("no %s alert in %+v", want, v.Alerts)
 		}
+	}
+	if kinds[domain.AlertRunsOut] {
+		t.Errorf("a %s alert in %+v, want none: Main has already run out", domain.AlertRunsOut, v.Alerts)
 	}
 }
 

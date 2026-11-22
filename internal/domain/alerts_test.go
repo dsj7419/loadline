@@ -1,7 +1,9 @@
 package domain_test
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +208,79 @@ func TestEvaluate_RunsOutIgnoresAWindowThatIsSafe(t *testing.T) {
 
 	if len(got) != 1 || !strings.Contains(got[0].Message, "weekly") {
 		t.Errorf("Evaluate() = %v, want one alert naming the weekly limit", got)
+	}
+}
+
+// A window at or past its limit has already run out, so it is not "on pace
+// to run out before it resets": the weekly threshold and the credits alerts
+// say what holds then. Its projection still runs out, as the samples that
+// brought it there say.
+func TestEvaluate_NoRunOutAlertForAWindowAlreadyAtItsLimit(t *testing.T) {
+	resets := alertNow.Add(48 * time.Hour)
+	window := func(pct float64) *domain.Window { return &domain.Window{UsedPct: pct, ResetsAt: resets} }
+	// Each window there is runs out, the 5-hour one first.
+	projections := func(l domain.Limits) domain.WindowProjections {
+		var p domain.WindowProjections
+		if l.FiveHour != nil {
+			p.FiveHour = runsOut(alertNow)
+		}
+		if l.SevenDay != nil {
+			p.SevenDay = runsOut(alertNow.Add(time.Hour))
+		}
+		return p
+	}
+	for _, used := range []float64{100, 120} {
+		for name, tc := range map[string]struct {
+			limits domain.Limits
+			want   []domain.AlertKind
+			names  string
+		}{
+			"the weekly window": {
+				limits: domain.Limits{SevenDay: window(used)},
+				want:   []domain.AlertKind{domain.AlertWeeklyThreshold},
+			},
+			"the 5-hour window": {
+				limits: domain.Limits{FiveHour: window(used)},
+				want:   nil,
+			},
+			"both windows": {
+				limits: domain.Limits{FiveHour: window(used), SevenDay: window(used)},
+				want:   []domain.AlertKind{domain.AlertWeeklyThreshold},
+			},
+			"the 5-hour window, with the weekly one still short of it": {
+				limits: domain.Limits{FiveHour: window(used), SevenDay: window(80)},
+				want:   []domain.AlertKind{domain.AlertRunsOut},
+				names:  "weekly",
+			},
+		} {
+			t.Run(fmt.Sprintf("%s at %v%%", name, used), func(t *testing.T) {
+				got := evaluate(domain.AlertInput{
+					Accounts:    []domain.Account{{Dir: dirA, Label: "Main", Limits: tc.limits}},
+					Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: projections(tc.limits)},
+				})
+
+				if !slices.Equal(kindsOf(got), tc.want) {
+					t.Fatalf("Evaluate() = %v, want %v", got, tc.want)
+				}
+				if tc.names != "" && !strings.Contains(got[0].Message, tc.names) {
+					t.Errorf("Message = %q, want it to name the %s limit", got[0].Message, tc.names)
+				}
+			})
+		}
+	}
+}
+
+// Just short of the limit, a window on pace to run out still says so.
+func TestEvaluate_RunOutAlertJustShortOfTheLimit(t *testing.T) {
+	got := evaluate(domain.AlertInput{
+		Accounts: []domain.Account{{Dir: dirA, Label: "Main", Limits: domain.Limits{
+			FiveHour: &domain.Window{UsedPct: 99.9, ResetsAt: alertNow.Add(time.Hour)},
+		}}},
+		Projections: map[domain.ConfigDir]domain.WindowProjections{dirA: {FiveHour: runsOut(alertNow.Add(time.Minute))}},
+	})
+
+	if !slices.Equal(kindsOf(got), []domain.AlertKind{domain.AlertRunsOut}) || !strings.Contains(got[0].Message, "5-hour") {
+		t.Errorf("Evaluate() = %v, want a runs_out alert naming the 5-hour limit", got)
 	}
 }
 

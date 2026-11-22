@@ -115,7 +115,7 @@ func appendAccountAlerts(alerts []Alert, account Account, in AlertInput, cfg Ale
 		return Alert{Kind: kind, Dir: account.Dir, Since: now, Message: message}
 	}
 
-	if window, ok := earliestRunOut(in.Projections[account.Dir]); ok {
+	if window, ok := earliestRunOut(in.Projections[account.Dir], account.Limits); ok {
 		alerts = append(alerts, alert(AlertRunsOut,
 			fmt.Sprintf("%s is on pace to run out of its %s limit before it resets", label, window)))
 	}
@@ -172,11 +172,11 @@ func appendSessionAlerts(alerts []Alert, session Session, cfg AlertConfig, now t
 	return alerts
 }
 
-// earliestRunOut names the window of the projection that runs out soonest. A
-// tie goes to the seven-day window.
-func earliestRunOut(p WindowProjections) (window string, ok bool) {
-	sevenDay := p.SevenDay.Known && p.SevenDay.RunsOutBeforeReset
-	fiveHour := p.FiveHour.Known && p.FiveHour.RunsOutBeforeReset
+// earliestRunOut names the window that is on pace to run out soonest. A tie
+// goes to the seven-day window.
+func earliestRunOut(p WindowProjections, limits Limits) (window string, ok bool) {
+	sevenDay := onPaceToRunOut(p.SevenDay, limits.SevenDay)
+	fiveHour := onPaceToRunOut(p.FiveHour, limits.FiveHour)
 	switch {
 	case sevenDay && fiveHour && p.FiveHour.ETA.Before(p.SevenDay.ETA):
 		return "5-hour", true
@@ -187,6 +187,14 @@ func earliestRunOut(p WindowProjections) (window string, ok bool) {
 	default:
 		return "", false
 	}
+}
+
+// onPaceToRunOut reports whether a window is projected to reach its limit
+// before it resets. One already at its limit has run out, which the weekly
+// threshold and credits alerts say; one that w does not report is judged by
+// its projection alone.
+func onPaceToRunOut(p Projection, w *Window) bool {
+	return p.Known && p.RunsOutBeforeReset && (w == nil || w.UsedPct < limitPct)
 }
 
 func needsYouMessage(label, waitReason string) string {
