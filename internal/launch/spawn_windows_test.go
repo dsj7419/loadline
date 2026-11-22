@@ -1,6 +1,10 @@
 package launch_test
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -70,4 +74,50 @@ func processHeld(t *testing.T, report helperReport) bool {
 		t.Fatalf("read the times of process %d: %v", report.PID, err)
 	}
 	return created.Nanoseconds() == report.Created
+}
+
+// isSharingViolation reports whether err is Windows refusing to open a file
+// that another handle holds in a way that excludes the open.
+func isSharingViolation(err error) bool {
+	return errors.Is(err, windows.ERROR_SHARING_VIOLATION)
+}
+
+// holdAsRenaming opens path with delete access, sharing everything, as a
+// rename that has just moved the file into place still holds it. Go opens
+// files to read without sharing delete access, so until the handle closes,
+// reading the file fails with a sharing violation. The test's end closes it.
+func holdAsRenaming(t *testing.T, path string) (release func()) {
+	t.Helper()
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.DELETE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatalf("hold %s: %v", path, err)
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { _ = windows.CloseHandle(handle) }) }
+	t.Cleanup(release)
+	return release
+}
+
+func TestChildRead_WaitsOutTheRenameThatPublishedTheReport(t *testing.T) {
+	c := &child{report: filepath.Join(t.TempDir(), "report.json")}
+	if err := writeReport(c.report, helperReport{PID: 4242}); err != nil {
+		t.Fatalf("write the report: %v", err)
+	}
+	release := holdAsRenaming(t, c.report)
+	if _, err := os.ReadFile(c.report); !isSharingViolation(err) {
+		t.Fatalf("reading a held report gave %v, want the sharing violation this test is about", err)
+	}
+	released := time.AfterFunc(100*time.Millisecond, release)
+	t.Cleanup(func() { released.Stop() })
+
+	report := c.read(t)
+
+	if report.PID != 4242 {
+		t.Errorf("read the report as %+v, want the one written", report)
+	}
 }

@@ -83,23 +83,48 @@ func runReporter() int {
 			}
 		}
 	}
-	if err := os.WriteFile(path+".exit", nil, 0o600); err != nil { //nolint:gosec // G703: path is a file in the parent test's temp dir
+	if err := publish(path+".exit", nil); err != nil {
 		return 1
 	}
 	return 0
 }
 
-// writeReport writes the report whole or not at all, so that the test never
-// reads half of one.
 func writeReport(path string, report helperReport) error {
 	data, err := json.Marshal(report)
 	if err != nil {
 		return err
 	}
+	return publish(path, data)
+}
+
+// publish writes data to path whole or not at all: to a file beside it,
+// closed, and then renamed into place. Whoever finds path finds all of it,
+// written and closed.
+func publish(path string, data []byte) error {
 	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil { //nolint:gosec // G703: path is a file in the parent test's temp dir
 		return err
 	}
 	return os.Rename(path+".tmp", path) //nolint:gosec // G703: path is a file in the parent test's temp dir
+}
+
+// readPublished waits for a file that publish puts at path, and reads it.
+// For a moment after the new name appears, the rename that put it there
+// still holds the file, as a virus scanner may too, and Windows refuses to
+// open it for reading; that refusal is waited out.
+func readPublished(t *testing.T, path, what string) []byte {
+	t.Helper()
+	waitForFile(t, path, what)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data
+		}
+		if !isSharingViolation(err) || time.Now().After(deadline) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func runSpawner() int {
@@ -146,11 +171,7 @@ func expectChild(t *testing.T, hold bool) *child {
 // read waits for the child's report.
 func (c *child) read(t *testing.T) helperReport {
 	t.Helper()
-	waitForFile(t, c.report, "the started program to report")
-	data, err := os.ReadFile(c.report)
-	if err != nil {
-		t.Fatalf("read the report: %v", err)
-	}
+	data := readPublished(t, c.report, "the started program to report")
 	var report helperReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("decode the report %s: %v", data, err)
@@ -168,7 +189,7 @@ func (c *child) release(t *testing.T) {
 	if c.hold == "" {
 		return
 	}
-	if err := os.WriteFile(c.hold, nil, 0o600); err != nil {
+	if err := publish(c.hold, nil); err != nil {
 		t.Errorf("release the started program: %v", err)
 	}
 }
