@@ -324,7 +324,13 @@ func runCommand(stderr string, code int) string {
 	return `printf '%s' "say \"hi\" it's "; cat; printf '%s' '` + stderr + `' >&2; exit ` + strconv.Itoa(code)
 }
 
+// postWindow replaces the tap's 100 ms bound on its post in tests that count
+// posts but are not about that bound: a command such as PowerShell starting
+// on a loaded machine must not make the post miss its window.
+const postWindow = 30 * time.Second
+
 func TestRunTap_RunPipesStdinThroughTheCommand(t *testing.T) {
+	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
 	srv := f.serve()
 	command := runCommand("warned", 3)
@@ -350,6 +356,7 @@ func TestRunTap_RunPipesStdinThroughTheCommand(t *testing.T) {
 
 func tapThroughCLI(t *testing.T, input string, args ...string) (code int, stdout, stderr string, srv *ingestServer) {
 	t.Helper()
+	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
 	home := t.TempDir()
 	t.Setenv("LOADLINE_HOME", home)

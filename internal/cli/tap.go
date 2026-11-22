@@ -30,16 +30,18 @@ const (
 	// Claude Code's is a few KiB. A longer input is still passed through,
 	// but not forwarded.
 	maxStatusInput = 1 << 20
-	// tapSendTimeout bounds the tap's post to the server. The status line
-	// already has its output by then; this bounds how long the tap process
-	// lingers after it.
-	tapSendTimeout = 100 * time.Millisecond
 	// ensureEvery spaces the tap's attempts to start a server that does not
 	// answer, so that a status line refreshing every second does not start
 	// one each time.
 	ensureEvery     = 30 * time.Second
 	ensureStampName = "ensure.stamp"
 )
+
+// tapSendTimeout bounds the tap's post to the server. The status line
+// already has its output by then; this bounds how long the tap process
+// lingers after it. Tests that count posts without being about this bound
+// lengthen it, so that a loaded machine cannot make them miss one.
+var tapSendTimeout = 100 * time.Millisecond
 
 const tapUsage = `Usage: loadline tap [--print | --run <command> | --run-b64 <command>]
 
