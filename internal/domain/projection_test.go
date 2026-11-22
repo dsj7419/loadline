@@ -266,6 +266,30 @@ func TestProject_NegligibleSlopeKeepsETAFinite(t *testing.T) {
 	}
 }
 
+func TestProject_ETAExactlyBeyondADurationSaturates(t *testing.T) {
+	// The limit is exactly 2^63 ns away, the first span a Duration cannot
+	// hold. A power-of-two rate and samples an hour apart keep the fit exact,
+	// so the time to the limit lands on that edge and not beside it.
+	const ratePerHour = 0x1p-16
+	hoursToLimit := float64(math.MaxInt64) / float64(time.Hour)
+	last := 100 - hoursToLimit*ratePerHour
+	samples := []domain.Sample{
+		{At: ago(120), UsedPct: last - 2*ratePerHour},
+		{At: ago(60), UsedPct: last - ratePerHour},
+		{At: t0, UsedPct: last},
+	}
+
+	got := domain.Project(samples, later(3), t0)
+
+	if !got.Known || got.RatePerHour != ratePerHour {
+		t.Fatalf("Project() = %+v, want known at exactly %v points an hour", got, ratePerHour)
+	}
+	if want := t0.Add(math.MaxInt64); !got.ETA.Equal(want) || got.RunsOutBeforeReset {
+		t.Errorf("ETA = %v, runs out before reset %t; want the latest a Duration reaches, %v, and not running out",
+			got.ETA, got.RunsOutBeforeReset, want)
+	}
+}
+
 func TestProject_AlreadyAtTheLimit(t *testing.T) {
 	for name, samples := range map[string][]domain.Sample{
 		"at 100":   {sampleAgo(60, 90), sampleAgo(30, 95), sampleAgo(0, 100)},

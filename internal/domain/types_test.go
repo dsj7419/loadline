@@ -43,12 +43,17 @@ func TestStateText_RejectsUnknown(t *testing.T) {
 		}
 	}
 
-	unknown := domain.State(99)
-	if text, err := unknown.MarshalText(); err == nil {
-		t.Errorf("MarshalText of state 99 = %q, want an error", text)
-	}
-	if got := unknown.String(); got != "State(99)" {
-		t.Errorf("String() of state 99 = %q, want State(99)", got)
+	// The first value past the defined states is as unknown as any later one.
+	for unknown, want := range map[domain.State]string{
+		domain.StateEnded + 1: "State(8)",
+		99:                    "State(99)",
+	} {
+		if text, err := unknown.MarshalText(); err == nil {
+			t.Errorf("MarshalText of %s = %q, want an error", want, text)
+		}
+		if got := unknown.String(); got != want {
+			t.Errorf("String() = %q, want %s", got, want)
+		}
 	}
 }
 
@@ -82,12 +87,17 @@ func TestKindText_RejectsUnknown(t *testing.T) {
 		}
 	}
 
-	unknown := domain.Kind(7)
-	if text, err := unknown.MarshalText(); err == nil {
-		t.Errorf("MarshalText of kind 7 = %q, want an error", text)
-	}
-	if got := unknown.String(); got != "Kind(7)" {
-		t.Errorf("String() of kind 7 = %q, want Kind(7)", got)
+	// The first value past the defined kinds is as unknown as any later one.
+	for unknown, want := range map[domain.Kind]string{
+		domain.KindBackground + 1: "Kind(2)",
+		7:                         "Kind(7)",
+	} {
+		if text, err := unknown.MarshalText(); err == nil {
+			t.Errorf("MarshalText of %s = %q, want an error", want, text)
+		}
+		if got := unknown.String(); got != want {
+			t.Errorf("String() = %q, want %s", got, want)
+		}
 	}
 }
 

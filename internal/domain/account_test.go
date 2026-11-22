@@ -46,11 +46,16 @@ func TestAuthKindText_RejectsUnknown(t *testing.T) {
 		}
 	}
 
-	unknown := domain.AuthKind(99)
-	if text, err := unknown.MarshalText(); err == nil {
-		t.Errorf("MarshalText of kind 99 = %q, want an error", text)
-	}
-	if got := unknown.String(); got != "AuthKind(99)" {
-		t.Errorf("String() of kind 99 = %q, want AuthKind(99)", got)
+	// The first value past the defined kinds is as unknown as any later one.
+	for unknown, want := range map[domain.AuthKind]string{
+		domain.AuthThirdParty + 1: "AuthKind(4)",
+		99:                        "AuthKind(99)",
+	} {
+		if text, err := unknown.MarshalText(); err == nil {
+			t.Errorf("MarshalText of %s = %q, want an error", want, text)
+		}
+		if got := unknown.String(); got != want {
+			t.Errorf("String() = %q, want %s", got, want)
+		}
 	}
 }
