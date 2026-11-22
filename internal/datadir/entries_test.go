@@ -99,3 +99,23 @@ func TestMake_RefusesAFolderThatHoldsOtherThings(t *testing.T) {
 		t.Errorf("Make = %v, want it refused, naming shared", err)
 	}
 }
+
+// What the system leaves in a folder is a file. A folder or a link by one of
+// those names is someone else's, and the data directory that holds it is
+// not Loadline's own.
+func TestMake_RefusesAFolderNamedLikeTheSystemsOwnFiles(t *testing.T) {
+	for _, name := range []string{".DS_Store", "desktop.ini", "Thumbs.db"} {
+		t.Run(name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "loadline")
+			if err := os.MkdirAll(filepath.Join(home, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			err := datadir.Make(home)
+
+			if err == nil || !strings.HasPrefix(err.Error(), home+" holds "+name+", which is not Loadline's") {
+				t.Errorf("Make = %v, want it refused, naming %s", err, name)
+			}
+		})
+	}
+}

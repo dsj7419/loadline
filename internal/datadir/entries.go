@@ -71,13 +71,14 @@ func Temporary(name string) bool {
 	return false
 }
 
-// systemNames are what Windows Explorer and the macOS Finder leave in a
-// folder its user has looked at, which does not make it anyone else's.
+// systemNames are the files Windows Explorer and the macOS Finder leave in a
+// folder its user has looked at, which do not make it anyone else's.
 var systemNames = []string{".DS_Store", "desktop.ini", "Thumbs.db"}
 
 // foreignEntry returns the name of the first entry of dir that is neither
-// Loadline's nor the system's, or "" when there is none or dir does not
-// exist.
+// Loadline's nor a file the system leaves, or "" when there is none or dir
+// does not exist. A folder or a link by a system file's name is someone
+// else's: no system makes one.
 func foreignEntry(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -87,7 +88,8 @@ func foreignEntry(dir string) (string, error) {
 		return "", fmt.Errorf("read the data directory: %w", err)
 	}
 	for _, entry := range entries {
-		if name := entry.Name(); !Owns(name) && !slices.Contains(systemNames, name) {
+		name := entry.Name()
+		if !Owns(name) && (!slices.Contains(systemNames, name) || !entry.Type().IsRegular()) {
 			return name, nil
 		}
 	}

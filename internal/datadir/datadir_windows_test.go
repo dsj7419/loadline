@@ -446,3 +446,53 @@ func TestSecure_RefusesALinkAmongLoadlinesFiles(t *testing.T) {
 		t.Errorf("Check = %q, %v; want what Secure refused with: %q", got, checkErr, err.Error())
 	}
 }
+
+// A folder named like a file the system leaves, holding someone else's
+// files, is not made private with the data directory.
+func TestMake_LeavesASystemNamedFolderOfOtherFilesAlone(t *testing.T) {
+	top := driveRoot(t)
+	home := filepath.Join(top, "loadline")
+	notes := filepath.Join(home, "desktop.ini", "notes.txt")
+	writeFile(t, notes)
+	before := fspermtest.AccessList(t, notes)
+
+	err := datadir.Make(home)
+
+	if err == nil || !strings.Contains(err.Error(), "desktop.ini, which is not Loadline's") {
+		t.Errorf("Make = %v, want it refused, naming desktop.ini", err)
+	}
+	if after := fspermtest.AccessList(t, notes); after != before {
+		t.Errorf("Make changed the access list of %s, in a folder named desktop.ini, from %s to %s", notes, before, after)
+	}
+}
+
+// One that is a junction into another folder leads nothing Secure does
+// there.
+func TestSecure_DoesNotFollowASystemNamedJunction(t *testing.T) {
+	top := privateTop(t)
+	home := filepath.Join(top, "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(top, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Permissive(t, outside)
+	shared := filepath.Join(outside, "shared.txt")
+	writeFile(t, shared)
+	before := fspermtest.AccessList(t, shared)
+	junction(t, filepath.Join(home, "desktop.ini"), outside)
+
+	err := datadir.Secure(home, top)
+
+	if err == nil || !strings.Contains(err.Error(), "desktop.ini, which is not Loadline's") {
+		t.Errorf("Secure = %v, want it refused, naming desktop.ini", err)
+	}
+	if after := fspermtest.AccessList(t, shared); after != before {
+		t.Errorf("Secure changed the access list of %s, through a junction named desktop.ini, from %s to %s", shared, before, after)
+	}
+	if fspermtest.Protected(t, outside) {
+		t.Errorf("Secure made %s, where a junction named desktop.ini points, private", outside)
+	}
+}
