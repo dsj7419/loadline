@@ -51,6 +51,11 @@ jobs:
         # Under the race detector these tests run a reduced set of cases, to
         # stay inside CI time; without it they run every one, and every shell.
         run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestReadHookInput_' ./internal/install/ ./internal/protocol/
+      - name: Test the hot path's time bounds
+        # Under the race detector these tests allow several times their
+        # wall-clock bounds on the tap, the hook and the forwarder; without it
+        # they hold them as strict as the plan sets them.
+        run: go test -count=1 -timeout 10m -run 'TestRunTap_EchoesBeforeForwarding$|TestRunTap_GivesUpOnAHungServer$|TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart$|TestRunHook_GivesUpOnAHungServer$|TestClient_SendStopsAtTheDeadline$|TestClient_HealthyGivesUpOnAHungServer$' ./internal/cli/ ./internal/forward/
 
   lint:
     name: lint (${{ matrix.goos }})
