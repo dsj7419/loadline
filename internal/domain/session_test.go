@@ -952,8 +952,7 @@ func metrics(costUSD float64) domain.Metrics {
 	return domain.Metrics{
 		Model: "Opus 5.5", ModelID: "claude-opus-5-5", Effort: "high",
 		ContextPct: 42, ContextSize: 1_000_000, ContextUsed: 420_000,
-		CostUSD: costUSD, DurationMS: 90_000, LinesAdded: 120, LinesRemoved: 30,
-		CacheWarm: true, CacheHitRatio: 0.8,
+		CostUSD: costUSD, LinesAdded: 120, LinesRemoved: 30, CacheHitRatio: 0.8,
 	}
 }
 

@@ -181,8 +181,8 @@ func startTime(unixMilli int64) time.Time {
 }
 
 // AuthStatus is the part of `claude auth status` that Loadline reads. Claude
-// Code documents LoggedIn, AuthMethod and ConfigDirectory; the rest are
-// optional and may be empty.
+// Code documents LoggedIn and AuthMethod; the rest are optional and may be
+// empty.
 type AuthStatus struct {
 	LoggedIn bool
 	// AuthMethod is none, claude.ai, oauth_token, api_key, api_key_helper or
@@ -192,7 +192,7 @@ type AuthStatus struct {
 	// such as bedrock or vertex.
 	APIProvider string
 
-	Email, OrgName, SubscriptionType, PlanTier, ConfigDirectory string
+	Email, OrgName, SubscriptionType, PlanTier string
 }
 
 // authStatusReport mirrors the JSON of `claude auth status`. loggedIn is
@@ -202,7 +202,6 @@ type AuthStatus struct {
 type authStatusReport struct {
 	LoggedIn         *bool           `json:"loggedIn"`
 	AuthMethod       string          `json:"authMethod"`
-	ConfigDirectory  lenient[string] `json:"configDirectory"`
 	APIProvider      lenient[string] `json:"apiProvider"`
 	Email            lenient[string] `json:"email"`
 	OrgName          lenient[string] `json:"orgName"`
@@ -248,7 +247,6 @@ func decodeAuthStatus(out []byte) (AuthStatus, error) {
 		OrgName:          report.OrgName.V,
 		SubscriptionType: report.SubscriptionType.V,
 		PlanTier:         report.PlanTier.V,
-		ConfigDirectory:  report.ConfigDirectory.V,
 	}, nil
 }
 

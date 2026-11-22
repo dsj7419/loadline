@@ -104,7 +104,7 @@ func goldenScenario(t *testing.T) *tracker.Tracker {
 		return domain.Metrics{
 			Model: "Opus 5.5", ModelID: "claude-opus-5-5", Effort: effort,
 			ContextPct: contextPct, ContextSize: 200000, ContextUsed: used, CostUSD: costUSD,
-			LinesAdded: added, LinesRemoved: removed, CacheWarm: true, CacheHitRatio: hitRatio,
+			LinesAdded: added, LinesRemoved: removed, CacheHitRatio: hitRatio,
 		}
 	}
 	sonnet := domain.Metrics{Model: "Sonnet 5.5", ModelID: "claude-sonnet-5-5", Effort: "medium", ContextPct: 12, ContextSize: 200000, ContextUsed: 24000, CostUSD: 2.4}

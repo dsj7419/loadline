@@ -38,9 +38,6 @@ const (
 	attrCacheWrite    = "cache_creation_tokens"
 	attrCostUSD       = "cost_usd"
 	attrCostUSDMicros = "cost_usd_micros"
-	attrDurationMS    = "duration_ms"
-	attrQuerySource   = "query_source"
-	attrAgentName     = "agent.name"
 )
 
 const microsPerUnit = 1e6
@@ -222,7 +219,7 @@ func (v anyValue) float() (float64, bool) {
 func inheritable(key string) bool {
 	switch key {
 	case attrSession, attrEmail, attrModel, attrInput, attrOutput, attrCacheRead, attrCacheWrite,
-		attrCostUSD, attrCostUSDMicros, attrDurationMS, attrQuerySource, attrAgentName:
+		attrCostUSD, attrCostUSDMicros:
 		return true
 	}
 	return false
@@ -293,18 +290,15 @@ func (rec logRecord) apiRequest(inherited map[string]anyValue) (domain.APIReques
 	}
 
 	return domain.APIRequest{
-		At:          at,
-		Session:     domain.SessionID(session),
-		Email:       attrs.text(attrEmail),
-		Model:       attrs.text(attrModel),
-		Input:       attrs.count(attrInput),
-		Output:      attrs.count(attrOutput),
-		CacheRead:   attrs.count(attrCacheRead),
-		CacheWrite:  attrs.count(attrCacheWrite),
-		CostUSD:     cost(attrs),
-		DurationMS:  attrs.count(attrDurationMS),
-		QuerySource: attrs.text(attrQuerySource),
-		AgentName:   attrs.text(attrAgentName),
+		At:         at,
+		Session:    domain.SessionID(session),
+		Email:      attrs.text(attrEmail),
+		Model:      attrs.text(attrModel),
+		Input:      attrs.count(attrInput),
+		Output:     attrs.count(attrOutput),
+		CacheRead:  attrs.count(attrCacheRead),
+		CacheWrite: attrs.count(attrCacheWrite),
+		CostUSD:    cost(attrs),
 	}, true
 }
 

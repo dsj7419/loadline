@@ -145,11 +145,9 @@ type Metrics struct {
 	ContextSize, ContextUsed int64
 	CostUSD                  float64
 
-	DurationMS, LinesAdded, LinesRemoved int64
+	LinesAdded, LinesRemoved int64
 
-	CacheWarm     bool
 	CacheHitRatio float64
-	FastMode      bool
 }
 
 // Session is everything Loadline knows about one Claude Code session.

@@ -30,8 +30,6 @@ type StatusInput struct {
 	SessionID   string `json:"session_id,omitempty"`
 	SessionName string `json:"session_name,omitempty"`
 	Cwd         string `json:"cwd,omitempty"`
-	Version     string `json:"version,omitempty"`
-	FastMode    bool   `json:"fast_mode,omitempty"`
 
 	Model         *StatusModel         `json:"model,omitempty"`
 	Effort        *StatusEffort        `json:"effort,omitempty"`
@@ -56,22 +54,12 @@ type StatusEffort struct {
 
 // StatusWorkspace says where the session works.
 type StatusWorkspace struct {
-	ProjectDir string      `json:"project_dir,omitempty"`
-	Repo       *StatusRepo `json:"repo,omitempty"`
-}
-
-// StatusRepo is the repository parsed from the origin remote. Claude Code
-// omits it outside a git repository.
-type StatusRepo struct {
-	Host  string `json:"host,omitempty"`
-	Owner string `json:"owner,omitempty"`
-	Name  string `json:"name,omitempty"`
+	ProjectDir string `json:"project_dir,omitempty"`
 }
 
 // StatusCost is what the session has cost so far.
 type StatusCost struct {
 	TotalCostUSD       float64 `json:"total_cost_usd,omitempty"`
-	TotalDurationMS    int64   `json:"total_duration_ms,omitempty"`
 	TotalAPIDurationMS int64   `json:"total_api_duration_ms,omitempty"`
 	TotalLinesAdded    int64   `json:"total_lines_added,omitempty"`
 	TotalLinesRemoved  int64   `json:"total_lines_removed,omitempty"`
@@ -80,15 +68,13 @@ type StatusCost struct {
 // StatusContextWindow is the context window's fill. Claude Code sends null
 // percentages early in a session.
 type StatusContextWindow struct {
-	UsedPercentage      float64 `json:"used_percentage,omitempty"`
-	RemainingPercentage float64 `json:"remaining_percentage,omitempty"`
-	ContextWindowSize   int64   `json:"context_window_size,omitempty"`
-	TotalInputTokens    int64   `json:"total_input_tokens,omitempty"`
+	UsedPercentage    float64 `json:"used_percentage,omitempty"`
+	ContextWindowSize int64   `json:"context_window_size,omitempty"`
+	TotalInputTokens  int64   `json:"total_input_tokens,omitempty"`
 }
 
-// StatusPromptCache summarizes the prompt cache.
+// StatusPromptCache is how well the prompt cache serves the session.
 type StatusPromptCache struct {
-	Warm     bool    `json:"warm,omitempty"`
 	HitRatio float64 `json:"hit_ratio,omitempty"`
 }
 
@@ -132,36 +118,24 @@ func (w *StatusWindow) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// StatusSpendLimit is the spend limit behind a Claude apps gateway. The
-// amounts are pointers so that one the line leaves out is told apart from
-// $0.
+// StatusSpendLimit is the spend limit behind a Claude apps gateway: what has
+// been spent against it, and the limit. The amounts are pointers so that one
+// the line leaves out is told apart from $0.
 type StatusSpendLimit struct {
-	UsedPercentage float64 `json:"used_percentage,omitempty"`
-	// ResetsAt is in Unix seconds.
-	ResetsAt int64    `json:"resets_at,omitempty"`
 	UsedUSD  *float64 `json:"used_usd,omitempty"`
 	LimitUSD *float64 `json:"limit_usd,omitempty"`
-	// Period is daily, weekly or monthly.
-	Period string `json:"period,omitempty"`
 }
 
 // UnmarshalJSON reads a spend limit leniently, as StatusWindow's does: an
-// amount that is absent, null or not a number leaves its pointer nil, any
-// other field of the wrong type is left at its zero value, and a spend limit
-// that is not an object stays empty.
+// amount that is absent, null or not a number leaves its pointer nil, and a
+// spend limit that is not an object stays empty.
 func (s *StatusSpendLimit) UnmarshalJSON(b []byte) error {
 	var fields struct {
-		UsedPercentage json.RawMessage `json:"used_percentage"`
-		ResetsAt       json.RawMessage `json:"resets_at"`
-		UsedUSD        json.RawMessage `json:"used_usd"`
-		LimitUSD       json.RawMessage `json:"limit_usd"`
-		Period         json.RawMessage `json:"period"`
+		UsedUSD  json.RawMessage `json:"used_usd"`
+		LimitUSD json.RawMessage `json:"limit_usd"`
 	}
 	_ = json.Unmarshal(b, &fields) // the mismatches this reports are the leniency above
 
-	_ = json.Unmarshal(fields.UsedPercentage, &s.UsedPercentage)
-	_ = json.Unmarshal(fields.ResetsAt, &s.ResetsAt)
-	_ = json.Unmarshal(fields.Period, &s.Period)
 	s.UsedUSD, s.LimitUSD = optionalNumber(fields.UsedUSD), optionalNumber(fields.LimitUSD)
 	return nil
 }
@@ -217,12 +191,9 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 			ContextSize:   contextWindow.ContextWindowSize,
 			ContextUsed:   contextWindow.TotalInputTokens,
 			CostUSD:       cost.TotalCostUSD,
-			DurationMS:    cost.TotalDurationMS,
 			LinesAdded:    cost.TotalLinesAdded,
 			LinesRemoved:  cost.TotalLinesRemoved,
-			CacheWarm:     promptCache.Warm,
 			CacheHitRatio: promptCache.HitRatio,
-			FastMode:      in.FastMode,
 		},
 		Limits: domain.Limits{
 			FiveHour:   window(rateLimits.FiveHour),

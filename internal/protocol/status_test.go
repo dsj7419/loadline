@@ -57,8 +57,8 @@ func TestDecodeStatus_UltraFixture(t *testing.T) {
 	if in.Model == nil || in.Model.DisplayName != "Opus 5.5" || in.Model.ID != "claude-opus-5-5" {
 		t.Errorf("Model = %+v, want Opus 5.5", in.Model)
 	}
-	if in.SessionID != demoSession || in.SessionName != "demo-session" || in.Version != "2.1.329" {
-		t.Errorf("identity fields = %q, %q, %q", in.SessionID, in.SessionName, in.Version)
+	if in.SessionID != demoSession || in.SessionName != "demo-session" {
+		t.Errorf("identity fields = %q, %q", in.SessionID, in.SessionName)
 	}
 }
 
@@ -79,8 +79,8 @@ func TestDecodeStatus_NullIsAbsent(t *testing.T) {
 		"no effort":      `{"effort":null}`,
 		"no rate limits": `{"rate_limits":null}`,
 		"no windows":     `{"rate_limits":{"five_hour":null,"seven_day":null,"spend_limit":null}}`,
-		"null scalars": `{"session_name":null,"version":null,"fast_mode":null,"cwd":null,` +
-			`"cost":{"total_cost_usd":null,"total_duration_ms":null}}`,
+		"null scalars": `{"session_name":null,"cwd":null,` +
+			`"cost":{"total_cost_usd":null,"total_lines_added":null},"prompt_cache":{"hit_ratio":null}}`,
 	}
 	for name, payload := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -163,15 +163,14 @@ func TestDecodeStatus_ToleratesMistypedFields(t *testing.T) {
 
 	for name, mistyped := range map[string]string{
 		"string for a number":   `"context_window":{"used_percentage":"42"}`,
-		"string for a counter":  `"cost":{"total_duration_ms":"90","total_cost_usd":"free"}`,
+		"string for a counter":  `"cost":{"total_lines_added":"90","total_cost_usd":"free"}`,
 		"number for a string":   `"session_name":7`,
-		"number for a boolean":  `"fast_mode":1`,
 		"number for an object":  `"effort":3`,
 		"array for an object":   `"workspace":["/work"]`,
-		"string for a ratio":    `"prompt_cache":{"hit_ratio":"high","warm":true}`,
+		"string for a ratio":    `"prompt_cache":{"hit_ratio":"high"}`,
 		"number out of range":   `"context_window":{"context_window_size":1e30}`,
-		"object for a string":   `"version":{"major":2}`,
-		"mistyped nested field": `"workspace":{"project_dir":false,"repo":{"host":1,"owner":"o"}}`,
+		"object for a string":   `"cwd":{"major":2}`,
+		"mistyped nested field": `"workspace":{"project_dir":false}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			payload := `{"session_id":"s",` + mistyped + `,` + wellFormed + `}`
@@ -298,12 +297,9 @@ func TestStatusEvent_UltraFixture(t *testing.T) {
 			ContextSize:   1000000,
 			ContextUsed:   679604,
 			CostUSD:       1146.6823081900031,
-			DurationMS:    7200000,
 			LinesAdded:    1200,
 			LinesRemoved:  340,
-			CacheWarm:     true,
 			CacheHitRatio: 0.990277427070115,
-			FastMode:      false,
 		},
 		Limits: domain.Limits{
 			SevenDay:   &domain.Window{UsedPct: 98, ResetsAt: time.Unix(fixtureResetsAt, 0).UTC()},
@@ -372,9 +368,7 @@ func TestStatusEvent_MapsTheSpendLimit(t *testing.T) {
 	in := decodeStatus(t, payload)
 
 	spend := in.RateLimits.SpendLimit
-	if spend == nil || spend.UsedPercentage != 62.8 || spend.ResetsAt != 1740787200 ||
-		spend.UsedUSD == nil || *spend.UsedUSD != 314.12 || spend.LimitUSD == nil || *spend.LimitUSD != 500 ||
-		spend.Period != "monthly" {
+	if spend == nil || spend.UsedUSD == nil || *spend.UsedUSD != 314.12 || spend.LimitUSD == nil || *spend.LimitUSD != 500 {
 		t.Errorf("SpendLimit = %+v", spend)
 	}
 	event, err := protocol.StatusEvent(validEnvelope(t), in)
@@ -446,6 +440,31 @@ func TestStatusInput_RemarshalKeepsAReportedZeroSpend(t *testing.T) {
 	}
 }
 
+// The tap forwards only what the dashboard reads. The status line's version,
+// repository, fast mode, total duration, remaining context and cache warmth,
+// and its spend limit's share, reset time and period, stay behind with the
+// fields Loadline never mirrored.
+func TestStatusInput_ForwardsOnlyWhatTheDashboardReads(t *testing.T) {
+	in := decodeStatus(t, []byte(`{
+		"session_id": "s", "version": "2.1.330", "fast_mode": true,
+		"workspace": {"project_dir": "/work/project", "repo": {"host": "h", "owner": "o", "name": "n"}},
+		"cost": {"total_cost_usd": 1.5, "total_duration_ms": 90000},
+		"context_window": {"used_percentage": 42.5, "remaining_percentage": 57.5},
+		"prompt_cache": {"warm": true, "hit_ratio": 0.75},
+		"rate_limits": {"spend_limit": {"used_percentage": 62.8, "resets_at": 1740787200,
+			"used_usd": 314.12, "limit_usd": 500, "period": "monthly"}}
+	}`))
+
+	got := marshal(t, in)
+
+	want := `{"session_id":"s","workspace":{"project_dir":"/work/project"},"cost":{"total_cost_usd":1.5},` +
+		`"context_window":{"used_percentage":42.5},"prompt_cache":{"hit_ratio":0.75},` +
+		`"rate_limits":{"spend_limit":{"used_usd":314.12,"limit_usd":500}}}`
+	if got != want {
+		t.Errorf("Marshal =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestStatusEvent_MapsEveryMetric(t *testing.T) {
 	event := statusEvent(t, `{
 		"session_id": "s",
@@ -466,8 +485,7 @@ func TestStatusEvent_MapsEveryMetric(t *testing.T) {
 	want := domain.Metrics{
 		Model: "M", ModelID: "m-id", Effort: "high",
 		ContextPct: 42.5, ContextSize: 200000, ContextUsed: 85000,
-		CostUSD: 1.5, DurationMS: 90000, LinesAdded: 12, LinesRemoved: 3,
-		CacheWarm: true, CacheHitRatio: 0.75, FastMode: true,
+		CostUSD: 1.5, LinesAdded: 12, LinesRemoved: 3, CacheHitRatio: 0.75,
 	}
 	if event.Metrics != want {
 		t.Errorf("Metrics\n got %+v\nwant %+v", event.Metrics, want)

@@ -75,7 +75,4 @@ type APIRequest struct {
 
 	Input, Output, CacheRead, CacheWrite int64
 	CostUSD                              float64
-	DurationMS                           int64
-
-	QuerySource, AgentName string
 }

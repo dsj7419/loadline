@@ -166,10 +166,8 @@ func (s *script) status(x session, d time.Duration, costUSD float64, limits *dom
 			ContextSize:   contextSize,
 			ContextUsed:   x.contextUsed,
 			CostUSD:       costUSD,
-			DurationMS:    d.Milliseconds(),
 			LinesAdded:    x.linesAdded,
 			LinesRemoved:  x.linesRemoved,
-			CacheWarm:     true,
 			CacheHitRatio: x.cacheHitRatio,
 		},
 	}
@@ -200,7 +198,6 @@ func (s *script) callsAt(x session, m model, costUSD float64, times []time.Time)
 			CacheRead:  int64(tokens * 52_000),
 			CacheWrite: int64(tokens * 4_500),
 			CostUSD:    cost,
-			DurationMS: int64(2_000 + 700*(i%5)),
 		})
 		total += cost
 	}

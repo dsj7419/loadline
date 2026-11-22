@@ -128,8 +128,7 @@ func fullSession(id domain.SessionID) domain.Session {
 		Metrics: domain.Metrics{
 			Model: "Opus 5.5", ModelID: opus, Effort: "xhigh",
 			ContextPct: 31.5, ContextSize: 1_000_000, ContextUsed: 315_000, CostUSD: 4.125,
-			DurationMS: 845_000, LinesAdded: 120, LinesRemoved: 7,
-			CacheWarm: true, CacheHitRatio: 0.875, FastMode: true,
+			LinesAdded: 120, LinesRemoved: 7, CacheHitRatio: 0.875,
 		},
 	}
 	return s.WithSubagentIDs(domain.SubagentIDs{Running: []string{"agent-1", "agent-2"}, Stopped: []string{"agent-9"}})
@@ -325,6 +324,32 @@ func TestSQLite_TimelineFollowsTheOrderOfTheChanges(t *testing.T) {
 	got := load(t, s, at(-60)).Timelines[s1]
 	if len(got) != 50 || !got[0].At.Equal(at(90)) || !got[49].At.Equal(at(41)) {
 		t.Errorf("timeline of %d changes from %v to %v, want the last 50 written, from +90s to +41s", len(got), first(got), last(got))
+	}
+}
+
+// Earlier versions also kept a session's total duration, cache warmth and
+// fast mode in its metrics. A row they wrote still loads, with the metrics
+// this version keeps, so dropping those needs no migration.
+func TestSQLite_LoadsMetricsAnEarlierVersionWrote(t *testing.T) {
+	s, path := openStore(t)
+	ctx := t.Context()
+	must(t, s.UpsertSession(ctx, sessionAt(s1, domain.StateWorking, 0)))
+	earlier := `{"model":"Opus 5.5","modelId":"` + opus + `","effort":"xhigh","contextPct":31.5,` +
+		`"contextSize":1000000,"contextUsed":315000,"costUSD":4.125,"durationMS":845000,"linesAdded":120,` +
+		`"linesRemoved":7,"cacheWarm":true,"cacheHitRatio":0.875,"fastMode":true}`
+	if _, err := rawDB(t, path).ExecContext(ctx, `UPDATE sessions SET metrics_json = ? WHERE id = ?`, earlier, s1); err != nil {
+		t.Fatalf("write an earlier version's metrics: %v", err)
+	}
+
+	got := load(t, s, at(-60)).Sessions
+
+	want := domain.Metrics{
+		Model: "Opus 5.5", ModelID: opus, Effort: "xhigh",
+		ContextPct: 31.5, ContextSize: 1_000_000, ContextUsed: 315_000, CostUSD: 4.125,
+		LinesAdded: 120, LinesRemoved: 7, CacheHitRatio: 0.875,
+	}
+	if len(got) != 1 || got[0].Metrics != want {
+		t.Errorf("sessions %+v, want one with the metrics %+v", got, want)
 	}
 }
 

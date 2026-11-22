@@ -143,16 +143,14 @@ func TestDecodeLogs_RealFixture(t *testing.T) {
 	request.At = time.Time{}
 
 	want := domain.APIRequest{
-		Session:     fixtureSession,
-		Email:       "user@example.com",
-		Model:       "claude-opus-5-5",
-		Input:       2,
-		Output:      4,
-		CacheRead:   17156,
-		CacheWrite:  20819,
-		CostUSD:     0.1700712,
-		DurationMS:  2426,
-		QuerySource: "sdk",
+		Session:    fixtureSession,
+		Email:      "user@example.com",
+		Model:      "claude-opus-5-5",
+		Input:      2,
+		Output:     4,
+		CacheRead:  17156,
+		CacheWrite: 20819,
+		CostUSD:    0.1700712,
 	}
 	if request != want {
 		t.Errorf("request = %+v, want %+v", request, want)
@@ -215,13 +213,12 @@ func TestDecodeLogs_IntAsString(t *testing.T) {
 		intStrAttr("output_tokens", 22),
 		intStrAttr("cache_read_tokens", 33),
 		intStrAttr("cache_creation_tokens", 44),
-		intStrAttr("duration_ms", 5555),
 		intStrAttr("cost_usd_micros", 250_000),
 	)))
 
 	want := domain.APIRequest{
 		Session: testSession, Input: 11, Output: 22, CacheRead: 33, CacheWrite: 44,
-		DurationMS: 5555, CostUSD: 0.25,
+		CostUSD: 0.25,
 	}
 	got.At = time.Time{}
 	if got != want {
@@ -235,7 +232,6 @@ func TestDecodeLogs_ResourceAttributesFallback(t *testing.T) {
 		strAttr("user.email", "resource@example.com"),
 		strAttr("model", "resource-model"),
 		intAttr("input_tokens", 99),
-		strAttr("query_source", "resource-source"),
 	)
 	rec := record("claude_code.api_request", "",
 		strAttr("event.name", "api_request"),
@@ -246,8 +242,8 @@ func TestDecodeLogs_ResourceAttributesFallback(t *testing.T) {
 
 	got := decodeOne(t, export(resource, rec))
 
-	if got.Session != "from-resource" || got.Email != "resource@example.com" || got.QuerySource != "resource-source" {
-		t.Errorf("request = %+v, want session, email and query source from the resource", got)
+	if got.Session != "from-resource" || got.Email != "resource@example.com" {
+		t.Errorf("request = %+v, want session and email from the resource", got)
 	}
 	if got.Model != "record-model" || got.Input != 7 {
 		t.Errorf("request = %+v, want the record's model and input tokens to win", got)
@@ -269,12 +265,10 @@ func TestDecodeLogs_StringAttributes(t *testing.T) {
 	got := decodeOne(t, export(attrs(), apiRequest(
 		strAttr("user.email", "dev@example.com"),
 		strAttr("model", "claude-haiku-5"),
-		strAttr("query_source", "agent:custom"),
-		strAttr("agent.name", "Explore"),
 	)))
 
-	if got.Email != "dev@example.com" || got.Model != "claude-haiku-5" || got.QuerySource != "agent:custom" || got.AgentName != "Explore" {
-		t.Errorf("request = %+v, want email, model, query source and agent name set", got)
+	if got.Email != "dev@example.com" || got.Model != "claude-haiku-5" {
+		t.Errorf("request = %+v, want email and model set", got)
 	}
 }
 
@@ -462,10 +456,9 @@ func TestDecodeLogs_NegativeCountsClampToZero(t *testing.T) {
 		intAttr("output_tokens", -2),
 		intAttr("cache_read_tokens", -3),
 		intStrAttr("cache_creation_tokens", -4),
-		intAttr("duration_ms", -5),
 	)))
 
-	if got.Input != 0 || got.Output != 0 || got.CacheRead != 0 || got.CacheWrite != 0 || got.DurationMS != 0 {
+	if got.Input != 0 || got.Output != 0 || got.CacheRead != 0 || got.CacheWrite != 0 {
 		t.Errorf("request = %+v, want every negative count clamped to 0", got)
 	}
 }
@@ -487,9 +480,8 @@ func TestDecodeLogs_CountsAboveTheCapReadAsAbsent(t *testing.T) {
 				tt.attr("output_tokens", maxCount),
 				tt.attr("cache_read_tokens", maxCount),
 				tt.attr("cache_creation_tokens", maxCount),
-				tt.attr("duration_ms", maxCount),
 			)))
-			if atCap.Input != maxCount || atCap.Output != maxCount || atCap.CacheRead != maxCount || atCap.CacheWrite != maxCount || atCap.DurationMS != maxCount {
+			if atCap.Input != maxCount || atCap.Output != maxCount || atCap.CacheRead != maxCount || atCap.CacheWrite != maxCount {
 				t.Errorf("request = %+v, want every count at the cap kept", atCap)
 			}
 
@@ -498,9 +490,8 @@ func TestDecodeLogs_CountsAboveTheCapReadAsAbsent(t *testing.T) {
 				tt.attr("output_tokens", maxCount+1),
 				tt.attr("cache_read_tokens", maxCount+1),
 				tt.attr("cache_creation_tokens", maxCount+1),
-				tt.attr("duration_ms", maxCount+1),
 			)))
-			if overCap.Input != 0 || overCap.Output != 0 || overCap.CacheRead != 0 || overCap.CacheWrite != 0 || overCap.DurationMS != 0 {
+			if overCap.Input != 0 || overCap.Output != 0 || overCap.CacheRead != 0 || overCap.CacheWrite != 0 {
 				t.Errorf("request = %+v, want every count over the cap read as 0", overCap)
 			}
 		})
@@ -513,7 +504,6 @@ func TestDecodeLogs_NumbersAreNotReadFromStringValues(t *testing.T) {
 		strAttr("output_tokens", "22"),
 		strAttr("cache_read_tokens", "33"),
 		strAttr("cache_creation_tokens", "44"),
-		strAttr("duration_ms", "55"),
 		strAttr("cost_usd_micros", "66"),
 	)))
 
@@ -561,7 +551,7 @@ func TestDecodeLogs_UnusableNumbersReadAsAbsent(t *testing.T) {
 		attribute("output_tokens", `{"intValue":"9223372036854775808"}`),
 		attribute("cache_read_tokens", `{"intValue":1.5}`),
 		attribute("cache_creation_tokens", `{"intValue":true}`),
-		attribute("duration_ms", `{"intValue":null}`),
+		attribute("cost_usd_micros", `{"intValue":null}`),
 		intAttr("model", 7),
 	)))
 
@@ -647,12 +637,12 @@ func TestDecodeLogs_OddAttributeShapesDoNotFailTheExport(t *testing.T) {
 		`{"key":"output_tokens"}`,
 		attribute("cache_read_tokens", `{"arrayValue":{"values":[]}}`),
 		attribute("user.email", `{"kvlistValue":{"values":[]}}`),
-		intAttr("duration_ms", 12),
+		intAttr("cache_creation_tokens", 12),
 	)
 
 	got := decodeOne(t, export(attrs(), rec))
 
-	if got.Session != testSession || got.DurationMS != 12 || got.Model != "" || got.Email != "" {
+	if got.Session != testSession || got.CacheWrite != 12 || got.Model != "" || got.Email != "" {
 		t.Errorf("request = %+v, want the usable fields kept and the odd ones absent", got)
 	}
 }
@@ -800,7 +790,7 @@ func FuzzDecodeLogs(f *testing.F) {
 			if _, err := json.Marshal(request.At); err != nil {
 				t.Errorf("request %+v has a time that does not marshal: %v", request, err)
 			}
-			for _, count := range []int64{request.Input, request.Output, request.CacheRead, request.CacheWrite, request.DurationMS} {
+			for _, count := range []int64{request.Input, request.Output, request.CacheRead, request.CacheWrite} {
 				if count < 0 || count > 1<<40 {
 					t.Errorf("request %+v has a count outside 0 to 2^40", request)
 				}

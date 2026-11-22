@@ -342,7 +342,6 @@ func TestAuthStatus_MapsFixture(t *testing.T) {
 		OrgName:          "Example Org",
 		SubscriptionType: "max",
 		PlanTier:         "max_20x",
-		ConfigDirectory:  `C:\Users\example\.claude-work`,
 	}
 	if status != want {
 		t.Errorf("status = %+v, want %+v", status, want)
@@ -476,7 +475,6 @@ func TestAuthStatus_Account(t *testing.T) {
 func TestAuthStatus_AccountCarriesIdentity(t *testing.T) {
 	status := claudecli.AuthStatus{
 		LoggedIn: true, AuthMethod: "claude.ai", Email: "dev@example.com", OrgName: "Example Org", PlanTier: "max_20x",
-		ConfigDirectory: `C:\somewhere\else`,
 	}
 
 	got := status.Account(testDir, "Work", pollTime)

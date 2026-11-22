@@ -54,7 +54,8 @@ const (
 
 // metricsColumn is how a session's metrics are kept in metrics_json. Its
 // names are the stored format, so they stay fixed whatever the domain calls
-// the fields.
+// the fields. Rows that earlier versions wrote also hold durationMS,
+// cacheWarm and fastMode, which decoding passes over.
 type metricsColumn struct {
 	Model         string  `json:"model"`
 	ModelID       string  `json:"modelId"`
@@ -63,20 +64,16 @@ type metricsColumn struct {
 	ContextSize   int64   `json:"contextSize"`
 	ContextUsed   int64   `json:"contextUsed"`
 	CostUSD       float64 `json:"costUSD"`
-	DurationMS    int64   `json:"durationMS"`
 	LinesAdded    int64   `json:"linesAdded"`
 	LinesRemoved  int64   `json:"linesRemoved"`
-	CacheWarm     bool    `json:"cacheWarm"`
 	CacheHitRatio float64 `json:"cacheHitRatio"`
-	FastMode      bool    `json:"fastMode"`
 }
 
 func encodeMetrics(m domain.Metrics) (string, error) {
 	data, err := json.Marshal(metricsColumn{
 		Model: m.Model, ModelID: m.ModelID, Effort: m.Effort,
 		ContextPct: m.ContextPct, ContextSize: m.ContextSize, ContextUsed: m.ContextUsed, CostUSD: m.CostUSD,
-		DurationMS: m.DurationMS, LinesAdded: m.LinesAdded, LinesRemoved: m.LinesRemoved,
-		CacheWarm: m.CacheWarm, CacheHitRatio: m.CacheHitRatio, FastMode: m.FastMode,
+		LinesAdded: m.LinesAdded, LinesRemoved: m.LinesRemoved, CacheHitRatio: m.CacheHitRatio,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode metrics: %w", err)
@@ -92,8 +89,7 @@ func decodeMetrics(text string) (domain.Metrics, error) {
 	return domain.Metrics{
 		Model: c.Model, ModelID: c.ModelID, Effort: c.Effort,
 		ContextPct: c.ContextPct, ContextSize: c.ContextSize, ContextUsed: c.ContextUsed, CostUSD: c.CostUSD,
-		DurationMS: c.DurationMS, LinesAdded: c.LinesAdded, LinesRemoved: c.LinesRemoved,
-		CacheWarm: c.CacheWarm, CacheHitRatio: c.CacheHitRatio, FastMode: c.FastMode,
+		LinesAdded: c.LinesAdded, LinesRemoved: c.LinesRemoved, CacheHitRatio: c.CacheHitRatio,
 	}, nil
 }
 
