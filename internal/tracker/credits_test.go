@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/costtest"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
@@ -576,26 +577,29 @@ func TestTracker_AnIdleSessionsOlderReadingKeepsTheStretchOnCredits(t *testing.T
 }
 
 // A day of the same disagreement leaves the view as cheap as ever: the tracker
-// holds its lock while it builds one, so a slow view stalls ingest.
+// holds its lock while it builds one, so a slow view stalls ingest. Without
+// the race detector a view after the day keeps to a bound in milliseconds.
+// The detector slows a view several times over, and a loaded machine slows it
+// as much again, so with it the view is held instead to a cost that grows
+// linearly with the hours of readings.
 func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
-	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 1000, AddedAt: at(-86400)}}}
-	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
 	const hours = 24
-	for sec := 0; sec < hours*3600; sec += 5 {
-		h.clock.Set(at(sec))
-		h.tr.Apply(withWindows(statusLine(sec, s1), nil, window(100, weekResets)))
-		h.tr.RecordAPI(request(at(sec+1), s1, "Opus 5.5", 0.01))
-		h.clock.Set(at(sec + 2))
-		h.tr.Apply(withWindows(statusLine(sec+2, s2), nil, window(97, weekResets)))
-		h.tr.RecordAPI(request(at(sec+3), s1, "Opus 5.5", 0.01))
-		if sec%3600 == 0 {
-			h.tr.Snapshot()
-		}
+	after := func(hours int) *tracker.Tracker {
+		h := newSubscribedHarness(t, tracker.Config{Credits: aThousandDollars, Alerts: defaultAlerts})
+		disagreeFor(h.tr, h.clock, hours)
+		return h.tr
 	}
-	h.clock.Set(at(hours*3600 + 1))
+	if raceEnabled {
+		// Two hours against eight show a quadratic cost plainly, and build in
+		// seconds where a day of a quadratic cost takes minutes.
+		costtest.AssertLinear(t, 2, "hours of readings", func(hours int) func() { return viewing(after(hours)) })
+		return
+	}
+
+	tr := after(hours)
 	for range 3 {
 		start := time.Now()
-		h.tr.Snapshot()
+		tr.Snapshot()
 		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 			t.Errorf("a view after %d hours took %v, want well under 100 ms", hours, elapsed)
 		}
@@ -605,30 +609,32 @@ func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
 // A month of stretches on credits half a minute long, one every minute, each
 // with a call in it: a view walks the calls and the spans together, where
 // looking through the spans for each call would take seconds under the lock.
+// Without the race detector a view of the month keeps to a bound in
+// milliseconds; with it, the view is held to a cost that grows linearly with
+// the days of stretches (see
+// TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap).
 func TestTracker_AViewTakesOnePassOverTheSpansAndCalls(t *testing.T) {
-	const day = 86400
-	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 1e9, AddedAt: at(-40 * day)}}}
-	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
-	var samples []domain.Sample
-	var usage []tracker.UsageRow
-	for sec := -30*day + 60; sec < 0; sec += 60 {
-		samples = append(samples,
-			domain.Sample{At: at(sec), UsedPct: 100, ResetsAt: weekResets},
-			domain.Sample{At: at(sec + 30), UsedPct: 0, ResetsAt: weekResets})
-		usage = append(usage, tracker.UsageRow{Minute: at(sec), Dir: dirA, Session: s1, Model: "Opus 5.5", CostUSD: 1, Requests: 1})
+	const days = 30
+	over := func(days int) *tracker.Tracker {
+		h := newSubscribedHarness(t, tracker.Config{Credits: aBillionDollars, Alerts: defaultAlerts})
+		stretches := restoreStretchesOnCredits(h.tr, days)
+		if got := h.account(dirA).Credits; got == nil || got.SpentUSD != float64(stretches) || got.Active {
+			t.Errorf("credits %+v over %d days, want $%d spent, one for each stretch on credits, none open", got, days, stretches)
+		}
+		return h.tr
 	}
-	h.tr.Restore(tracker.Restored{Samples: map[domain.ConfigDir]domain.WindowSamples{dirA: {SevenDay: samples}}, Usage: usage})
-	h.tr.Snapshot()
+	if raceEnabled {
+		// One day against four shows a quadratic cost plainly, in seconds
+		// where a month of a quadratic cost takes minutes.
+		costtest.AssertLinear(t, 1, "days of stretches on credits", func(days int) func() { return viewing(over(days)) })
+		return
+	}
 
+	tr := over(days)
 	start := time.Now()
-	h.tr.Snapshot()
-	elapsed := time.Since(start)
-
-	if got := h.account(dirA).Credits; got == nil || got.SpentUSD != float64(len(usage)) || got.Active {
-		t.Errorf("credits %+v, want $%d spent, one for each stretch on credits, none open", got, len(usage))
-	}
-	if elapsed > time.Second {
-		t.Errorf("a view over %d spans and calls took %v, want well under a second", len(usage), elapsed)
+	tr.Snapshot()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("a view over %d days of spans and calls took %v, want well under a second", days, elapsed)
 	}
 }
 
