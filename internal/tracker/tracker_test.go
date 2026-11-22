@@ -3,6 +3,7 @@ package tracker_test
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"math"
 	"slices"
 	"sync"
@@ -444,6 +445,7 @@ func TestApplyPoll_LongFinishedRecordsCreateNoSession(t *testing.T) {
 			h.tr.ApplyPoll(dirA, at(0), []domain.Poll{
 				backgroundRecord(0, s1, bgState, dayAndAnHourAgo),
 				backgroundRecord(0, s2, bgState, at(0).Add(-23*time.Hour)),
+				backgroundRecord(0, s3, bgState, at(0).Add(-24*time.Hour)),
 			})
 			v := h.tr.Snapshot()
 			if _, ok := findSession(v, s1); ok {
@@ -451,6 +453,9 @@ func TestApplyPoll_LongFinishedRecordsCreateNoSession(t *testing.T) {
 			}
 			if _, ok := findSession(v, s2); !ok {
 				t.Errorf("a record of a session started 23 h ago is missing")
+			}
+			if _, ok := findSession(v, s3); !ok {
+				t.Errorf("a record of a session started exactly a day ago is missing: only one started over a day ago is left out")
 			}
 		})
 	}
@@ -755,6 +760,29 @@ func TestTracker_PendingRequestsAreBounded(t *testing.T) {
 	h.tr.Apply(hook(1, s1, "SessionStart"))
 	if got := h.session(s1).Models; len(got) != 1 || got[0].Requests != limit {
 		t.Errorf("models %v, want %d requests kept while the session was unknown", got, limit)
+	}
+}
+
+func TestTracker_ExpiredRequestsFreeOnlyTheirOwnPlaces(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	const limit, half = 10000, 5000
+	for range half {
+		h.tr.RecordAPI(request(at(0), s1, "Opus 5.5", 0.01))
+	}
+	h.clock.Set(at(300))
+	for range half {
+		h.tr.RecordAPI(request(at(300), s1, "Opus 5.5", 0.01))
+	}
+	// The first half has waited over ten minutes; the second half still waits.
+	h.clock.Set(at(601))
+	h.tr.Snapshot()
+	for range half + 1000 {
+		h.tr.RecordAPI(request(at(601), s1, "Opus 5.5", 0.01))
+	}
+	h.tr.Apply(hook(601, s1, "SessionStart"))
+
+	if got := h.session(s1).Models; len(got) != 1 || got[0].Requests != limit {
+		t.Errorf("models %v, want %d requests: the expired half made room for %d more, no more", got, limit, half)
 	}
 }
 
@@ -1190,6 +1218,24 @@ func TestTracker_RecorderCalled(t *testing.T) {
 	}
 }
 
+func TestTracker_RecordsASessionOnEachChangeAlone(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.Apply(hook(0, s1, "SessionStart"))
+	h.tr.Apply(hook(1, s1, "UserPromptSubmit"))
+	// Older than the prompt, so it changes nothing.
+	h.tr.Apply(hook(0, s1, "Stop"))
+	h.tr.Apply(hook(2, s1, "Stop"))
+
+	sessions, _, _, _ := h.rec.recorded()
+	got := make([]domain.State, len(sessions))
+	for i, s := range sessions {
+		got[i] = s.State
+	}
+	if want := []domain.State{domain.StateStarting, domain.StateWorking, domain.StateIdle}; !slices.Equal(got, want) {
+		t.Errorf("states recorded %v, want %v: one for each change and none for the stale Stop", got, want)
+	}
+}
+
 func restoredSession(id domain.SessionID, state domain.State, lastStatusAt time.Time) domain.Session {
 	return domain.Session{
 		ID: id, Dir: dirA, PID: pidA, State: state,
@@ -1396,6 +1442,49 @@ func TestTracker_ClearLinksSuccessor(t *testing.T) {
 	}
 }
 
+// Of the sessions /clear ended in one process, a new session there continues
+// the one that ended nearest its start, and of those as near, the lowest ID.
+// The sessions are held in a map, so each case runs many times: an answer
+// that hung on the order they were visited in would not come out the same
+// every time.
+func TestTracker_ClearLinksTheNearestPredecessor(t *testing.T) {
+	const successor domain.SessionID = "after-clear"
+	for name, tc := range map[string]struct {
+		endedAt map[domain.SessionID]int
+		startAt int
+		want    domain.SessionID
+	}{
+		"the nearest end": {
+			endedAt: map[domain.SessionID]int{"cleared-a": 95, "cleared-b": 100, "cleared-c": 98},
+			startAt: 101,
+			want:    "cleared-b",
+		},
+		"the lowest ID of the nearest": {
+			endedAt: map[domain.SessionID]int{"cleared-c": 100, "cleared-b": 106, "cleared-d": 100, "cleared-a": 94},
+			startAt: 103,
+			want:    "cleared-b",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for range 32 {
+				h := newHarness(t, tracker.Config{})
+				ids := slices.Sorted(maps.Keys(tc.endedAt))
+				for _, id := range ids {
+					h.tr.Apply(hook(0, id, "SessionStart"))
+				}
+				for _, id := range ids {
+					h.tr.Apply(sessionEnd(tc.endedAt[id], id, "clear"))
+				}
+				h.tr.Apply(hook(tc.startAt, successor, "SessionStart"))
+
+				if got := h.session(successor).Replaces; got != tc.want {
+					t.Fatalf("the new session replaces %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestTracker_EventsThatOpenNoSession(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	// A status line without a session still reports its account's limits.
@@ -1460,6 +1549,7 @@ func TestTracker_SessionFigures(t *testing.T) {
 		{"room left", 200000, 50000, 150000},
 		{"over full", 200000, 250000, 0},
 		{"unknown size", 0, 10000, 0},
+		{"unknown size with a negative count", 0, -10000, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tracker.Config{})
@@ -1513,7 +1603,7 @@ func TestTracker_AccountChangesOnlyWithItsValues(t *testing.T) {
 
 	_, accounts, _, _ := h.rec.recorded()
 	type change struct {
-		plan               string
+		plan, org          string
 		fiveHour, sevenDay float64 // -1 when the window is absent
 	}
 	pct := func(w *domain.Window) float64 {
@@ -1524,15 +1614,15 @@ func TestTracker_AccountChangesOnlyWithItsValues(t *testing.T) {
 	}
 	got := make([]change, len(accounts))
 	for i, a := range accounts {
-		got[i] = change{a.Plan, pct(a.Limits.FiveHour), pct(a.Limits.SevenDay)}
+		got[i] = change{a.Plan, a.Org, pct(a.Limits.FiveHour), pct(a.Limits.SevenDay)}
 	}
 	want := []change{
-		{"Pro", -1, -1},     // the first probe
-		{"Pro", -1, -1},     // the organization
-		{"Pro", -1, 50},     // the first window
-		{"Pro", -1, 51},     // its usage moved
-		{"Pro", 10, 51},     // another window appeared
-		{"Max 20x", 10, 51}, // the plan changed
+		{"Pro", "", -1, -1},            // the first probe
+		{"Pro", "Example", -1, -1},     // the organization
+		{"Pro", "Example", -1, 50},     // the first window
+		{"Pro", "Example", -1, 51},     // its usage moved
+		{"Pro", "Example", 10, 51},     // another window appeared
+		{"Max 20x", "Example", 10, 51}, // the plan changed
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("accounts recorded\n got %v\nwant %v", got, want)
