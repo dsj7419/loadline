@@ -342,6 +342,20 @@ func TestEstimateCredits_SpanEdges(t *testing.T) {
 	}
 }
 
+// A span ends just before its To, where the next may begin.
+func TestSpanCursor_FindsTheSpanThatHoldsEachTime(t *testing.T) {
+	cursor := domain.NewSpanCursor([]domain.OnCreditsSpan{span(0, 10), span(10, 20), span(30, -1)})
+
+	for _, tc := range []struct{ sec, want int }{
+		{-1, -1}, {0, 0}, {9, 0}, {10, 1}, {19, 1}, {20, -1}, {29, -1}, {30, 2}, {10_000, 2},
+	} {
+		got, held := cursor.Find(at(tc.sec))
+		if got != tc.want || held != (tc.want >= 0) {
+			t.Errorf("Find(%d s) = %d, %v; want %d", tc.sec, got, held, tc.want)
+		}
+	}
+}
+
 func TestEstimateCredits_CountsACallMadeAsTheGrantIsAdded(t *testing.T) {
 	spans := []domain.OnCreditsSpan{span(0, -1)}
 	requests := []domain.APIRequest{callAt(499, 1), callAt(500, 2), callAt(501, 4)}
