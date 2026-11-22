@@ -424,6 +424,17 @@ func storedAsIs(t *testing.T, path string, folder bool, sddl string) string {
 	return path
 }
 
+// withEntries makes a file at path and stores the raw entries on it exactly
+// as they are.
+func withEntries(t *testing.T, path string, entries ...[]byte) string {
+	t.Helper()
+	write(t, path)
+	fspermtest.SetEntriesAsIs(t, path, false, entries...)
+	// So that the temporary folder can be removed whatever the list.
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+	return path
+}
+
 // A file or folder in a private folder holds nothing of its own when all it
 // has is what that folder passes down, full control for the user, SYSTEM
 // and Administrators, or when it is a folder with the private list itself.
@@ -506,6 +517,22 @@ func TestEntryPrivate_TakesOnlyWhatAPrivateFolderGives(t *testing.T) {
 		"a folder whose entries pass nothing on": {func(t *testing.T, root string) string {
 			t.Helper()
 			return storedAsIs(t, filepath.Join(root, "spool"), true, "D:AI(A;ID;FA;;;"+user+")(A;ID;FA;;;SY)(A;ID;FA;;;BA)")
+		}, false},
+		// Windows keeps two entries for one trustee when one has unused bytes
+		// after its SID: three entries, then, without one of the three.
+		"a file with SYSTEM's entry twice, once with room to spare": {func(t *testing.T, root string) string {
+			t.Helper()
+			return withEntries(t, filepath.Join(root, "token"),
+				fspermtest.AllowEntry(t, "S-1-5-18", windows.INHERITED_ACE, fspermtest.FullControl, 0),
+				fspermtest.AllowEntry(t, "S-1-5-18", windows.INHERITED_ACE, fspermtest.FullControl, 4),
+				fspermtest.AllowEntry(t, "S-1-5-32-544", windows.INHERITED_ACE, fspermtest.FullControl, 0))
+		}, false},
+		"a file with the user's entry twice, once with room to spare": {func(t *testing.T, root string) string {
+			t.Helper()
+			return withEntries(t, filepath.Join(root, "token"),
+				fspermtest.AllowEntry(t, user, windows.INHERITED_ACE, fspermtest.FullControl, 0),
+				fspermtest.AllowEntry(t, user, windows.INHERITED_ACE, fspermtest.FullControl, 4),
+				fspermtest.AllowEntry(t, "S-1-5-18", windows.INHERITED_ACE, fspermtest.FullControl, 0))
 		}, false},
 		// Only the folders Loadline makes have a list of their own. Stored as
 		// it is, since SetNamedSecurityInfo drops what a file cannot pass on.

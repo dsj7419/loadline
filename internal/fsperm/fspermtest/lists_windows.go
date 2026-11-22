@@ -2,6 +2,7 @@ package fspermtest
 
 import (
 	"encoding/binary"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -81,6 +82,65 @@ func SetAccessListAsIs(tb testing.TB, path, sddl string) {
 	if err := windows.SetKernelObjectSecurity(handle, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
 		tb.Fatalf("store %s on %s: %v", sddl, path, err)
 	}
+}
+
+// AllowEntry is a plain allow entry, as an access list holds it, that gives
+// mask to sid, a SID in string form, with the inheritance flags given, and
+// padding unused bytes after the SID, which the entry's size takes in.
+// Windows keeps two entries for one trustee that differ in that alone.
+func AllowEntry(tb testing.TB, sid string, flags byte, mask windows.ACCESS_MASK, padding int) []byte {
+	tb.Helper()
+	trustee, err := windows.StringToSid(sid)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	entry := []byte{0, flags, 0, 0}
+	entry = binary.LittleEndian.AppendUint32(entry, uint32(mask))
+	entry = append(entry, sidBytes(trustee)...)
+	entry = append(entry, make([]byte, padding)...)
+	binary.LittleEndian.PutUint16(entry[2:], uint16(len(entry))) //nolint:gosec // G115: one SID and a little padding
+	return entry
+}
+
+// SetEntriesAsIs stores the access list made of entries on path, a file or
+// directory the test created, exactly as they are, protected or not, as
+// SetFileSecurity and backup tools do.
+func SetEntriesAsIs(tb testing.TB, path string, protected bool, entries ...[]byte) {
+	tb.Helper()
+	acl := []byte{aclRevisionDS, 0, 0, 0, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint16(acl[4:], uint16(len(entries))) //nolint:gosec // G115: a few entries
+	for _, entry := range entries {
+		acl = append(acl, entry...)
+	}
+	binary.LittleEndian.PutUint16(acl[2:], uint16(len(acl))) //nolint:gosec // G115: a few entries
+	sd, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	//nolint:gosec // G103: acl is laid out as an ACL, which SetDACL takes by pointer
+	if err := sd.SetDACL((*windows.ACL)(unsafe.Pointer(&acl[0])), true, false); err != nil {
+		tb.Fatal(err)
+	}
+	if protected {
+		if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.WRITE_DAC|windows.READ_CONTROL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		tb.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	if err := windows.SetKernelObjectSecurity(handle, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
+		tb.Fatalf("store %d entries on %s: %v", len(entries), path, err)
+	}
+	runtime.KeepAlive(acl)
 }
 
 // Entry is one allow entry for every signed-in user, of any kind.

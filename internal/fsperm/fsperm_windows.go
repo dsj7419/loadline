@@ -168,17 +168,23 @@ func isPrivate(sd *windows.SECURITY_DESCRIPTOR, folder bool) (bool, error) {
 	if folder {
 		flags |= windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
 	}
-	// Windows keeps no two entries alike: three that differ only in their
-	// trustee, each one of the three, are the three.
+	// Each of the three once: Windows keeps two entries for one trustee when
+	// one has unused bytes after its SID, and three entries can then lack
+	// one of the three.
+	seen := make([]bool, len(trusted))
 	for i := range uint32(dacl.AceCount) {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
 			return false, err
 		}
-		if ace.Header.AceFlags != flags || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Mask != fileAllAccess ||
-			!slices.ContainsFunc(trusted, entrySID(ace).Equals) {
+		if ace.Header.AceFlags != flags || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Mask != fileAllAccess {
 			return false, nil
 		}
+		k := slices.IndexFunc(trusted, entrySID(ace).Equals)
+		if k < 0 || seen[k] {
+			return false, nil
+		}
+		seen[k] = true
 	}
 	return true, nil
 }

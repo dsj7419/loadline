@@ -371,3 +371,92 @@ func TestSecure_TakesOffAccessGivenToASystemFile(t *testing.T) {
 		t.Errorf("after Secure, %s admits %v: %s", ini, others, fspermtest.AccessList(t, ini))
 	}
 }
+
+// Windows keeps two entries for one trustee when one carries unused bytes
+// after its SID, so three entries can hold the same trustee twice, and one
+// of the three not at all. Such a list is not what the data directory passes
+// down, and Secure puts that back.
+func TestSecure_PutsBackAListThatHoldsOneTrusteeTwice(t *testing.T) {
+	user, system, admins := fspermtest.UserSID(t), "S-1-5-18", "S-1-5-32-544"
+	const fileFlags, folderFlags = 0x10, 0x13
+	entry := func(sid string, flags byte, padding int) []byte {
+		return fspermtest.AllowEntry(t, sid, flags, fspermtest.FullControl, padding)
+	}
+	read := func(path string) error { _, err := os.ReadFile(path); return err }
+	spool := func(path string) error { return forward.Spool{Dir: path}.Put(hookEvent(t)) }
+	for name, tt := range map[string]struct {
+		path    string
+		flags   byte
+		entries func(flags byte) [][]byte
+		usable  func(path string) error
+	}{
+		"the token, SYSTEM twice": {"token", fileFlags, func(f byte) [][]byte {
+			return [][]byte{entry(system, f, 0), entry(system, f, 4), entry(admins, f, 0)}
+		}, read},
+		"the binary, SYSTEM three times": {filepath.Join("bin", "loadline.exe"), fileFlags, func(f byte) [][]byte {
+			return [][]byte{entry(system, f, 0), entry(system, f, 4), entry(system, f, 8)}
+		}, read},
+		"the spool, SYSTEM twice": {"spool", folderFlags, func(f byte) [][]byte {
+			return [][]byte{entry(system, f, 0), entry(system, f, 4), entry(admins, f, 0)}
+		}, spool},
+		"the token, the user twice": {"token", fileFlags, func(f byte) [][]byte {
+			return [][]byte{entry(user, f, 0), entry(user, f, 4), entry(system, f, 0)}
+		}, read},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, tt.path)
+			fspermtest.SetEntriesAsIs(t, path, false, tt.entries(tt.flags)...)
+			// So that the temporary folder can be removed whatever Secure did.
+			t.Cleanup(func() { _ = fsperm.ClearExplicit(path) })
+
+			if err := datadir.Secure(home, top); err != nil {
+				t.Fatalf("Secure: %v", err)
+			}
+
+			want := "(A;ID;FA;;;" + user + ")(A;ID;FA;;;SY)(A;ID;FA;;;BA)"
+			if tt.flags == folderFlags {
+				want = "(A;OICIID;FA;;;" + user + ")(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)"
+			}
+			if got := entriesOf(fspermtest.AccessList(t, path)); got != want {
+				t.Errorf("after Secure, %s holds %s; want what the data directory passes down, %s", path, got, want)
+			}
+			if err := tt.usable(path); err != nil {
+				t.Errorf("after Secure, the user still cannot use %s: %v", path, err)
+			}
+		})
+	}
+}
+
+// A folder's protected list that is the private one, put there by someone
+// else's hand, is what MkdirAll makes, entry for entry: it admits nobody
+// else, on the folder or on what is made in it.
+func TestSecure_TakesACopyOfThePrivateListOnAFolderForLoadlinesOwn(t *testing.T) {
+	home, top := loadlineHome(t)
+	spool := filepath.Join(home, "spool")
+	const folderPrivate = 0x03
+	fspermtest.SetEntriesAsIs(t, spool, true,
+		fspermtest.AllowEntry(t, fspermtest.UserSID(t), folderPrivate, fspermtest.FullControl, 0),
+		fspermtest.AllowEntry(t, "S-1-5-18", folderPrivate, fspermtest.FullControl, 0),
+		fspermtest.AllowEntry(t, "S-1-5-32-544", folderPrivate, fspermtest.FullControl, 0))
+
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+	if err := (forward.Spool{Dir: spool}).Put(hookEvent(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := filepath.Glob(filepath.Join(spool, "1700000000*.json"))
+	if err != nil || len(events) != 1 {
+		t.Fatalf("spooled events: %v, %v", events, err)
+	}
+	for _, path := range []string{spool, events[0]} {
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) != 0 {
+			t.Errorf("%s admits %v: %s", path, others, fspermtest.AccessList(t, path))
+		}
+	}
+	if got, err := datadir.Check(home, top); err != nil || got != "" {
+		t.Errorf("Check = %q, %v; want \"\"", got, err)
+	}
+}
