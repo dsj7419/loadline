@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,29 +244,44 @@ func standInHome(t *testing.T, shells []string) []string {
 func runShell(t *testing.T, shell string, env []string, command string) (string, int) {
 	t.Helper()
 
+	got := runInShell(t, env, strings.NewReader("{\"model\":\"opus\"}\n"), shell, "-c", command)
+	return got.stdout, got.code
+}
+
+// shellRun is what a shell printed and how it exited.
+type shellRun struct {
+	stdout, stderr string
+	code           int
+}
+
+// runInShell runs shell with args in env and input on its stdin.
+func runInShell(t *testing.T, env []string, input io.Reader, shell string, args ...string) shellRun {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // G204: runs the shell under test on a command the test built
+	cmd := exec.CommandContext(ctx, shell, args...) //nolint:gosec // G204: runs the shell under test on a command the test built
 	// A background command can outlive a shell killed at the timeout and
 	// hold its output open; this stops Wait from waiting on it.
 	cmd.WaitDelay = time.Second
 	cmd.Env = env
-	cmd.Stdin = strings.NewReader("{\"model\":\"opus\"}\n")
-	var stdout bytes.Buffer
+	cmd.Stdin = input
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("%s -c %q timed out", shell, command)
+		t.Fatalf("%s %q timed out", shell, args)
 	}
 	code := 0
 	if err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
-			t.Fatalf("%s -c %q: %v", shell, command, err)
+			t.Fatalf("%s %q: %v", shell, args, err)
 		}
 		code = exitErr.ExitCode()
 	}
-	return stdout.String(), code
+	return shellRun{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }
 
 // scaled returns full, or reduced when the race detector or -short would

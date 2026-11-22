@@ -47,10 +47,11 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -timeout 20m ./...
-      - name: Test the full generated cases
-        # Under the race detector these tests run a reduced set of cases, to
-        # stay inside CI time; without it they run every one, and every shell.
-        run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestReadHookInput_' ./internal/install/ ./internal/protocol/
+      - name: Test the full generated cases and the real tap under every shell
+        # Under the race detector these tests run a reduced set of cases, or
+        # one shell, to stay inside CI time; without it they run every case
+        # under every shell.
+        run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestBashForm_RealTapBeforeOriginalsThatNeverRead|TestReadHookInput_' ./internal/install/ ./internal/protocol/
       - name: Test the hot path's time bounds
         # Under the race detector these tests allow several times their
         # wall-clock bounds on the tap, the hook and the forwarder; without it
