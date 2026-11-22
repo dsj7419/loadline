@@ -488,7 +488,7 @@ func TestEstimateCredits_OnePassOverManySpansAndCalls(t *testing.T) {
 	if raceEnabled {
 		spanCount = 1000
 	}
-	costtest.AssertLinear(t, spanCount, "spans", func(spanCount int) func() {
+	estimate := func(spanCount int) func() {
 		spans, requests, now := shortStretches(spanCount)
 		// Each closed span holds the calls at its start and 5 s in; the open
 		// one holds the four from its start on.
@@ -498,7 +498,15 @@ func TestEstimateCredits_OnePassOverManySpansAndCalls(t *testing.T) {
 			t.Errorf("EstimateCredits() over %d spans = %+v, want $%v spent, on credits since %v", spanCount, got, want, opened)
 		}
 		return func() { domain.EstimateCredits(grants, spans, requests, now) }
-	})
+	}
+
+	costtest.AssertLinear(t, spanCount, "spans", estimate)
+	// Fifty thousand spans, untimed, for the outcome at full scale. A cost
+	// found to grow faster than linearly would take minutes over them, so
+	// they are estimated only once it is known to be linear.
+	if !t.Failed() {
+		estimate(50_000)
+	}
 }
 
 // BenchmarkEstimateCredits_ManySpansAndCalls measures an estimate over fifty
