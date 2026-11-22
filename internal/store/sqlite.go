@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -300,11 +302,16 @@ func addLimitSample(ctx context.Context, tx *sql.Tx, dir domain.ConfigDir, l dom
 		if sample.w == nil {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, insertSampleSQL,
-			dir, sample.window, l.ObservedAt.UnixMilli(), sample.w.UsedPct, millis(sample.w.ResetsAt),
-		); err != nil {
-			return fmt.Errorf("store a %s sample of %s: %w", sample.window, dir, err)
+		if err := insertSample(ctx, tx, dir, sample.window, domain.Sample{At: l.ObservedAt, UsedPct: sample.w.UsedPct, ResetsAt: sample.w.ResetsAt}); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func insertSample(ctx context.Context, tx *sql.Tx, dir domain.ConfigDir, window string, s domain.Sample) error {
+	if _, err := tx.ExecContext(ctx, insertSampleSQL, dir, window, s.At.UnixMilli(), s.UsedPct, millis(s.ResetsAt)); err != nil {
+		return fmt.Errorf("store a %s sample of %s: %w", window, dir, err)
 	}
 	return nil
 }
@@ -341,7 +348,10 @@ const (
 		WHERE s.state != ? OR s.last_seen_at >= ?
 	) WHERE newness <= ? ORDER BY session, id`
 
-	loadSamplesSQL = `SELECT dir, window, at, used_pct, resets_at FROM limit_samples WHERE at >= ? ORDER BY dir, at, rowid`
+	// Each window's samples come in the order they were taken, and those
+	// taken at the same millisecond in the order they were written.
+	loadSamplesSQL       = `SELECT dir, window, at, used_pct, resets_at FROM limit_samples WHERE at >= ? ORDER BY dir, at, rowid`
+	loadSamplesBeforeSQL = `SELECT dir, window, at, used_pct, resets_at FROM limit_samples WHERE at < ? ORDER BY dir, at, rowid`
 
 	loadUsageSQL = `SELECT minute, dir, session, model, input, output, cache_read, cache_write, cost_usd, requests
 	FROM usage_minutes WHERE minute >= ? ORDER BY rowid`
@@ -349,11 +359,13 @@ const (
 
 // Load returns what a new run of the tracker needs: every account, the
 // sessions that have not ended or were seen at or after since, with their
-// last 50 state changes, and the samples and usage from since on. Usage
-// comes in the order its minutes were first written, the order the tracker
-// sums it in. A row that cannot be read is left out and counted in
-// skipped: one that a damaged file or another program left costs that row
-// alone.
+// last 50 state changes, and the samples and usage from since on. Each
+// window's samples begin with the one that stands for a span on credits the
+// earlier samples leave open at since, as Prune keeps it, so the spans come
+// back the same whether or not a prune came first. Usage comes in the order
+// its minutes were first written, the order the tracker sums it in. A row
+// that cannot be read is left out and counted in skipped: one that a damaged
+// file or another program left costs that row alone.
 func (s *SQLite) Load(ctx context.Context, since time.Time) (restored tracker.Restored, skipped int, err error) {
 	ended, err := textOf(domain.StateEnded)
 	if err != nil {
@@ -377,7 +389,7 @@ func (s *SQLite) Load(ctx context.Context, since time.Time) (restored tracker.Re
 	if r.Timelines, err = l.timelines(ctx, ended, cut); err != nil {
 		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
-	if r.Samples, err = l.samples(ctx, cut); err != nil {
+	if r.Samples, err = l.samplesFrom(ctx, cut); err != nil {
 		return tracker.Restored{}, 0, fmt.Errorf("load history: %w", err)
 	}
 	if r.Usage, err = l.usage(ctx, cut); err != nil {
@@ -386,7 +398,7 @@ func (s *SQLite) Load(ctx context.Context, since time.Time) (restored tracker.Re
 	return r, l.skipped, nil
 }
 
-// loader reads the rows of one Load, and counts those it cannot read.
+// loader reads rows within one transaction, and counts those it cannot read.
 type loader struct {
 	tx      *sql.Tx
 	skipped int
@@ -497,9 +509,54 @@ func (l *loader) timelines(ctx context.Context, ended string, cut int64) (map[do
 	return timelines, err
 }
 
-func (l *loader) samples(ctx context.Context, cut int64) (map[domain.ConfigDir]domain.WindowSamples, error) {
+// samplesFrom returns each account's samples from cut on, after the one that
+// stands for a span on credits the earlier samples leave open at cut.
+func (l *loader) samplesFrom(ctx context.Context, cut int64) (map[domain.ConfigDir]domain.WindowSamples, error) {
+	samples, err := l.carried(ctx, cut)
+	if err != nil {
+		return nil, err
+	}
+	later, err := l.samples(ctx, loadSamplesSQL, cut)
+	if err != nil {
+		return nil, err
+	}
+	for dir, w := range later {
+		c := samples[dir]
+		samples[dir] = domain.WindowSamples{FiveHour: slices.Concat(c.FiveHour, w.FiveHour), SevenDay: slices.Concat(c.SevenDay, w.SevenDay)}
+	}
+	return samples, nil
+}
+
+// carried returns what the tracker keeps of each window's samples before
+// cut: at most one, which stands for the span on credits they leave open
+// there, dated at the span's start (see domain.ForgetOnCreditsBefore).
+func (l *loader) carried(ctx context.Context, cut int64) (map[domain.ConfigDir]domain.WindowSamples, error) {
+	earlier, err := l.samples(ctx, loadSamplesBeforeSQL, cut)
+	if err != nil {
+		return nil, err
+	}
+	carried := make(map[domain.ConfigDir]domain.WindowSamples)
+	for dir, w := range earlier {
+		var kept domain.WindowSamples
+		kept.FiveHour = append(kept.FiveHour, carriedBefore(w.FiveHour, cut)...)
+		kept.SevenDay = append(kept.SevenDay, carriedBefore(w.SevenDay, cut)...)
+		if len(kept.FiveHour) > 0 || len(kept.SevenDay) > 0 {
+			carried[dir] = kept
+		}
+	}
+	return carried, nil
+}
+
+// carriedBefore reduces one window's samples, all taken before cut and in
+// time order, to what the tracker keeps of them.
+func carriedBefore(samples []domain.Sample, cut int64) []domain.Sample {
+	return domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples), instant(cut))
+}
+
+// samples returns the limit samples query reads, each window's in time order.
+func (l *loader) samples(ctx context.Context, query string, cut int64) (map[domain.ConfigDir]domain.WindowSamples, error) {
 	samples := make(map[domain.ConfigDir]domain.WindowSamples)
-	err := l.each(ctx, "limit samples", loadSamplesSQL, func(rows *sql.Rows) error {
+	err := l.each(ctx, "limit samples", query, func(rows *sql.Rows) error {
 		var dir domain.ConfigDir
 		var window string
 		var at int64
@@ -551,10 +608,20 @@ const (
 
 // Prune deletes what is older than before: limit samples, usage minutes and
 // state changes, and the sessions last seen or ended before it, with their
-// state changes. Accounts are kept.
+// state changes. Accounts are kept, and so is, for each window, the one
+// sample that stands for a span on credits still open at before, dated at the
+// span's start: a span that began before the retention still holds the calls
+// made within it, and still dates the account going on credits, after a
+// restart.
 func (s *SQLite) Prune(ctx context.Context, before time.Time) error {
 	cut := before.UnixMilli()
 	return s.inTx(ctx, func(tx *sql.Tx) error {
+		// A row that cannot be read is pruned all the same, and stands for
+		// nothing.
+		carried, err := (&loader{tx: tx}).carried(ctx, cut)
+		if err != nil {
+			return fmt.Errorf("prune limit samples: %w", err)
+		}
 		for _, prune := range []struct{ what, query string }{
 			{"limit samples", pruneSamplesSQL},
 			{"usage", pruneUsageSQL},
@@ -565,6 +632,24 @@ func (s *SQLite) Prune(ctx context.Context, before time.Time) error {
 				return fmt.Errorf("prune %s: %w", prune.what, err)
 			}
 		}
-		return nil
+		return keepCarried(ctx, tx, carried)
 	})
+}
+
+// keepCarried stores the samples that stand for the spans on credits a prune
+// cut across.
+func keepCarried(ctx context.Context, tx *sql.Tx, carried map[domain.ConfigDir]domain.WindowSamples) error {
+	for _, dir := range slices.Sorted(maps.Keys(carried)) {
+		for _, window := range []struct {
+			name    string
+			samples []domain.Sample
+		}{{fiveHourWindow, carried[dir].FiveHour}, {sevenDayWindow, carried[dir].SevenDay}} {
+			for _, sample := range window.samples {
+				if err := insertSample(ctx, tx, dir, window.name, sample); err != nil {
+					return fmt.Errorf("prune limit samples: %w", err)
+				}
+			}
+		}
+	}
+	return nil
 }
