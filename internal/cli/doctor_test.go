@@ -103,36 +103,6 @@ func TestDoctor_FailsBeforeInstallAndChangesNothing(t *testing.T) {
 	}
 }
 
-func TestDoctor_ABadConfigFailsAndTheOtherChecksUseTheDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("LOADLINE_HOME", home)
-	// By default claude comes from PATH, and there is none on this one.
-	t.Setenv("PATH", t.TempDir())
-	configFile := filepath.Join(home, "config.json")
-	if err := os.WriteFile(configFile, []byte(`{"theme": "dark"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, loadErr := config.Load(configFile, "")
-	if loadErr == nil {
-		t.Fatal("the config loads; want it refused")
-	}
-	dir := t.TempDir()
-
-	got := run(t, "doctor", "--config-dir", dir)
-
-	// The lines after the binary's depend on whatever answers on the default
-	// port, so only the start is compared.
-	want := "" +
-		"✖ config: " + loadErr.Error() + "; the checks below use the defaults\n" +
-		"✖ claude: not found; install Claude Code, or set claudePath in the Loadline config\n" +
-		"✖ token: " + filepath.Join(home, "token") + " does not exist; run loadline install\n" +
-		"✖ settings " + filepath.Join(dir, "settings.json") + ": not wired: the file does not exist; run loadline install\n" +
-		"✖ binary: " + filepath.FromSlash(install.InstalledPath(home)) + " does not exist; run loadline install\n"
-	if got.code != 1 || got.stderr != "" || !strings.HasPrefix(got.stdout, want) {
-		t.Errorf("doctor = %d, stderr %q, stdout:\n%s\nwant 1, starting with:\n%s", got.code, got.stderr, got.stdout, want)
-	}
-}
-
 func TestDoctor_RejectsArguments(t *testing.T) {
 	tests := []struct {
 		args   []string

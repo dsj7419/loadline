@@ -35,19 +35,7 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 	// Without a home directory, Load refuses only an account that names its
 	// config dir from home, and says so.
 	home, _ := os.UserHomeDir()
-	var checks []doctor.Check
-	cfg, err := config.Load(paths.ConfigFile, home)
-	if err != nil {
-		// A broken config must not hide the other findings. They are
-		// checked against the defaults, which Loadline uses once the file is
-		// gone.
-		checks = append(checks, doctor.Check{
-			Name:   "config",
-			Status: doctor.Fail,
-			Detail: err.Error() + "; the checks below use the defaults",
-		})
-		cfg = config.Defaults()
-	}
+	cfg, checks := doctorConfig(paths.ConfigFile, home)
 
 	claude := claudeRunner(cfg, home)
 	checks = append(checks, doctor.Run(ctx, doctor.Deps{
@@ -64,6 +52,26 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 		Now:       time.Now,
 	})...)
 	return printChecks(stdio, checks)
+}
+
+// doctorFallback is the config the doctor checks with when the config file
+// cannot be loaded.
+var doctorFallback = config.Defaults
+
+// doctorConfig loads the config file at path. A broken file must not hide
+// the other findings, so it becomes a failed check and the rest are checked
+// against doctorFallback: the defaults, which Loadline uses once the file is
+// gone.
+func doctorConfig(path, home string) (config.Config, []doctor.Check) {
+	cfg, err := config.Load(path, home)
+	if err != nil {
+		return doctorFallback(), []doctor.Check{{
+			Name:   "config",
+			Status: doctor.Fail,
+			Detail: err.Error() + "; the checks below use the defaults",
+		}}
+	}
+	return cfg, nil
 }
 
 // printChecks prints each check as a line marked ✔, ! or ✖ and returns 1
