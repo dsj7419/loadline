@@ -18,6 +18,20 @@ func weekly(sec int, pct float64) domain.Status {
 	return withWindows(statusLine(sec, s1), nil, window(pct, weekResets))
 }
 
+// newSubscribedHarness is a harness whose accounts, dirA unless dirs are
+// given, sign in with a subscription: only those have usage credits.
+func newSubscribedHarness(t *testing.T, cfg tracker.Config, dirs ...domain.ConfigDir) *harness {
+	t.Helper()
+	h := newHarness(t, cfg)
+	if len(dirs) == 0 {
+		dirs = []domain.ConfigDir{dirA}
+	}
+	for _, dir := range dirs {
+		h.tr.SetAccount(domain.Account{Dir: dir, Auth: domain.AuthSubscription})
+	}
+	return h
+}
+
 func alertsOfKind(v tracker.View, kind domain.AlertKind) []tracker.AlertView {
 	var alerts []tracker.AlertView
 	for _, a := range v.Alerts {
@@ -29,7 +43,7 @@ func alertsOfKind(v tracker.View, kind domain.AlertKind) []tracker.AlertView {
 }
 
 func TestTracker_CreditsEstimatedFromCallsAtTheLimit(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(weekly(0, 99))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 1))
 	h.tr.Apply(weekly(60, 100))
@@ -53,7 +67,7 @@ func TestTracker_CreditsEstimatedFromCallsAtTheLimit(t *testing.T) {
 }
 
 func TestTracker_CreditsLowAlert(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(weekly(0, 100))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 15.75))
 	if low := alertsOfKind(h.tr.Snapshot(), domain.AlertCreditsLow); len(low) != 0 {
@@ -68,7 +82,7 @@ func TestTracker_CreditsLowAlert(t *testing.T) {
 }
 
 func TestTracker_CreditsAreLeftOutWithoutGrantsOrAReport(t *testing.T) {
-	h := newHarness(t, tracker.Config{Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Alerts: defaultAlerts})
 	h.tr.Apply(weekly(0, 100))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 2))
 
@@ -88,7 +102,7 @@ func TestTracker_ReportedSpendLimitReplacesTheEstimate(t *testing.T) {
 		st.SpendLimit = &domain.SpendLimit{UsedUSD: used, LimitUSD: limit}
 		return st
 	}
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(weekly(0, 100))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 2))
 	h.tr.Apply(reporting(60, 314.25, 500))
@@ -108,7 +122,7 @@ func TestTracker_ReportedSpendLimitReplacesTheEstimate(t *testing.T) {
 }
 
 func TestTracker_ReportedSpendLimitIsShownWithoutGrants(t *testing.T) {
-	h := newHarness(t, tracker.Config{})
+	h := newSubscribedHarness(t, tracker.Config{})
 	st := statusLine(0, s1)
 	st.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
 	h.tr.Apply(st)
@@ -122,7 +136,7 @@ func TestTracker_ReportedSpendLimitIsShownWithoutGrants(t *testing.T) {
 // Samples and calls older than any projection reads are still needed while
 // they say what was spent on credits.
 func TestTracker_CreditSpendOutlivesTheSampleHorizon(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(weekly(0, 99))
 	const halfHour = 1800
 	for sec := 60; sec <= 8*halfHour; sec += halfHour {
@@ -144,7 +158,7 @@ func TestTracker_CreditSpendOutlivesTheSampleHorizon(t *testing.T) {
 }
 
 func TestTracker_CreditsSpanClosesAtTheReset(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	fiveHourResets := at(600)
 	h.tr.Apply(withWindows(statusLine(0, s1), window(100, fiveHourResets), window(40, weekResets)))
 	h.tr.RecordAPI(request(at(300), s1, "Opus 5.5", 2))
@@ -165,7 +179,7 @@ func TestTracker_CreditsSpanClosesAtTheReset(t *testing.T) {
 }
 
 func TestTracker_CreditsActiveAlertIsDatedByItsSpan(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.tr.Apply(withWindows(statusLine(0, s1), window(100, at(20_000)), window(90, weekResets)))
 	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 1))
 	h.clock.Set(at(40))
@@ -186,7 +200,7 @@ func TestTracker_CreditsActiveAlertIsDatedByItsSpan(t *testing.T) {
 }
 
 func TestTracker_CreditsSurviveARestart(t *testing.T) {
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	spanStart := at(-3 * 3600)
 	minute := func(sec int) time.Time { return at(sec).Truncate(time.Minute) }
 	h.tr.Restore(tracker.Restored{
@@ -214,7 +228,7 @@ func TestTracker_CreditsSurviveARestart(t *testing.T) {
 
 func TestTracker_ClockSetBackKeepsTheSpendOnCredits(t *testing.T) {
 	const hour = 3600
-	h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
 	h.clock.Set(at(hour))
 	h.tr.Apply(withWindows(statusLine(hour, s1), window(100, at(9*hour)), window(40, weekResets)))
 	h.tr.RecordAPI(request(at(hour+300), s1, "Opus 5.5", 2))
@@ -244,7 +258,7 @@ func TestTracker_SamplesAWindowAgainWhenItsResetMoves(t *testing.T) {
 
 func TestNew_KeepsItsOwnCopyOfTheGrants(t *testing.T) {
 	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 20, AddedAt: at(-86400)}}}
-	h := newHarness(t, tracker.Config{Credits: grants})
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants}, dirA, dirB)
 	grants[dirA][0].USD = 1
 	grants[dirB] = []domain.CreditGrant{{USD: 5, AddedAt: at(-86400)}}
 	h.tr.Apply(statusLine(0, s1))
@@ -255,5 +269,138 @@ func TestNew_KeepsItsOwnCopyOfTheGrants(t *testing.T) {
 	}
 	if got := h.account(dirB).Credits; got != nil {
 		t.Errorf("credits %+v for an account added to the caller's map later, want none", got)
+	}
+}
+
+// Usage credits are a subscription's: an account billed otherwise, or whose
+// sign-in is not known yet, shows none and raises no credit alerts, whatever
+// its config and status lines say.
+func TestTracker_CreditsOnlyForSubscriptions(t *testing.T) {
+	for _, auth := range []domain.AuthKind{domain.AuthAPIKey, domain.AuthThirdParty, domain.AuthUnknown} {
+		t.Run(auth.String(), func(t *testing.T) {
+			h := newHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+			h.tr.SetAccount(domain.Account{Dir: dirA, Auth: auth})
+			reporting := weekly(0, 100)
+			reporting.SpendLimit = &domain.SpendLimit{UsedUSD: 19, LimitUSD: 20}
+			h.tr.Apply(reporting)
+			h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 17))
+
+			v := h.tr.Snapshot()
+
+			if got := h.account(dirA).Credits; got != nil {
+				t.Errorf("credits %+v, want none for an account that signs in with %v", got, auth)
+			}
+			for _, kind := range []domain.AlertKind{domain.AlertCreditsActive, domain.AlertCreditsLow} {
+				if alerts := alertsOfKind(v, kind); len(alerts) != 0 {
+					t.Errorf("%s alerts %+v, want none", kind, alerts)
+				}
+			}
+		})
+	}
+}
+
+// A span that opened before the thirty days the tracker keeps still holds the
+// calls made in them, until the calls themselves age out.
+func TestTracker_SpendInASpanOpenedBeforeTheKeptDaysIsCounted(t *testing.T) {
+	const day = 86400
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 20, AddedAt: at(-40 * day)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+	h.clock.Set(at(-31 * day))
+	h.tr.Apply(withWindows(statusLine(-31*day, s1), nil, window(100, at(-24*day))))
+	h.clock.Set(at(-29 * day))
+	h.tr.RecordAPI(request(at(-29*day), s1, "Opus 5.5", 5))
+	h.tr.Snapshot()
+	h.clock.Set(at(-23 * day))
+	h.tr.Apply(withWindows(statusLine(-23*day, s1), nil, window(40, at(-17*day))))
+	h.tr.Snapshot()
+
+	for _, now := range []int{-2 * day, 0, 9 * day / 10} {
+		h.clock.Set(at(now))
+		if got := h.account(dirA).Credits; got == nil || got.SpentUSD != 5 || got.RemainingUSD != 15 {
+			t.Errorf("credits %+v on day %v, want the $5 spent 29 days before day 0 still counted", got, float64(now)/day)
+		}
+	}
+	h.clock.Set(at(day + day/2))
+	if got := h.account(dirA).Credits; got == nil || got.SpentUSD != 0 {
+		t.Errorf("credits %+v once the call is 30 days old, want it aged out", got)
+	}
+}
+
+// An account that stays at a limit whose reset it never learns stays on
+// credits since the start, however long that is: a later start would make the
+// alert look new.
+func TestTracker_ALongStretchOnCreditsKeepsItsStart(t *testing.T) {
+	const day = 86400
+	grants := map[domain.ConfigDir][]domain.CreditGrant{dirA: {{USD: 100, AddedAt: at(-40 * day)}}}
+	h := newSubscribedHarness(t, tracker.Config{Credits: grants, Alerts: defaultAlerts})
+	for d := -31; d <= 0; d++ {
+		h.clock.Set(at(d * day))
+		h.tr.Apply(withWindows(statusLine(d*day, s1), nil, window(100, time.Time{})))
+		h.tr.RecordAPI(request(at(d*day+10), s1, "Opus 5.5", 1))
+		h.tr.Snapshot()
+	}
+	h.clock.Set(at(60))
+
+	v := h.tr.Snapshot()
+
+	got := h.account(dirA).Credits
+	if got == nil || !got.Active || !time.Time(got.OnCreditsSince).Equal(at(-31*day)) || got.SpentUSD != 30 {
+		t.Errorf("credits %+v, want $30 spent over the 30 days kept, on credits since %v", got, at(-31*day))
+	}
+	if active := alertsOfKind(v, domain.AlertCreditsActive); len(active) != 1 || !active[0].Since.Equal(at(-31*day)) {
+		t.Errorf("credits_active alerts %+v, want one since %v", active, at(-31*day))
+	}
+}
+
+func TestTracker_ReportedSpendLimitExpiresAfterAnHour(t *testing.T) {
+	for name, tc := range map[string]struct {
+		grants   map[domain.ConfigDir][]domain.CreditGrant
+		afterAll *tracker.CreditsView
+	}{
+		"with grants, back to the estimate": {
+			grants:   twentyDollars,
+			afterAll: &tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Source: domain.CreditSourceEstimate},
+		},
+		"without grants, gone": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSubscribedHarness(t, tracker.Config{Credits: tc.grants, Alerts: defaultAlerts})
+			reporting := weekly(0, 100)
+			reporting.SpendLimit = &domain.SpendLimit{UsedUSD: 12.5, LimitUSD: 50}
+			h.tr.Apply(reporting)
+			h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 2))
+			// A later line, not at the limit, that reports no spend limit.
+			h.tr.Apply(weekly(60, 40))
+
+			h.clock.Set(at(3599))
+			if got := h.account(dirA).Credits; got == nil || got.Source != domain.CreditSourceReported {
+				t.Fatalf("credits %+v just under an hour after the report, want the reported figures", got)
+			}
+			h.clock.Set(at(3600))
+			got := h.account(dirA).Credits
+			if (got == nil) != (tc.afterAll == nil) || (got != nil && *got != *tc.afterAll) {
+				t.Errorf("credits %+v an hour after the report, want %+v", got, tc.afterAll)
+			}
+		})
+	}
+}
+
+func TestTracker_ADroppedWindowClosesASpanWithNoKnownReset(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts})
+	h.tr.Apply(withWindows(statusLine(0, s1), window(100, time.Time{}), window(40, weekResets)))
+	h.tr.RecordAPI(request(at(30), s1, "Opus 5.5", 2))
+	// Claude Code drops a window from the line once it resets.
+	h.tr.Apply(withWindows(statusLine(60, s1), nil, window(41, weekResets)))
+	h.tr.RecordAPI(request(at(90), s1, "Opus 5.5", 4))
+	h.clock.Set(at(100))
+
+	want := tracker.CreditsView{BalanceUSD: 20, SpentUSD: 2, RemainingUSD: 18, Source: domain.CreditSourceEstimate}
+	if got := h.account(dirA).Credits; got == nil || *got != want {
+		t.Errorf("credits %+v, want %+v", got, want)
+	}
+	_, _, samples, _ := h.rec.recorded()
+	last := samples[len(samples)-1]
+	if !last.limits.ObservedAt.Equal(at(60)) || last.limits.FiveHour == nil || last.limits.FiveHour.UsedPct != 0 {
+		t.Errorf("last sample recorded %+v, want the 5-hour window back at 0%% when the line dropped it, so a restart keeps the span closed", last)
 	}
 }

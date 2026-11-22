@@ -290,6 +290,9 @@ func (t *Tracker) Restore(s Restored) {
 	}
 	for _, row := range s.Usage {
 		t.usage.add(row.Dir, row.Session, row.Model, row.Minute, usageOfRow(row))
+		// Usage is kept by the minute, so a restored call is dated at the
+		// start of its minute: one made in the minute an account reached its
+		// limit may fall just outside the span on credits.
 		if entry, ok := t.accounts[row.Dir]; ok {
 			entry.credits.recordCall(row.Minute, row.CostUSD)
 		}

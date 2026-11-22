@@ -707,17 +707,27 @@ describe('AccountCard', () => {
     expect(screen.getByRole('article', { name: 'Main' }).textContent).not.toContain('Credits');
   });
 
-  it("shows the spend limit an API account's status line reports", () => {
-    const reported = { ...onCredits, active: false, onCreditsSince: null, source: 'reported' };
-    render(
-      <AccountCard
-        range="today"
-        account={accountOf({ label: 'API', auth: 'api_key', plan: '', email: '', credits: reported })}
-        now={signal(now)}
-      />,
-    );
+  it.each(['api_key', 'third_party', 'unknown'])('shows no credits for an account that signs in with %s', (auth) => {
+    render(<AccountCard range="today" account={accountOf({ label: 'Other', auth, credits: onCredits })} now={signal(now)} />);
 
-    expect(screen.getByText(wholeText('Credits $6.40 of $20 used · $13.60 left'))).toBeTruthy();
+    const card = screen.getByRole('article', { name: 'Other' });
+    expect(card.textContent).not.toContain('Credits');
+    expect(card.textContent).not.toMatch(/on credits/i);
+  });
+
+  it('says what an estimate is made from', () => {
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: onCredits })} now={signal(now)} />);
+
+    const row = screen.getByText(wholeText('Credits ≈ $6.40 of $20 used · $13.60 left'));
+    expect(row.getAttribute('title')).toBe('Estimated from the last 30 days of usage');
+  });
+
+  it('gives reported figures as the spend limit reports them', () => {
+    const reported = { ...onCredits, source: 'reported' };
+    render(<AccountCard range="today" account={accountOf({ sevenDay: week, credits: reported })} now={signal(now)} />);
+
+    const row = screen.getByText(wholeText('Credits $6.40 of $20 used · $13.60 left'));
+    expect(row.getAttribute('title')).toBe('As the spend limit reports them');
   });
 });
 

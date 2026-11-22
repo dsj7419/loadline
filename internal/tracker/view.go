@@ -44,8 +44,9 @@ type AccountView struct {
 	SpendMonthUSD float64 `json:"spendMonthUSD"`
 	// BudgetUSD is the daily budget, or 0 for none.
 	BudgetUSD float64 `json:"budgetUSD"`
-	// Credits is null unless the owner recorded usage credits for the
-	// account or a status line reported its spend limit.
+	// Credits is null unless the account is a subscription, and the owner
+	// recorded usage credits for it or a status line reported its spend limit
+	// within the last hour.
 	Credits    *CreditsView `json:"credits"`
 	Models     []ModelTotal `json:"models"`
 	ModelsWeek []ModelTotal `json:"modelsWeek"`
@@ -237,18 +238,21 @@ func (t *Tracker) buildView(now time.Time) View {
 		account.Limits = entry.currentLimits(now)
 		projections := entry.projections(account.Limits, now)
 		spend := usage.account(dir)
-		credits, showCredits := entry.creditEstimate(t.cfg.Credits[dir], now)
 
 		labels[dir] = account.Label
 		view := t.accountView(account, projections, spend)
-		if showCredits {
-			view.Credits = creditsView(credits)
+		// Usage credits are a subscription's; no other account has them.
+		if account.Auth == domain.AuthSubscription {
+			credits, show := entry.creditEstimate(t.cfg.Credits[dir], now)
+			if show {
+				view.Credits = creditsView(credits)
+			}
+			alerting.Credits[dir] = credits
 		}
 		accounts = append(accounts, view)
 		alerting.Accounts = append(alerting.Accounts, account)
 		alerting.Projections[dir] = projections
 		alerting.SpendToday[dir] = spend.spendTodayUSD
-		alerting.Credits[dir] = credits
 	}
 
 	shares := domain.Shares(t.usage.spend, now, t.cfg.ShareWindow)

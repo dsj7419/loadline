@@ -7,17 +7,28 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 )
 
-// creditKeep is how far back the tracker holds what credit estimates read:
-// the thirty days the view's spend covers.
-const creditKeep = keepDays * 24 * time.Hour
+const (
+	// creditKeep is how far back the tracker holds what credit estimates
+	// read: the thirty days the view's spend covers.
+	creditKeep = keepDays * 24 * time.Hour
+	// reportedFor is how long a reported spend limit stands without a newer
+	// status line reporting it again.
+	reportedFor = time.Hour
+)
+
+// creditCall is a model call as a credit estimate reads it.
+type creditCall struct {
+	at      time.Time
+	costUSD float64
+}
 
 // accountCredits is what an account's credit estimate reads beyond its
 // samples.
 type accountCredits struct {
-	// calls are the time and cost of the account's model calls: every recent
-	// one, since a status line that arrives late can still show it was made
-	// at a limit, and older ones only while a span on credits holds them.
-	calls []domain.APIRequest
+	// calls are the account's model calls: every recent one, since a status
+	// line that arrives late can still show it was made at a limit, and
+	// older ones only while a span on credits holds them.
+	calls []creditCall
 	// reported is the spend limit of the newest status line that reported
 	// one, at reportedAt.
 	reported   *domain.SpendLimit
@@ -25,7 +36,7 @@ type accountCredits struct {
 }
 
 func (c *accountCredits) recordCall(at time.Time, costUSD float64) {
-	c.calls = append(c.calls, domain.APIRequest{At: at, CostUSD: costUSD})
+	c.calls = append(c.calls, creditCall{at: at, costUSD: costUSD})
 }
 
 // observe takes the spend limit a status line at at reported. A line that
@@ -38,36 +49,62 @@ func (c *accountCredits) observe(l *domain.SpendLimit, at time.Time) {
 	c.reported, c.reportedAt = &reported, at
 }
 
+// reportedAsOf returns the reported spend limit while it still stands at now.
+func (c *accountCredits) reportedAsOf(now time.Time) (domain.SpendLimit, bool) {
+	if c.reported == nil || !now.Before(c.reportedAt.Add(reportedFor)) {
+		return domain.SpendLimit{}, false
+	}
+	return *c.reported, true
+}
+
 // prune forgets the calls made before oldest, and those made before horizon
 // that no span holds.
 func (c *accountCredits) prune(spans []domain.OnCreditsSpan, horizon, oldest time.Time) {
-	c.calls = slices.DeleteFunc(c.calls, func(r domain.APIRequest) bool {
-		if r.At.Before(oldest) {
+	c.calls = slices.DeleteFunc(c.calls, func(call creditCall) bool {
+		if call.at.Before(oldest) {
 			return true
 		}
-		return r.At.Before(horizon) && !slices.ContainsFunc(spans, func(s domain.OnCreditsSpan) bool { return s.Holds(r.At) })
+		return call.at.Before(horizon) && !inSpan(spans, call.at)
 	})
 }
 
 // shift moves the times of the calls and the report by d.
 func (c *accountCredits) shift(d time.Duration) {
 	for i := range c.calls {
-		c.calls[i].At = c.calls[i].At.Add(d)
+		c.calls[i].at = c.calls[i].at.Add(d)
 	}
 	c.reportedAt = shifted(c.reportedAt, d)
 }
 
 // creditEstimate returns the account's credits as of now, and whether the
 // view shows them: only when the owner recorded grants or a status line
-// reported a spend limit. The estimate still says whether the account is on
-// credits when neither did, which alerts all the same.
+// reported a spend limit that still stands. The estimate still says whether
+// the account is on credits when neither holds, which alerts all the same.
+// Only a subscription has usage credits, so the caller asks for no other's.
 func (a *accountEntry) creditEstimate(grants []domain.CreditGrant, now time.Time) (domain.CreditEstimate, bool) {
 	spans := domain.OnCreditsSpans(a.samples, now)
-	estimate := domain.EstimateCredits(grants, spans, a.credits.calls, now)
-	if a.credits.reported != nil {
-		estimate = estimate.WithReported(*a.credits.reported)
+	estimate := domain.EstimateCredits(grants, spans, a.credits.callsIn(spans), now)
+	reported, standing := a.credits.reportedAsOf(now)
+	if standing {
+		estimate = estimate.WithReported(reported)
 	}
-	return estimate, len(grants) > 0 || a.credits.reported != nil
+	return estimate, len(grants) > 0 || standing
+}
+
+// callsIn returns the calls that spans hold, which are all a credit estimate
+// counts, as the requests it reads.
+func (c *accountCredits) callsIn(spans []domain.OnCreditsSpan) []domain.APIRequest {
+	var requests []domain.APIRequest
+	for _, call := range c.calls {
+		if inSpan(spans, call.at) {
+			requests = append(requests, domain.APIRequest{At: call.at, CostUSD: call.costUSD})
+		}
+	}
+	return requests
+}
+
+func inSpan(spans []domain.OnCreditsSpan, at time.Time) bool {
+	return slices.ContainsFunc(spans, func(s domain.OnCreditsSpan) bool { return s.Holds(at) })
 }
 
 // cloneGrants copies the grants, so the tracker never shares a slice its

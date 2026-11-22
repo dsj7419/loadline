@@ -292,8 +292,8 @@ Add an entry each time you buy credits; `addedAt` is an RFC 3339 time with its o
 card shows the estimate, marked with ≈ (`Credits ≈ $6.40 of $20 used · $13.60 left`), and an
 ON CREDITS badge while the account is on them. Loadline alerts when an account starts using credits
 and when it has spent 80% of them. When a status line reports a spend limit, its own figures replace
-the estimate. Spend older than 30 days, or than `retentionDays` when that is shorter, is no longer
-counted.
+the estimate until an hour passes without one. Only subscription accounts show credits. Spend older
+than 30 days, or than `retentionDays` when that is shorter, is no longer counted.
 
 ## Troubleshooting
 

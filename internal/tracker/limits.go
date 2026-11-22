@@ -42,14 +42,33 @@ func (a *accountEntry) observe(l domain.Limits) (moved bool, sampled domain.Limi
 	a.account.Limits = domain.Limits{FiveHour: cloneWindow(l.FiveHour), SevenDay: cloneWindow(l.SevenDay), ObservedAt: l.ObservedAt}
 
 	sampled.ObservedAt = l.ObservedAt
-	var ok bool
-	if a.samples.FiveHour, ok = appendSample(a.samples.FiveHour, l.FiveHour, l.ObservedAt); ok {
-		sampled.FiveHour = cloneWindow(l.FiveHour)
-	}
-	if a.samples.SevenDay, ok = appendSample(a.samples.SevenDay, l.SevenDay, l.ObservedAt); ok {
-		sampled.SevenDay = cloneWindow(l.SevenDay)
-	}
+	a.samples.FiveHour, sampled.FiveHour = sampleWindow(a.samples.FiveHour, l.FiveHour, l.ObservedAt)
+	a.samples.SevenDay, sampled.SevenDay = sampleWindow(a.samples.SevenDay, l.SevenDay, l.ObservedAt)
 	return moved, sampled
+}
+
+// sampleWindow adds the sample a line at at gives of a window, w being nil
+// when the line no longer reports it, and returns the window it sampled.
+func sampleWindow(samples []domain.Sample, w *domain.Window, at time.Time) ([]domain.Sample, *domain.Window) {
+	if w == nil {
+		w = droppedAtLimit(samples)
+	}
+	samples, ok := appendSample(samples, w, at)
+	if !ok {
+		return samples, nil
+	}
+	return samples, cloneWindow(w)
+}
+
+// droppedAtLimit returns the window a line dropped while its last sample was
+// at the limit with no known reset time, as back at 0%: Claude Code drops a
+// window once it resets, and the reset time it never gave cannot end the
+// span on credits by itself. A window dropped otherwise needs no sample.
+func droppedAtLimit(samples []domain.Sample) *domain.Window {
+	if n := len(samples); n > 0 && samples[n-1].AtLimit() && samples[n-1].ResetsAt.IsZero() {
+		return &domain.Window{}
+	}
+	return nil
 }
 
 func sameWindow(a, b *domain.Window) bool {
@@ -88,7 +107,8 @@ func mergeSamples(current, restored []domain.Sample) []domain.Sample {
 }
 
 // pruneSamples keeps of the samples taken before horizon only the marks of
-// the spans on credits, and of those none taken before oldest.
+// the spans on credits, and of those none taken before oldest but one for the
+// span still running then.
 func (a *accountEntry) pruneSamples(horizon, oldest time.Time) {
 	a.samples.FiveHour = pruneWindow(a.samples.FiveHour, horizon, oldest)
 	a.samples.SevenDay = pruneWindow(a.samples.SevenDay, horizon, oldest)
@@ -103,8 +123,7 @@ func pruneWindow(samples []domain.Sample, horizon, oldest time.Time) []domain.Sa
 	if recent == 0 {
 		return samples
 	}
-	before := func(s domain.Sample) bool { return s.At.Before(oldest) }
-	return slices.Concat(slices.DeleteFunc(domain.OnCreditsMarks(samples[:recent]), before), samples[recent:])
+	return slices.Concat(domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples[:recent]), oldest), samples[recent:])
 }
 
 // currentLimits returns the account's limits as they stand at now. A window

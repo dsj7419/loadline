@@ -73,7 +73,10 @@ export type AccountView = {
   readonly spendMonthUSD: number;
   /** The daily budget, or 0 for none. */
   readonly budgetUSD: number;
-  /** Null unless usage credits were recorded for the account or its spend limit was reported. */
+  /**
+   * Null unless the account is a subscription, and usage credits were
+   * recorded for it or its spend limit was reported within the hour.
+   */
   readonly credits: CreditsView | null;
   readonly models: readonly ModelTotal[];
   readonly modelsWeek: readonly ModelTotal[];

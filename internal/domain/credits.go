@@ -107,7 +107,7 @@ func (w *spanWalk) step(s Sample) bool {
 		w.close(w.resetsAt)
 		changed = true
 	}
-	if !atLimit(s) {
+	if !s.AtLimit() {
 		if w.open {
 			w.close(s.At)
 			changed = true
@@ -145,9 +145,9 @@ func windowSpans(samples []Sample, now time.Time) []OnCreditsSpan {
 	return w.spans
 }
 
-// atLimit reports whether a sample shows its window at the limit. A reading
+// AtLimit reports whether the sample shows its window at the limit. A reading
 // taken after the window's own reset time describes a window that is gone.
-func atLimit(s Sample) bool {
+func (s Sample) AtLimit() bool {
 	return s.UsedPct >= limitPct && !reached(s.ResetsAt, s.At)
 }
 
@@ -192,6 +192,34 @@ func OnCreditsMarks(samples []Sample) []Sample {
 		}
 	}
 	return marks
+}
+
+// ForgetOnCreditsBefore returns samples, which must be in time order, without
+// those taken before oldest, but for the span they leave open at oldest: one
+// sample at the limit stands for it, with the reset time the span had come to
+// by then. It is dated at oldest when a later sample closes the span, and at
+// the span's start while the span is still open, since that start dates the
+// account going on credits. The spans from oldest on are those of samples, so
+// a span never ends before the calls it holds have aged out.
+func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
+	cut, _ := slices.BinarySearchFunc(samples, oldest, func(s Sample, t time.Time) int { return s.At.Compare(t) })
+	var w spanWalk
+	for _, s := range samples[:cut] {
+		w.step(s)
+	}
+	kept := samples[cut:]
+	if !w.open || reached(w.resetsAt, oldest) {
+		return slices.Clone(kept)
+	}
+	carried := Sample{At: w.from, UsedPct: limitPct, ResetsAt: w.resetsAt}
+	closed := len(w.spans)
+	for _, s := range kept {
+		w.step(s)
+	}
+	if len(w.spans) > closed {
+		carried.At = oldest
+	}
+	return slices.Concat([]Sample{carried}, kept)
 }
 
 // EstimateCredits works out an account's credits from the grants the owner

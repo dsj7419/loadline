@@ -16,9 +16,9 @@ type AccountCardProps = {
 
 /**
  * One account: who it is, and either its rate-limit windows or, for an
- * account billed per token, its spend, then its usage credits when it has
- * any. The windows count down against the page's clock and drop out as soon
- * as they reset.
+ * account billed per token, its spend, then, for a subscription, its usage
+ * credits when it has any. The windows count down against the page's clock
+ * and drop out as soon as they reset.
  */
 export function AccountCard({ account, now, range }: AccountCardProps) {
   const titleId = useId();
@@ -37,7 +37,9 @@ export function AccountCard({ account, now, range }: AccountCardProps) {
       ) : (
         <Windows account={account} ownerId={titleId} now={now.value} />
       )}
-      {account.credits !== null && <Credits credits={account.credits} now={now.value} />}
+      {account.auth === 'subscription' && account.credits !== null && (
+        <Credits credits={account.credits} now={now.value} />
+      )}
       <div class="account-foot">
         <ModelSplit
           models={range === 'today' ? account.models : account.modelsWeek}
@@ -136,14 +138,18 @@ type CreditsProps = {
   readonly now: Date;
 };
 
-// What the account's usage credits come to. Worked-out figures are marked as
-// estimates; a reported spend limit's are shown as they are.
+// What a subscription's usage credits come to. Worked-out figures are marked
+// as estimates, and say what they are made from; a reported spend limit's are
+// shown as they are.
 function Credits({ credits, now }: CreditsProps) {
-  const estimate = credits.source === 'estimate' ? '≈ ' : '';
+  const estimate = credits.source === 'estimate';
   return (
     <div class="credits">
-      <p class="credits-figures">
-        Credits {estimate}
+      <p
+        class="credits-figures"
+        title={estimate ? 'Estimated from the last 30 days of usage' : 'As the spend limit reports them'}
+      >
+        Credits {estimate ? '≈ ' : ''}
         <Amount usd={credits.spentUSD} /> of <Amount usd={credits.balanceUSD} /> used ·{' '}
         <Amount usd={credits.remainingUSD} /> left
       </p>
