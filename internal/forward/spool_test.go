@@ -303,6 +303,82 @@ func TestSpool_DrainIgnoresOtherFiles(t *testing.T) {
 	}
 }
 
+// writeTemp leaves a put's temporary file in s, last written age ago, as a
+// hook killed between writing its event and publishing it does.
+func writeTemp(t *testing.T, s forward.Spool, name string, age time.Duration) {
+	t.Helper()
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.Dir, name)
+	if err := os.WriteFile(path, []byte(`{"v":1,`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	then := time.Now().Add(-age)
+	if err := os.Chtimes(path, then, then); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Claude Code kills the async hooks still running when a `claude -p` session
+// ends, which can leave a put's temporary file behind. A put's trim and a
+// drain each remove those over an hour old; a younger one may still be a
+// put under way.
+func TestSpool_OrphanedTemporaryFilesOverAnHourOldAreRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sweep func(*testing.T, forward.Spool)
+	}{
+		{"by a put", func(t *testing.T, s forward.Spool) {
+			t.Helper()
+			put(t, s, envelopeAt(2, t0.Add(time.Second)))
+		}},
+		{"by a drain", func(t *testing.T, s forward.Spool) {
+			t.Helper()
+			drainIDs(t, s)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSpool(t, 0)
+			put(t, s, envelopeAt(1, t0))
+			writeTemp(t, s, ".put-1001.tmp", 48*time.Hour)
+			writeTemp(t, s, ".put-1002.tmp", time.Hour+time.Minute)
+			writeTemp(t, s, ".put-1003.tmp", time.Hour-time.Minute)
+			writeTemp(t, s, "notes.tmp", 48*time.Hour)
+
+			tc.sweep(t, s)
+
+			var temps []string
+			for _, name := range names(t, s.Dir) {
+				if strings.HasSuffix(name, ".tmp") {
+					temps = append(temps, name)
+				}
+			}
+			if want := []string{".put-1003.tmp", "notes.tmp"}; !slices.Equal(temps, want) {
+				t.Errorf("temporary files left %v, want %v: the young put's and the file no put made", temps, want)
+			}
+		})
+	}
+}
+
+// Many puts trim a spool full of orphans down to nothing but events.
+func TestSpool_OrphanedTemporaryFilesNeverAccumulate(t *testing.T) {
+	s := newSpool(t, 3)
+	put(t, s, envelopeAt(1, t0))
+	for i := range 50 {
+		writeTemp(t, s, fmt.Sprintf(".put-%d.tmp", 1000+i), 48*time.Hour)
+	}
+
+	for i := 2; i < 12; i++ {
+		put(t, s, envelopeAt(i, t0.Add(time.Duration(i)*time.Second)))
+	}
+	drainIDs(t, s)
+
+	if left := names(t, s.Dir); len(left) != 0 {
+		t.Errorf("after ten puts and a drain the spool holds %v, want nothing", left)
+	}
+}
+
 func TestSpool_DrainOfAMissingSpoolIsEmpty(t *testing.T) {
 	s := newSpool(t, 0)
 
