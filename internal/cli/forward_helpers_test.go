@@ -246,14 +246,20 @@ func (f *fixture) spooled() []protocol.Envelope {
 	return envelopes
 }
 
+// arrival is one request of any kind, a health check or a post, as it
+// reached a test server.
+type arrival struct {
+	path string
+	// afterEcho is what the server's echoComplete reported as the request
+	// arrived.
+	afterEcho bool
+}
+
 // post is one ingest request a test server received.
 type post struct {
 	path     string
 	raw      []byte
 	envelope protocol.Envelope
-	// afterEcho is what the server's echoComplete reported as the request
-	// arrived.
-	afterEcho bool
 	// answered says that a held request was answered at the end of its
 	// hold, its client still waiting for the answer.
 	answered bool
@@ -273,14 +279,15 @@ type ingestServer struct {
 	// health check, waits before it is answered.
 	slowHealth time.Duration
 	// echoComplete, when set, reports whether the tap's echo is complete;
-	// each ingest request notes what it reports as the request arrives.
+	// each request notes what it reports as the request arrives.
 	echoComplete func() bool
 	// noKeepAlive, when set, closes each connection after its answer, so
 	// that no client connection lingers.
 	noKeepAlive bool
 
-	mu    sync.Mutex
-	posts []post
+	mu       sync.Mutex
+	arrivals []arrival
+	posts    []post
 }
 
 // serve starts an ingest server for the fixture, configured by opts, and
@@ -308,19 +315,19 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 		return false
 	}
 	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.arrive(r.URL.Path)
 		if !strings.HasPrefix(r.URL.Path, "/ingest/") {
 			if s.slowHealth == 0 || wait(r, s.slowHealth) {
 				loadline.ServeHTTP(w, r)
 			}
 			return
 		}
-		afterEcho := s.echoComplete != nil && s.echoComplete()
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		i := s.record(r.URL.Path, raw, afterEcho)
+		i := s.record(r.URL.Path, raw)
 		switch {
 		case s.hold > 0:
 			if wait(r, s.hold) {
@@ -341,13 +348,29 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 	return s
 }
 
-// record keeps a request and returns its index among the posts.
-func (s *ingestServer) record(path string, raw []byte, afterEcho bool) int {
+// arrive notes a request as it arrives, with whether the tap's echo was
+// complete by then.
+func (s *ingestServer) arrive(path string) {
+	afterEcho := s.echoComplete != nil && s.echoComplete()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.arrivals = append(s.arrivals, arrival{path: path, afterEcho: afterEcho})
+}
+
+// arrived returns every request that has reached the server so far.
+func (s *ingestServer) arrived() []arrival {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]arrival(nil), s.arrivals...)
+}
+
+// record keeps an ingest request and returns its index among the posts.
+func (s *ingestServer) record(path string, raw []byte) int {
 	var env protocol.Envelope
 	_ = json.Unmarshal(raw, &env) // a body that is no envelope is kept raw
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.posts = append(s.posts, post{path: path, raw: raw, envelope: env, afterEcho: afterEcho})
+	s.posts = append(s.posts, post{path: path, raw: raw, envelope: env})
 	return len(s.posts) - 1
 }
 

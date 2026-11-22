@@ -90,9 +90,10 @@ func TestRunTap_EchoesAndForwardsTheAllowlist(t *testing.T) {
 // it is written.
 type echoPipe struct {
 	writer *os.File
-	// read is closed once the pipe has been read to its end.
-	read chan struct{}
-	got  bytes.Buffer
+	// read is closed once the pipe has been read to its end, at readAt.
+	read   chan struct{}
+	readAt time.Time
+	got    bytes.Buffer
 }
 
 func newEchoPipe(t *testing.T) *echoPipe {
@@ -105,6 +106,7 @@ func newEchoPipe(t *testing.T) *echoPipe {
 	go func() {
 		defer close(p.read)
 		_, _ = io.Copy(&p.got, reader) // ends when the tap closes its output
+		p.readAt = time.Now()
 	}()
 	t.Cleanup(func() {
 		p.echo()
@@ -129,10 +131,18 @@ func (p *echoPipe) echo() string {
 	return p.got.String()
 }
 
+// echoCeiling bounds how long the echo may take here. It is no budget,
+// which BenchmarkRunTap_Echo measures, but a ceiling far above any loaded
+// machine's echo, some 150 times the 35 ms the slowest yet took on a shared
+// runner, and far below the 30 s post window: an echo held up by anything
+// cannot keep under it.
+const echoCeiling = 5 * time.Second
+
 // The status line shows the echo, so it must not wait for the server: the
-// tap's output is complete, and closed, before its post reaches the server.
-// The tap still waits for the server's answer, which comes only after a
-// hold, so that a tap that did not wait for it would return first.
+// tap's output is complete, and closed, before any request reaches the
+// server, a health check as much as its post. The tap still waits for the
+// server's answer, which comes only after a hold, so that a tap that did
+// not wait for it would return first.
 func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
@@ -142,6 +152,7 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 		s.hold = 500 * time.Millisecond
 	})
 	input := statusInput(t)
+	start := time.Now()
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
@@ -151,12 +162,17 @@ func TestRunTap_EchoesBeforeForwarding(t *testing.T) {
 	if echo := out.echo(); echo != input {
 		t.Errorf("echoed %q, want the input", echo)
 	}
+	if took := out.readAt.Sub(start); took >= echoCeiling {
+		t.Errorf("the echo was complete after %v, want it well within %v", took, echoCeiling)
+	}
+	for _, request := range srv.arrived() {
+		if !request.afterEcho {
+			t.Errorf("a request to %s reached the server before the tap closed its output, want the echo complete first", request.path)
+		}
+	}
 	posts := srv.received()
 	if len(posts) != 1 {
 		t.Fatalf("server received %d posts, want 1", len(posts))
-	}
-	if !posts[0].afterEcho {
-		t.Error("the post reached the server before the tap closed its output, want the echo complete first")
 	}
 	if !posts[0].answered {
 		t.Error("the tap returned before the server answered its post, want it to wait for the answer")
@@ -176,10 +192,11 @@ func (w *heldWriter) Write(p []byte) (int, error) {
 }
 
 // The forward waits for the echo even when the status line is slow to take
-// it: nothing reaches the server while the tap's output waits to be read,
-// and the post follows once it has been. The tap runs in a synctest bubble,
-// so the test waits until the tap can go no further, not for a while. A
-// forward started alongside the echo has reached the server by then.
+// it: no request at all reaches the server while the tap's output waits to
+// be read, and the post follows once it has been. The tap runs in a
+// synctest bubble, so the test waits until the tap can go no further, not
+// for a while. A forward started alongside the echo has reached the server
+// by then.
 func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
 	f := newFixture(t)
@@ -198,8 +215,8 @@ func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
 		}()
 
 		synctest.Wait()
-		if posts := srv.received(); len(posts) != 0 {
-			t.Errorf("server received %d posts while the echo waited to be read, want none", len(posts))
+		if requests := srv.arrived(); len(requests) != 0 {
+			t.Errorf("server received %+v while the echo waited to be read, want nothing", requests)
 		}
 		close(out.release)
 		if code := <-exit; code != 0 {
