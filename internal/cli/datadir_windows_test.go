@@ -2,8 +2,10 @@ package cli_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,6 +252,10 @@ func TestServe_RefusesADataDirOthersCanMoveAside(t *testing.T) {
 
 	if code != 1 || !strings.Contains(stderr.String(), tools+" lets ") {
 		t.Errorf("Serve = %d, stderr %q; want 1 and %s named as a folder others can move aside", code, stderr.String(), tools)
+	}
+	// Not even the token: whoever moves the folder aside would have it.
+	if _, err := os.Lstat(data); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the refused server left %s (%v), want nothing written in a folder it refused", data, err)
 	}
 }
 
