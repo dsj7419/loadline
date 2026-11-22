@@ -206,3 +206,29 @@ func TestInspect_TellsWhatAPathIs(t *testing.T) {
 		t.Errorf("Inspect(%s) = %+v, %v; want a folder", dir, got, err)
 	}
 }
+
+func TestDirPrivate_TellsMode0700(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		mode fs.FileMode
+		want bool
+	}{
+		{mode: 0o700, want: true},
+		{mode: 0o750, want: false},
+		{mode: 0o500, want: false},
+		{mode: 0o700 | fs.ModeSetgid, want: false},
+	} {
+		if err := os.Chmod(dir, tt.mode); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := fsperm.DirPrivate(dir)
+
+		if err != nil || got != tt.want {
+			t.Errorf("DirPrivate under mode %v = %t, %v; want %t", tt.mode, got, err, tt.want)
+		}
+	}
+}

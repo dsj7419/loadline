@@ -853,3 +853,58 @@ func TestPrivateHere_PassesNothingDownToWhatTheFolderHolds(t *testing.T) {
 		t.Errorf("PrivateHere changed the access list of %s, which %s holds, from %s to %s", file, root, before, after)
 	}
 }
+
+// Only the list Private gives counts: protected, with the three entries and
+// nothing else. The same entries passed down from a private folder above do
+// not, since that folder may change them.
+func TestDirPrivate_TellsTheListPrivateGives(t *testing.T) {
+	root := sharedRoot(t)
+	if private, err := fsperm.DirPrivate(root); err != nil || private {
+		t.Errorf("DirPrivate of a folder that lets everyone in = %t, %v; want false", private, err)
+	}
+	if err := fsperm.Private(root); err != nil {
+		t.Fatal(err)
+	}
+	if private, err := fsperm.DirPrivate(root); err != nil || !private {
+		t.Errorf("DirPrivate once Private ran = %t, %v; want true", private, err)
+	}
+	inner := filepath.Join(root, "spool")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if private, err := fsperm.DirPrivate(inner); err != nil || private {
+		t.Errorf("DirPrivate of a folder that inherits the private list = %t, %v; want false", private, err)
+	}
+	fspermtest.Grant(t, root, windows.FILE_GENERIC_READ, windows.NO_INHERITANCE)
+	if private, err := fsperm.DirPrivate(root); err != nil || private {
+		t.Errorf("DirPrivate with one more entry = %t, %v; want false", private, err)
+	}
+	if _, err := fsperm.DirPrivate(filepath.Join(root, "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("DirPrivate of a missing folder = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// PassDown passes the private list down whatever the folder has: a file it
+// holds takes the list then, even when the folder had it already.
+func TestPassDown_PassesTheListDownEvenWhenTheFolderHasItAlready(t *testing.T) {
+	root := sharedRoot(t)
+	file := filepath.Join(root, "token")
+	write(t, file)
+	if err := fsperm.PrivateHere(root); err != nil {
+		t.Fatal(err)
+	}
+	if others := fspermtest.Others(t, file, fspermtest.Any); len(others) == 0 {
+		t.Fatalf("%s admits nobody else, so the test proves nothing: %s", file, fspermtest.AccessList(t, file))
+	}
+
+	if err := fsperm.PassDown(root); err != nil {
+		t.Fatalf("PassDown: %v", err)
+	}
+
+	if others := fspermtest.Others(t, file, fspermtest.Any); len(others) > 0 {
+		t.Errorf("%s admits %v, want the list %s passes down", file, others, root)
+	}
+	if private, err := fsperm.DirPrivate(root); err != nil || !private {
+		t.Errorf("DirPrivate = %t, %v; want true", private, err)
+	}
+}

@@ -368,6 +368,48 @@ func TestSecure_LeavesAFileOutsideTheDataDirectoryAsItIs(t *testing.T) {
 	}
 }
 
+// A data directory that is not private yet holds a spool whose list keeps the
+// user out but takes what the directory passes down. Had the directory's new
+// list been passed down at once, it would have let the user into the spool,
+// and been passed on to the file with a second name hidden there, before the
+// walk could see it. Secure passes it down only once the walk is through.
+func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *testing.T) {
+	top := privateTop(t)
+	_, doc := elsewhere(t, top)
+	dir, parent := openDataDir(t, top)
+	spool := filepath.Join(dir, "spool")
+	if err := os.Mkdir(spool, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	event := filepath.Join(spool, "1-0000000b.json")
+	if err := os.Link(doc, event); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	// Stored as it is, so that nothing reaches the event yet: as though the
+	// spool had only inherited SYSTEM's entry.
+	fspermtest.SetAccessListAsIs(t, spool, "D:AI(A;OICIID;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+	if _, err := os.ReadDir(spool); err == nil {
+		t.Fatalf("%s can still be listed, so the test proves nothing", spool)
+	}
+	if private, err := fsperm.EntryPrivate(dir); err != nil || private {
+		t.Fatalf("%s is private already (%v), so the test proves nothing", dir, err)
+	}
+	before := fspermtest.AccessList(t, doc)
+
+	err := datadir.Secure(dir, parent)
+
+	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
+	}
+	if after := fspermtest.AccessList(t, doc); after != before {
+		t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
+	}
+	if got, err := datadir.Check(dir, parent); err != nil || !strings.HasPrefix(got, event+" has another name") {
+		t.Errorf("Check = %q, %v; want it to report %s", got, err, event)
+	}
+}
+
 // A junction hidden in a folder that keeps the user out, and that keeps them
 // out itself: locking the spool passed its list down to the junction. Doctor
 // reports the spool; Secure makes the spool listable, finds the junction

@@ -24,6 +24,19 @@ func Private(dir string) error {
 	return nil
 }
 
+// DirPrivate reports whether dir has mode 0700, and no other mode bit,
+// which is what Private gives it.
+func DirPrivate(dir string) (bool, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", dir, err)
+	}
+	return info.Mode()&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) == privateDirMode, nil
+}
+
+// PassDown is Private here: a mode passes nothing down.
+func PassDown(dir string) error { return Private(dir) }
+
 // MkdirAll creates dir and every missing folder above it, each with mode
 // 0700 from the moment it exists. A folder that already exists is left as it
 // is.

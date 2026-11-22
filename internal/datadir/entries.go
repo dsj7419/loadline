@@ -171,10 +171,11 @@ func (t tree) linkProblem() string {
 // first. A dir that does not exist holds nothing, and an entry that goes
 // while it looks, as a spooled event does once drained, is left out.
 //
-// fix, when it is set, may change each path as the walk comes to it (repair).
-// Without it, a folder the user may not list is noted in locked, not an
-// error.
-func ownPaths(dir string, fix *repair) (tree, error) {
+// visit, when it is set, runs on each path once it is known to be no link,
+// before the walk looks into it, and may change its list, so that a folder
+// whose list keeps the user out can be listed. Without it, such a folder is
+// noted in locked, not an error.
+func ownPaths(dir string, visit visitor) (tree, error) {
 	var found tree
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -187,28 +188,21 @@ func ownPaths(dir string, fix *repair) (tree, error) {
 		if !Owns(entry.Name()) && !systemFile(entry) {
 			continue
 		}
-		if err := found.walk(filepath.Join(dir, entry.Name()), entry.Type(), fix); err != nil || found.link != "" {
+		if err := found.walk(filepath.Join(dir, entry.Name()), entry.Type(), visit); err != nil || found.link != "" {
 			return found, err
 		}
 	}
 	return found, nil
 }
 
-// repair is what Make does to Loadline's paths as it walks them.
-type repair struct {
-	// before runs on each path once it is known to be no link, before the
-	// walk looks into it, so that a folder whose list keeps the user out
-	// can be listed.
-	before func(path string, folder bool) error
-	// after runs on each folder once the walk has been through what it
-	// holds, and found no link among it.
-	after func(path string) error
-}
+// visitor is what Make does to each of Loadline's paths as the walk comes to
+// it.
+type visitor func(path string, folder bool) error
 
 // walk adds path, whose type its folder's listing gave as typ, and when it
 // is a folder, everything below it, stopping at the first link and passing
 // over the regular files that are still being written.
-func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
+func (t *tree) walk(path string, typ fs.FileMode, visit visitor) error {
 	if Temporary(filepath.Base(path)) && typ.IsRegular() {
 		// Not even looked at: it is its writer's, and on Windows, looking
 		// at one a moment after its writer deleted it fails while the
@@ -243,8 +237,8 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 		return nil
 	}
 	t.paths = append(t.paths, path)
-	if fix != nil {
-		if err := fix.before(path, entry.Folder); err != nil {
+	if visit != nil {
+		if err := visit(path, entry.Folder); err != nil {
 			return err
 		}
 	}
@@ -255,7 +249,7 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
-	case errors.Is(err, fs.ErrPermission) && fix == nil:
+	case errors.Is(err, fs.ErrPermission) && visit == nil:
 		if t.locked == "" {
 			t.locked = path
 		}
@@ -264,12 +258,9 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	for _, entry := range entries {
-		if err := t.walk(filepath.Join(path, entry.Name()), entry.Type(), fix); err != nil || t.link != "" {
+		if err := t.walk(filepath.Join(path, entry.Name()), entry.Type(), visit); err != nil || t.link != "" {
 			return err
 		}
-	}
-	if fix != nil {
-		return fix.after(path)
 	}
 	return nil
 }

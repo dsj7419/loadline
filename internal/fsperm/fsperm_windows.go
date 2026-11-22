@@ -32,22 +32,51 @@ func privateDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 	return sd, nil
 }
 
-// Private gives dir the access list of privateDescriptor, unless it has that
-// list already. Windows applies a new list to everything dir holds,
-// replacing what each of those inherited; access a file was given explicitly
-// stays. Left as it is, a dir that is private already passes nothing again
-// to the files that other Loadline processes may be writing in it.
+// Private gives dir the access list of privateDescriptor and passes it down
+// (PassDown), unless it has that list already (DirPrivate). Left as it is, a
+// dir that is private already passes nothing again to the files that other
+// Loadline processes may be writing in it.
 func Private(dir string) error {
+	private, err := DirPrivate(dir)
+	if err != nil {
+		return fmt.Errorf("make %s private: %w", dir, err)
+	}
+	if private {
+		return nil
+	}
+	return PassDown(dir)
+}
+
+// DirPrivate reports whether dir has the access list Private gives it:
+// protected, so that nothing the folder above passes down applies, and
+// holding the entries of privateDescriptor and nothing else.
+func DirPrivate(dir string) (bool, error) {
+	sd, err := privateDescriptor()
+	if err != nil {
+		return false, err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return false, err
+	}
+	private, err := hasList(dir, dacl)
+	runtime.KeepAlive(sd)
+	if err != nil {
+		return false, fmt.Errorf("read the access list of %s: %w", dir, err)
+	}
+	return private, nil
+}
+
+// PassDown gives dir the access list of privateDescriptor, whatever it has,
+// and Windows applies it to everything dir holds, replacing what each of
+// those inherited; access a file was given explicitly stays.
+func PassDown(dir string) error {
 	sd, err := privateDescriptor()
 	if err != nil {
 		return fmt.Errorf("make %s private: %w", dir, err)
 	}
 	dacl, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("make %s private: %w", dir, err)
-	}
-	private, err := hasList(dir, dacl)
-	if err == nil && !private {
+	if err == nil {
 		err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
 			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 	}
