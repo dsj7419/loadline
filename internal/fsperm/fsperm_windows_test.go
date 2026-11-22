@@ -507,6 +507,12 @@ func TestEntryPrivate_TakesOnlyWhatAPrivateFolderGives(t *testing.T) {
 			t.Helper()
 			return storedAsIs(t, filepath.Join(root, "spool"), true, "D:AI(A;ID;FA;;;"+user+")(A;ID;FA;;;SY)(A;ID;FA;;;BA)")
 		}, false},
+		// Only the folders Loadline makes have a list of their own. Stored as
+		// it is, since SetNamedSecurityInfo drops what a file cannot pass on.
+		"a file with the private list of its own": {func(t *testing.T, root string) string {
+			t.Helper()
+			return storedAsIs(t, filepath.Join(root, "token"), false, "D:P(A;OICI;FA;;;"+user+")"+trusted)
+		}, false},
 		"a folder made in it": {func(t *testing.T, root string) string {
 			t.Helper()
 			path := filepath.Join(root, "spool")
