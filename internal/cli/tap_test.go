@@ -275,7 +275,7 @@ func TestRunTap_BrokenStdoutStillForwards(t *testing.T) {
 // A pipe whose reader has gone, as a status-line command that never reads
 // its input leaves it, is no failure of the tap's: it exits 0, so that under
 // pipefail the command's own exit code still counts, and it still forwards.
-// The 0 is the behaviour itself, not a looser check: the tap used to exit 1
+// The 0 is the behavior itself, not a looser check: the tap used to exit 1
 // here, and that 1 replaced the command's own exit code under pipefail.
 func TestRunTap_ClosedStdoutPipe(t *testing.T) {
 	cli.SetTapSendTimeout(t, postWindow)
