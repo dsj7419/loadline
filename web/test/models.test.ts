@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modelShares } from '../src/model/models';
+import { modelShares, modelTone } from '../src/model/models';
 import { modelOf } from './fixtures';
 
 describe('modelShares', () => {
@@ -66,5 +66,26 @@ describe('modelShares', () => {
   it('gives no shares when there is no usage', () => {
     expect(modelShares([])).toEqual([]);
     expect(modelShares([modelOf({ model: 'Opus 5.5' }), modelOf({ model: 'Haiku 5.5' })])).toEqual([]);
+  });
+});
+
+describe('modelTone', () => {
+  it.each<[string, string]>([
+    ['Opus 5.5', 'opus'],
+    ['claude-opus-5-5', 'opus'],
+    ['Sonnet 5.5', 'sonnet'],
+    ['SONNET 4', 'sonnet'],
+    ['Haiku 5.5', 'haiku'],
+  ])('gives %s the %s tone', (model, want) => {
+    expect(modelTone(model)).toBe(want);
+  });
+
+  it('gives any other model one of the spare tones, the same every time', () => {
+    const names = ['gpt-oss-120b', 'llama-4', 'mistral-large', 'deepseek-v4', 'qwen-3', ''];
+    for (const name of names) {
+      expect(['other1', 'other2', 'other3']).toContain(modelTone(name));
+      expect(modelTone(name)).toBe(modelTone(name));
+    }
+    expect(new Set(names.map(modelTone)).size).toBeGreaterThan(1);
   });
 });

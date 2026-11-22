@@ -34,3 +34,34 @@ export function modelShares(models: readonly ModelTotal[]): readonly ModelShare[
 function usage(amount: number): number {
   return Number.isFinite(amount) && amount > 0 ? amount : 0;
 }
+
+/** The colour a model is drawn in, which the stylesheet names model-<tone>. */
+export type ModelTone = 'opus' | 'sonnet' | 'haiku' | 'other1' | 'other2' | 'other3';
+
+const families = ['opus', 'sonnet', 'haiku'] as const;
+const spareTones = ['other1', 'other2', 'other3'] as const;
+
+/**
+ * The colour of a model: one per Claude model family, and one of three spare
+ * colours for any other model. It depends on the name alone, so a model keeps
+ * its colour whichever usage the page shows.
+ */
+export function modelTone(model: string): ModelTone {
+  const name = model.toLowerCase();
+  const family = families.find((f) => name.includes(f));
+  if (family !== undefined) {
+    return family;
+  }
+  return spareTones[hash(name) % spareTones.length] ?? 'other1';
+}
+
+// A small, stable string hash (FNV-1a), enough to spread names over a few
+// colours.
+function hash(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}

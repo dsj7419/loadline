@@ -1,5 +1,5 @@
 import { isView } from '../src/api/guard';
-import type { ModelTotal, SessionView, View } from '../src/api/types';
+import type { AccountView, AlertView, ModelTotal, SessionView, View } from '../src/api/types';
 
 // Fixtures start as plain JSON and pass through isView, the guard the page
 // applies to every payload, so a test only ever holds values the server could
@@ -44,6 +44,30 @@ const sessionDefaults = {
   timeline: [],
 };
 
+const accountDefaults = {
+  dir: 'C:/Users/example/.claude',
+  label: 'Main',
+  email: 'dev@example.com',
+  plan: 'Ultra',
+  auth: 'subscription',
+  fiveHour: null,
+  sevenDay: null,
+  spendTodayUSD: 0,
+  spendWeekUSD: 0,
+  spendMonthUSD: 0,
+  budgetUSD: 0,
+  models: [],
+  modelsWeek: [],
+};
+
+const alertDefaults = {
+  kind: 'needs_you',
+  dir: 'C:/Users/example/.claude',
+  session: 'session-1',
+  since: '2026-11-21T17:58:48Z',
+  message: 'harbor-api needs you: permission prompt',
+};
+
 const modelDefaults = {
   model: 'Opus 5.5',
   input: 0,
@@ -64,6 +88,14 @@ export function viewOf(fields: Fields<View> = {}): View {
 
 export function sessionOf(fields: Fields<SessionView> = {}): SessionView {
   return only(viewOf({ sessions: [{ ...sessionDefaults, ...fields }] }).sessions);
+}
+
+export function accountOf(fields: Fields<AccountView> = {}): AccountView {
+  return only(viewOf({ accounts: [{ ...accountDefaults, ...fields }] }).accounts);
+}
+
+export function alertOf(fields: Fields<AlertView> = {}): AlertView {
+  return only(viewOf({ alerts: [{ ...alertDefaults, ...fields }] }).alerts);
 }
 
 export function modelOf(fields: Fields<ModelTotal> = {}): ModelTotal {
