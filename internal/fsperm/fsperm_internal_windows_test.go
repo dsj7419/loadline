@@ -1,7 +1,9 @@
 package fsperm
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -147,6 +149,42 @@ func TestDOSPath_TakesOffTheExtendedLengthPrefix(t *testing.T) {
 	} {
 		if got := dosPath(in); got != want {
 			t.Errorf("dosPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The owner tests replace ownerOf, so the real reader runs elsewhere only on
+// what the test's own account owns. These read real owners that are not it:
+// the Windows folder is TrustedInstaller's, the folder of the user profiles
+// SYSTEM's, and a file of the test's whose group is set apart from its
+// owner reads as the test's account's still (as Administrators' when the
+// test runs elevated).
+func TestOwnerOf_ReadsTheRealOwner(t *testing.T) {
+	trustedInstaller, err := windows.StringToSid(trustedInstallerSID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(t.TempDir(), "mine")
+	if err := os.WriteFile(mine, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	users := wellKnown(t, windows.WinBuiltinUsersSid)
+	if err := windows.SetNamedSecurityInfo(mine, windows.SE_FILE_OBJECT, windows.GROUP_SECURITY_INFORMATION, nil, users, nil, nil); err != nil {
+		t.Fatalf("give %s another group: %v", mine, err)
+	}
+
+	for path, owners := range map[string][]*windows.SID{
+		os.Getenv("SystemRoot"):           {trustedInstaller},
+		filepath.Dir(os.Getenv("PUBLIC")): {wellKnown(t, windows.WinLocalSystemSid)},
+		mine:                              {user.User.Sid, wellKnown(t, windows.WinBuiltinAdministratorsSid)},
+	} {
+		got, err := ownerOf(path)
+		if err != nil || !slices.ContainsFunc(owners, got.Equals) {
+			t.Errorf("ownerOf(%s) = %v, %v; want one of %v", path, got, err, owners)
 		}
 	}
 }
