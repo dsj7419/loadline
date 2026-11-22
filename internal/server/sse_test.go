@@ -1,0 +1,425 @@
+package server_test
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dsj7419/loadline/internal/server"
+	"github.com/dsj7419/loadline/internal/tracker"
+)
+
+// unstartedServer returns an HTTP server on a free loopback port, not yet
+// serving, and its port.
+func unstartedServer(t *testing.T) (*httptest.Server, int) {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(nil)
+	t.Cleanup(ts.Close)
+	_, portText, err := net.SplitHostPort(ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse listener port: %v", err)
+	}
+	return ts, port
+}
+
+// newStreamServer serves a harness over a real connection, which an event
+// stream needs. configure, when set, runs before serving starts.
+func newStreamServer(t *testing.T, configure func(*server.Server, *http.Server)) (*harness, *httptest.Server) {
+	t.Helper()
+	ts, port := unstartedServer(t)
+	h := newHarness(t, func(d *server.Deps) { d.Port = port })
+	if configure != nil {
+		configure(h.srv, ts.Config)
+	}
+	ts.Config.Handler = h.handler
+	ts.Start()
+	return h, ts
+}
+
+type stream struct {
+	resp   *http.Response
+	lines  *bufio.Reader
+	cancel context.CancelFunc
+}
+
+type sseEvent struct {
+	name, data, comment string
+}
+
+func openStream(t *testing.T, ts *httptest.Server) *stream {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/events", nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("new request: %v", err)
+	}
+	addCookie(req, uiCookie, uiCookieValue(testToken))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("open stream: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = resp.Body.Close()
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	return &stream{resp: resp, lines: bufio.NewReader(resp.Body), cancel: cancel}
+}
+
+// next reads the stream up to the blank line that ends an event or comment.
+func (s *stream) next(t *testing.T) (sseEvent, error) {
+	t.Helper()
+	var ev sseEvent
+	for {
+		line, err := s.lines.ReadString('\n')
+		if err != nil {
+			return ev, err
+		}
+		line = strings.TrimSuffix(line, "\n")
+		switch {
+		case line == "":
+			return ev, nil
+		case strings.HasPrefix(line, ": "):
+			ev.comment = strings.TrimPrefix(line, ": ")
+		case strings.HasPrefix(line, "event: "):
+			ev.name = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			if ev.data != "" {
+				t.Errorf("event has a second data line %q", line)
+			}
+			ev.data = strings.TrimPrefix(line, "data: ")
+		default:
+			t.Errorf("unexpected stream line %q", line)
+		}
+	}
+}
+
+func (s *stream) nextView(t *testing.T) string {
+	t.Helper()
+	ev, err := s.next(t)
+	if err != nil {
+		t.Fatalf("read event: %v", err)
+	}
+	if ev.name != "view" || ev.data == "" {
+		t.Fatalf("event = %+v, want a view", ev)
+	}
+	return ev.data
+}
+
+// eventually waits for cond, failing the test after five seconds.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func assertStreamEnded(t *testing.T, h *harness, s *stream) {
+	t.Helper()
+	if ev, err := s.next(t); !errors.Is(err, io.EOF) {
+		t.Errorf("read %+v, %v after the stream should have ended, want EOF", ev, err)
+	}
+	eventually(t, "the stream to let go of its subscription", func() bool {
+		return h.srv.Clients() == 0 && h.sink.unsubscribes() == 1
+	})
+}
+
+func TestSSE_SendsSnapshotThenUpdates(t *testing.T) {
+	h, ts := newStreamServer(t, nil)
+	first, second := testView(t0), testView(t0.Add(time.Second))
+	h.sink.setView(first)
+
+	s := openStream(t, ts)
+
+	for header, want := range map[string]string{
+		"Content-Type":      "text/event-stream",
+		"Cache-Control":     "no-store",
+		"X-Accel-Buffering": "no",
+	} {
+		if got := s.resp.Header.Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if got := s.nextView(t); got != marshalView(t, first) {
+		t.Errorf("first event = %s, want the snapshot %s", got, marshalView(t, first))
+	}
+	if calls := h.sink.callOrder(); !slices.Equal(calls, []string{"subscribe", "snapshot"}) {
+		t.Errorf("state calls = %v, want [subscribe snapshot]: a view published in between would be lost", calls)
+	}
+	if got := h.srv.Clients(); got != 1 {
+		t.Errorf("Clients() = %d, want 1", got)
+	}
+
+	h.sink.publish(second)
+	if got := s.nextView(t); got != marshalView(t, second) {
+		t.Errorf("second event = %s, want the published view %s", got, marshalView(t, second))
+	}
+}
+
+func TestSSE_DiagCountsClients(t *testing.T) {
+	h, ts := newStreamServer(t, nil)
+	clients := func() int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/api/diag", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set(tokenHeader, string(testToken))
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("get diag: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var diag struct {
+			Clients int `json:"clients"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&diag); err != nil {
+			t.Fatalf("decode diag: %v", err)
+		}
+		return diag.Clients
+	}
+
+	first, second := openStream(t, ts), openStream(t, ts)
+	first.nextView(t)
+	second.nextView(t)
+	if got := clients(); got != 2 {
+		t.Errorf("diag clients = %d with two streams open, want 2", got)
+	}
+
+	first.cancel()
+	eventually(t, "the closed stream to be counted out", func() bool { return h.srv.Clients() == 1 })
+	if got := clients(); got != 1 {
+		t.Errorf("diag clients = %d with one stream open, want 1", got)
+	}
+}
+
+func TestSSE_SendsHeartbeatComments(t *testing.T) {
+	_, ts := newStreamServer(t, func(srv *server.Server, _ *http.Server) {
+		server.SetPingInterval(srv, 10*time.Millisecond)
+	})
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	for range 2 {
+		ev, err := s.next(t)
+		if err != nil {
+			t.Fatalf("read heartbeat: %v", err)
+		}
+		if ev != (sseEvent{comment: "ping"}) {
+			t.Errorf("event = %+v, want the comment ping", ev)
+		}
+	}
+}
+
+func TestSSE_EndsWhenTheClientDisconnects(t *testing.T) {
+	h, ts := newStreamServer(t, nil)
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	s.cancel()
+
+	eventually(t, "the stream to let go of its subscription", func() bool {
+		return h.srv.Clients() == 0 && h.sink.unsubscribes() == 1
+	})
+}
+
+func TestSSE_EndsWhenTheServerShutsDown(t *testing.T) {
+	base, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h, ts := newStreamServer(t, func(_ *server.Server, hs *http.Server) {
+		hs.BaseContext = func(net.Listener) context.Context { return base }
+		hs.RegisterOnShutdown(cancel)
+	})
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if err := ts.Config.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v; the stream held the server up", err)
+	}
+
+	assertStreamEnded(t, h, s)
+}
+
+func TestSSE_EndsWhenTheSubscriptionCloses(t *testing.T) {
+	h, ts := newStreamServer(t, nil)
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	h.sink.closeSubscriptions()
+
+	assertStreamEnded(t, h, s)
+}
+
+func TestSSE_UnencodableSnapshotIsAServerError(t *testing.T) {
+	h := newHarness(t)
+	h.sink.setView(unencodableView())
+
+	assertJSONError(t, h.do(cookieRequest("/api/events")), http.StatusInternalServerError)
+	if h.srv.Clients() != 0 || h.sink.unsubscribes() != 1 {
+		t.Errorf("Clients() = %d and %d unsubscribes after a failed stream, want 0 and 1",
+			h.srv.Clients(), h.sink.unsubscribes())
+	}
+}
+
+func TestSSE_SkipsAnUnencodableView(t *testing.T) {
+	h, ts := newStreamServer(t, nil)
+	s := openStream(t, ts)
+	s.nextView(t)
+
+	h.sink.publish(unencodableView())
+	next := testView(t0.Add(time.Second))
+	h.sink.publish(next)
+
+	if got := s.nextView(t); got != marshalView(t, next) {
+		t.Errorf("event = %s, want the view after the unencodable one, %s", got, marshalView(t, next))
+	}
+}
+
+// brokenStream is a response writer whose writes fail once writesLeft are
+// spent, as on a connection the client dropped.
+type brokenStream struct {
+	*httptest.ResponseRecorder
+	writesLeft  int
+	deadlineErr error
+}
+
+func (b *brokenStream) Write(p []byte) (int, error) {
+	if b.writesLeft == 0 {
+		return 0, errors.New("broken pipe")
+	}
+	b.writesLeft--
+	return b.ResponseRecorder.Write(p)
+}
+
+// WriteString hides the recorder's own, which io.WriteString would call.
+func (b *brokenStream) WriteString(s string) (int, error) { return b.Write([]byte(s)) }
+
+func (b *brokenStream) SetWriteDeadline(time.Time) error { return b.deadlineErr }
+
+// serveBrokenStream serves an event stream into w, runs during once the
+// stream has subscribed, and waits for the handler to return.
+func serveBrokenStream(t *testing.T, h *harness, w *brokenStream, during func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.handler.ServeHTTP(w, cookieRequest("/api/events"))
+	}()
+	eventually(t, "the stream to subscribe", func() bool { return len(h.sink.callOrder()) > 0 })
+	during()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream kept running after a write failed")
+	}
+	if h.srv.Clients() != 0 || h.sink.unsubscribes() != 1 {
+		t.Errorf("Clients() = %d and %d unsubscribes after the stream ended, want 0 and 1",
+			h.srv.Clients(), h.sink.unsubscribes())
+	}
+}
+
+func TestSSE_EndsWhenAWriteFails(t *testing.T) {
+	tests := []struct {
+		name       string
+		writesLeft int
+		ping       time.Duration
+		publish    bool
+	}{
+		{name: "the snapshot", writesLeft: 0, ping: time.Hour},
+		{name: "an update", writesLeft: 1, ping: time.Hour, publish: true},
+		{name: "a heartbeat", writesLeft: 1, ping: time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			server.SetPingInterval(h.srv, tt.ping)
+			w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: tt.writesLeft}
+
+			serveBrokenStream(t, h, w, func() {
+				if tt.publish {
+					h.sink.publish(testView(t0))
+				}
+			})
+		})
+	}
+}
+
+func TestSSE_StreamsWhenTheWriteDeadlineCannotBeCleared(t *testing.T) {
+	h := newHarness(t)
+	server.SetPingInterval(h.srv, time.Hour)
+	h.sink.setView(testView(t0))
+	w := &brokenStream{ResponseRecorder: httptest.NewRecorder(), writesLeft: 1, deadlineErr: errors.New("no deadlines here")}
+
+	serveBrokenStream(t, h, w, func() { h.sink.publish(testView(t0.Add(time.Second))) })
+
+	if want := "event: view\ndata: " + marshalView(t, testView(t0)) + "\n\n"; w.Body.String() != want {
+		t.Errorf("stream = %q, want the snapshot %q", w.Body.String(), want)
+	}
+}
+
+func TestSSE_StreamsTheTrackersViews(t *testing.T) {
+	ts, port := unstartedServer(t)
+	tr := tracker.New(time.Now, tracker.Config{}, nil)
+	t.Cleanup(tr.Close)
+	srv := server.New(server.Deps{State: tr, Token: testToken, Port: port, Static: testFiles, Version: testVersion})
+	ts.Config.Handler = srv.Handler()
+	ts.Start()
+	decode := func(data string) tracker.View {
+		t.Helper()
+		var v tracker.View
+		if err := json.Unmarshal([]byte(data), &v); err != nil {
+			t.Fatalf("decode view: %v", err)
+		}
+		return v
+	}
+
+	s := openStream(t, ts)
+	if v := decode(s.nextView(t)); len(v.Sessions) != 0 {
+		t.Fatalf("first view has %d sessions, want none", len(v.Sessions))
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/ingest/hook",
+		bytes.NewReader(hookEnvelope(t, eventID(1))))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(tokenHeader, string(testToken))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post hook: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post hook: status %d, want 200", resp.StatusCode)
+	}
+
+	v := decode(s.nextView(t))
+	if len(v.Sessions) != 1 || v.Sessions[0].ID != "s1" {
+		t.Errorf("view after the hook has sessions %+v, want s1", v.Sessions)
+	}
+}
