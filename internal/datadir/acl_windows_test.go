@@ -350,3 +350,24 @@ func TestCheck_ReportsAFolderOfLoadlinesThatKeepsTheUserOut(t *testing.T) {
 		t.Errorf("Check = %q, %v; want %q", got, err, want)
 	}
 }
+
+// The files the system leaves in a folder may be in the data directory, so
+// they are made private with it: access given to one explicitly is taken
+// off, and doctor reports it until it is.
+func TestSecure_TakesOffAccessGivenToASystemFile(t *testing.T) {
+	home, top := loadlineHome(t)
+	ini := filepath.Join(home, "desktop.ini")
+	writeFile(t, ini)
+	fspermtest.Grant(t, ini, fspermtest.Read|fspermtest.Write, windows.NO_INHERITANCE)
+
+	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, ini+" is not private") {
+		t.Errorf("Check = %q, %v; want it to report %s", got, err, ini)
+	}
+	if err := datadir.Secure(home, top); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	if others := fspermtest.Others(t, ini, fspermtest.Any); len(others) != 0 {
+		t.Errorf("after Secure, %s admits %v: %s", ini, others, fspermtest.AccessList(t, ini))
+	}
+}

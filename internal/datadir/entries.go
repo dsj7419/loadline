@@ -75,10 +75,15 @@ func Temporary(name string) bool {
 // folder its user has looked at, which do not make it anyone else's.
 var systemNames = []string{".DS_Store", "desktop.ini", "Thumbs.db"}
 
+// systemFile reports whether entry is a file the system leaves. A folder or
+// a link by one of their names is someone else's: no system makes one.
+func systemFile(entry fs.DirEntry) bool {
+	return slices.Contains(systemNames, entry.Name()) && entry.Type().IsRegular()
+}
+
 // foreignEntry returns the name of the first entry of dir that is neither
 // Loadline's nor a file the system leaves, or "" when there is none or dir
-// does not exist. A folder or a link by a system file's name is someone
-// else's: no system makes one.
+// does not exist.
 func foreignEntry(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -88,9 +93,8 @@ func foreignEntry(dir string) (string, error) {
 		return "", fmt.Errorf("read the data directory: %w", err)
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if !Owns(name) && (!slices.Contains(systemNames, name) || !entry.Type().IsRegular()) {
-			return name, nil
+		if !Owns(entry.Name()) && !systemFile(entry) {
+			return entry.Name(), nil
 		}
 	}
 	return "", nil
@@ -141,9 +145,10 @@ type tree struct {
 	locked string
 }
 
-// ownPaths walks what Loadline keeps in dir: each entry it owns, and
-// everything below the folders among them, except the regular files that
-// are still being written (Temporary). It follows no link: it stops at the
+// ownPaths walks what Loadline keeps in dir: each entry it owns, the files
+// the system leaves there, which are made private with it, and everything
+// below the folders among them, except the regular files that are still
+// being written (Temporary). It follows no link: it stops at the
 // first. A dir that does not exist holds nothing, and an entry that goes
 // while it looks, as a spooled event does once drained, is left out.
 //
@@ -161,7 +166,7 @@ func ownPaths(dir string, visit func(path string) error) (tree, error) {
 		return found, fmt.Errorf("read the data directory: %w", err)
 	}
 	for _, entry := range entries {
-		if !Owns(entry.Name()) {
+		if !Owns(entry.Name()) && !systemFile(entry) {
 			continue
 		}
 		if err := found.walk(filepath.Join(dir, entry.Name()), entry.Type(), visit); err != nil || found.link != "" {

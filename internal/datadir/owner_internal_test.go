@@ -73,3 +73,22 @@ func TestMake_DoesNotJudgeTheOwnerOfAFileBeingWritten(t *testing.T) {
 		t.Errorf("Make = %v, want nil", err)
 	}
 }
+
+// A file the system leaves, in the data directory, is judged by its owner
+// as Loadline's own are.
+func TestMake_RefusesASystemFileThatBelongsToSomeoneElse(t *testing.T) {
+	dir := home(t)
+	ini := filepath.Join(dir, "desktop.ini")
+	if err := os.WriteFile(ini, []byte("[.ShellClassInfo]\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownedByStranger(t, ini)
+	want := ini + " belongs to a stranger"
+
+	if err := Make(dir); err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Make = %v; want it refused, starting %q", err, want)
+	}
+	if got, err := Check(dir, filepath.Dir(dir)); err != nil || !strings.HasPrefix(got, want) {
+		t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
+	}
+}
