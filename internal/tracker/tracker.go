@@ -425,6 +425,9 @@ func (t *Tracker) applyToSession(e domain.Event, id domain.SessionID, dir domain
 	if !known || after != before {
 		t.rec.SessionChanged(after)
 	}
+	if after.State == domain.StateEnded && before.State != domain.StateEnded {
+		entry.responses.ended()
+	}
 	if !known {
 		for _, r := range t.pending.take(id, t.now().Add(-pendingFor)) {
 			t.attach(entry, r)
@@ -519,7 +522,11 @@ func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits, freshAs t
 // not supplied one.
 func (t *Tracker) attach(s *sessionEntry, r domain.APIRequest) {
 	// A call stamped before the clock was set back would date its session
-	// ahead of every response after the step.
+	// ahead of every response after the step, so it is dated at the step, as a
+	// poll is. That still makes it newer than the responses held from before
+	// the step, which is accepted: its session's next reading is taken once,
+	// until another session's next response, and a call made at the limit in
+	// between may go uncounted on credits.
 	s.responses.call(notAhead(r.At, t.newest))
 	dir := s.session.Dir
 	entry := t.account(dir)

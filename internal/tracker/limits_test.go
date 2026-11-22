@@ -560,3 +560,65 @@ func TestTracker_AResumedProcesssCallsDoNotFreshenTheOldOnesReading(t *testing.T
 		t.Errorf("account A shown below 100%% in %d of %d views, want none: the resumed process's calls on B say nothing of the old process's reading of A", below, views)
 	}
 }
+
+// A session's process ends, and the owner's reset comes before the session is
+// resumed: the resumed process counts its API time from nothing, and an idle
+// session goes on reporting its older 95%. The resumed process's 0% shows by
+// its second response, and the idle 95% does not come back.
+func TestTracker_ASessionResumedAfterItEndedCountsItsAPITimeAfresh(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	resumed, idle := s1, s2
+	shownWeekly(h, withAPITime(weeklyFrom(0, idle, 95), 3000))
+	shownWeekly(h, withAPITime(weeklyFrom(1, idle, 95), 3100))
+	shownWeekly(h, withAPITime(weeklyFrom(2, resumed, 95), 40_000))
+	shownWeekly(h, withAPITime(weeklyFrom(3, resumed, 95), 50_000))
+
+	h.clock.Set(at(50))
+	h.tr.Apply(sessionEnd(50, resumed, "prompt_input_exit"))
+	start := hook(99, resumed, "SessionStart")
+	start.Source = "resume"
+	h.clock.Set(at(99))
+	h.tr.Apply(start)
+	// The resumed process's first line is a first line: nothing says what its
+	// count started from, so it dates no response.
+	if got := shownWeekly(h, withAPITime(weeklyFrom(100, resumed, 0), 800)); got != 95 {
+		t.Errorf("shown %v%% from the resumed process's first line, want the 95%% held", got)
+	}
+	shownWeekly(h, withAPITime(weeklyFrom(105, idle, 95), 3100))
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(110, resumed, 0), 1600)); got != 0 {
+		t.Errorf("shown %v%% after the resumed process's second response, want 0%%", got)
+	}
+	for sec := 115; sec < 200; sec += 5 {
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec, idle, 95), 3100)); got != 0 {
+			t.Fatalf("at %ds the idle session's older 95%% came back (%v%%)", sec, got)
+		}
+	}
+}
+
+// Resuming a session while its first process still runs starts a second
+// process without ending the first: the two count their API time apart, so
+// the most either has reported still holds.
+func TestTracker_AResumeWhileTheFirstProcessRunsKeepsTheMostAPITime(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	shared := s1
+	shownWeekly(h, withAPITime(weeklyFrom(0, shared, 97), 50_000))
+	start := hook(5, shared, "SessionStart")
+	start.Source, start.PID = "resume", pidB
+	h.clock.Set(at(5))
+	h.tr.Apply(start)
+
+	below, views := 0, 0
+	api := int64(1200)
+	for sec := 10; sec < 300; sec += 5 {
+		api += 100
+		shownWeekly(h, withAPITime(weeklyFrom(sec, shared, 100), api))
+		if got := shownWeekly(h, withAPITime(weeklyFrom(sec+2, shared, 97), 50_000)); got < 100 {
+			below++
+		}
+		views++
+	}
+	if below > 0 {
+		t.Errorf("weekly window fell back to 97%% after %d of %d lines from the first process, want none", below, views)
+	}
+}
