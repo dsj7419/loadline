@@ -257,9 +257,11 @@ It must be a folder of Loadline's own, new or holding only what Loadline put the
 it, and all it holds, private, so install and the server refuse a folder that holds anything else.
 Wherever it is, Loadline keeps the data directory private: on Windows it gives the directory an
 access list of its own that admits only you, SYSTEM and Administrators, and on macOS and Linux mode
-0700. It refuses one below a folder that other users can delete or rename, which would let them put
-a binary of their own where the hooks look: `D:\loadline` is fine, `D:\tools\loadline` on a drive
-every user can modify is not. Keep `LOADLINE_HOME` in your user profile.
+0700. It refuses one below a folder that other users can delete or rename, or take over, or that
+belongs to someone else, which would let them put a binary of their own where the hooks look. It
+judges the folders a link in the path leads to as well. `D:\loadline` you created is fine,
+`D:\tools\loadline` on a drive every user can modify is not. Keep `LOADLINE_HOME` in your user
+profile. [SECURITY.md](SECURITY.md) lists exactly what is checked.
 
 ## Multiple accounts
 

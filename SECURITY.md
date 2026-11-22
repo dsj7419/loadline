@@ -35,27 +35,39 @@ What it defends against:
   on macOS and Linux with mode 0700. Install, the server and the creation of the token make an
   existing data directory private the same way. Install and the server also take off Loadline's own
   files and folders in it any access given to them explicitly, denials included, and any access
-  list of their own but the private one, so that only what the data directory passes down applies;
-  and they refuse a symbolic link or junction among them, which writing through would follow
-  elsewhere. They leave alone the
-  files another Loadline process is still writing there under a temporary name. Since everything
-  in the data directory is made private with it, `LOADLINE_HOME` must be a folder of Loadline's
-  own: install, the server and the creation of the token refuse one that holds anything else, and
-  change nothing in it.
+  list of their own but the private one, so that only what the data directory passes down applies.
+  Install, the server and the creation of the token refuse a symbolic link or junction among them,
+  which writing through would follow elsewhere, and one that belongs to anyone but you, SYSTEM,
+  Administrators or TrustedInstaller, since its owner may always change who can use it. They leave
+  alone the files another Loadline process is still writing there under a temporary name, when
+  they are files. Since everything in the data directory is made private with it, `LOADLINE_HOME`
+  must be a folder of Loadline's own: install, the server and the creation of the token refuse one
+  that holds anything else, and change nothing in it. Only the files that Windows Explorer and the
+  macOS Finder leave in a folder (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too.
   `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
   it did before, they may have read the token, so change it as described below. On macOS and Linux
   install also takes group and other permissions off the settings files it edits, which hold the
   token too, and off their backups. On Windows those files rely on the permissions of the folder
   they are in, which in your profile by default admits only you, administrators and the system.
 - **Other users and the folders above the data directory.** Whoever can delete or rename a folder
-  above the data directory can put a folder of their own, and a binary of their own, at the path
-  the hooks run. Install and the server refuse a data directory below a folder that anyone but you,
-  SYSTEM and Administrators can delete or rename, and name that folder: on Windows, one that grants
-  them DELETE, or whose parent grants them FILE_DELETE_CHILD; on macOS and Linux, one whose parent
-  group or others can write to without the sticky bit. `loadline doctor` reports the same. The
-  default location passes, and so does a `LOADLINE_HOME` directly in a drive root, such as
-  `D:\loadline`; one deeper in a folder every user can modify, such as `D:\tools\loadline`, does
-  not, so keep it in your user profile.
+  above the data directory, or give themselves the right to, can put a folder of their own, and a
+  binary of their own, at the path the hooks run. Install and the server judge each folder above
+  the data directory that exists, up to the volume root, and refuse the data directory, naming the
+  folder, when anyone but you, SYSTEM and Administrators could move one aside:
+  - on Windows, a folder above it that grants them FILE_DELETE_CHILD, WRITE_DAC (change
+    permissions) or WRITE_OWNER (take ownership), or one below the volume root that grants them
+    DELETE, by an allow entry of any kind;
+  - on macOS and Linux, a folder above it that group or others can write to without the sticky bit;
+  - everywhere, a folder above it, or the data directory itself, that belongs to anyone else: on
+    Windows anyone but you, SYSTEM, Administrators or TrustedInstaller, on macOS and Linux anyone
+    but you or root.
+
+  They judge the folders that really hold the data directory as well as those its path names: when
+  a junction, a symbolic link or, on Windows, a `subst` drive is on the way, the folders that hold
+  where it leads are judged too. `loadline doctor` reports the same. The default location passes,
+  and so does a `LOADLINE_HOME` directly in a drive root, such as `D:\loadline`, that you created;
+  one deeper in a folder every user can modify, such as `D:\tools\loadline`, does not, so keep it
+  in your user profile.
 - **Another account's credentials.** A hook runs with its Claude Code session's environment, which
   holds that session's settings `env`: the ingest token in the OpenTelemetry headers, and any API key
   or token you keep there. The server a hook starts, the browser the server opens and the `claude`
@@ -93,6 +105,13 @@ What it defends against:
   process), delete the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
+- **Cloud and deduplicated files.** Install and the server take every reparse point among
+  Loadline's own files for a link. Under a OneDrive folder with Files On-Demand, or on a volume
+  with data deduplication, those files can be reparse points of that kind, and install and the
+  server then refuse the data directory as holding a link. Keep the data directory out of such
+  folders.
+- **A refused server.** A server that a hook starts, and that refuses its data directory, says why
+  only in its log and in `loadline doctor`; the hooks go on running the binary that is there.
 - **A linked settings file.** When `settings.json`, or the config folder that holds it, is a link,
   for example into a dotfiles repository (a symbolic link, or on Windows a junction), install writes
   the token into the file it ends up in, and committing that repository would publish it. `loadline
