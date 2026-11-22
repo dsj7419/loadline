@@ -51,7 +51,7 @@ func Run(ctx context.Context, args []string, stdio IO) int {
 	case "serve":
 		return RunServe(ctx, args[1:], stdio)
 	case "status":
-		return RunStatus(ctx, stdio)
+		return runStatusCommand(ctx, args[1:], stdio)
 	case "open":
 		return runOpenCommand(ctx, args[1:], stdio)
 	case "hook":
@@ -65,13 +65,21 @@ func Run(ctx context.Context, args []string, stdio IO) int {
 	case "doctor":
 		return runDoctor(ctx, args[1:], stdio)
 	case "version":
-		return printStdout(stdio, "loadline "+Version+"\n")
+		return runVersionCommand(args[1:], stdio)
 	case "help", "-h", "--help":
 		return printStdout(stdio, usage)
 	default:
 		_, _ = fmt.Fprintf(stdio.Err, "loadline: unknown command %q\n\n%s", args[0], usage)
 		return exitUsage
 	}
+}
+
+// runVersionCommand prints the version. It takes no arguments.
+func runVersionCommand(args []string, stdio IO) int {
+	if code, ok := parseFlags(newFlagSet("version", stdio), args); !ok {
+		return code
+	}
+	return printStdout(stdio, "loadline "+Version+"\n")
 }
 
 // printStdout writes text to stdout and maps a failed write to exit code 1.

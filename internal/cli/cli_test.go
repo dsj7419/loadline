@@ -136,6 +136,43 @@ func TestRun_DispatchesServeAndStatus(t *testing.T) {
 	}
 }
 
+// status and version take no arguments, so anything after them is a usage
+// error that shows the command's usage, never something they quietly ignore.
+func TestRun_StatusAndVersionRejectArguments(t *testing.T) {
+	t.Setenv("LOADLINE_HOME", t.TempDir())
+	for _, tc := range []struct {
+		args []string
+		says string
+	}{
+		{[]string{"status", "extra"}, `loadline status: unexpected argument "extra"`},
+		{[]string{"status", "--bogus"}, "flag provided but not defined: -bogus"},
+		{[]string{"version", "extra"}, `loadline version: unexpected argument "extra"`},
+		{[]string{"version", "--short"}, "flag provided but not defined: -short"},
+	} {
+		got := run(t, tc.args...)
+
+		if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, tc.says) ||
+			!strings.Contains(got.stderr, "Usage: loadline "+tc.args[0]+"\n") {
+			t.Errorf("%q = %d, stdout %q, stderr %q; want 2, %q and the usage", tc.args, got.code, got.stdout, got.stderr, tc.says)
+		}
+	}
+}
+
+// Like every command that parses its flags, status and version show their
+// usage for -h and exit 0. status then asks no server anything.
+func TestRun_StatusAndVersionHelp(t *testing.T) {
+	t.Setenv("LOADLINE_HOME", t.TempDir())
+	for _, command := range []string{"status", "version"} {
+		for _, flag := range []string{"-h", "--help"} {
+			got := run(t, command, flag)
+
+			if want := "Usage: loadline " + command + "\n"; got.code != 0 || got.stdout != "" || got.stderr != want {
+				t.Errorf("%s %s = %d, stdout %q, stderr %q; want 0 and %q", command, flag, got.code, got.stdout, got.stderr, want)
+			}
+		}
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }

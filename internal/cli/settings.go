@@ -50,10 +50,19 @@ func (d *configDirs) Set(dir string) error {
 	return nil
 }
 
+// newFlagSet returns the flag set of the command name, which writes its
+// errors and its usage to stderr. A command without flags is used by its name
+// alone.
 func newFlagSet(name string, stdio IO) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stdio.Err)
 	flags.Usage = func() {
+		hasFlags := false
+		flags.VisitAll(func(*flag.Flag) { hasFlags = true })
+		if !hasFlags {
+			_, _ = fmt.Fprintf(stdio.Err, "Usage: loadline %s\n", name)
+			return
+		}
 		_, _ = fmt.Fprintf(stdio.Err, "Usage: loadline %s [flags]\n\n", name)
 		flags.PrintDefaults()
 	}
@@ -61,7 +70,9 @@ func newFlagSet(name string, stdio IO) *flag.FlagSet {
 }
 
 // parseFlags parses args, and when the command should not go on, returns
-// false with the exit code: 0 after -h, 2 for a usage error.
+// false with the exit code: 0 after -h, 2 for a usage error, which is
+// followed by the usage, as the flag package does for a flag it does not
+// know.
 func parseFlags(flags *flag.FlagSet, args []string) (int, bool) {
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -71,6 +82,7 @@ func parseFlags(flags *flag.FlagSet, args []string) (int, bool) {
 	}
 	if flags.NArg() > 0 {
 		_, _ = fmt.Fprintf(flags.Output(), "loadline %s: unexpected argument %q\n", flags.Name(), flags.Arg(0))
+		flags.Usage()
 		return exitUsage, false
 	}
 	return exitOK, true

@@ -30,6 +30,15 @@ const (
 	absent = "-"
 )
 
+// runStatusCommand runs the status command for this process. It takes no
+// arguments.
+func runStatusCommand(ctx context.Context, args []string, stdio IO) int {
+	if code, ok := parseFlags(newFlagSet("status", stdio), args); !ok {
+		return code
+	}
+	return RunStatus(ctx, stdio)
+}
+
 // RunStatus prints the accounts and sessions the running server sees, as a
 // table, and exits 1 with "loadline is not running" when no loadline
 // answers on the configured port.
