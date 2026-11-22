@@ -132,8 +132,9 @@ var foreignOwner = fsperm.ForeignOwner
 // ownPaths returns what Loadline keeps in dir: each entry it owns, and
 // everything below the folders among them, except the regular files that
 // are still being written (Temporary). It follows no link: it stops at the
-// first and returns it. A dir that does not exist holds nothing, and an entry that
-// goes while it looks, as a spooled event does once drained, is left out.
+// first and returns it. A dir that does not exist holds nothing, and an
+// entry that goes while it looks, as a spooled event does once drained, is
+// left out.
 func ownPaths(dir string) (paths []string, link string, err error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
