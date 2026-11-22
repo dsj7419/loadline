@@ -126,9 +126,14 @@ The settings edits:
   | Your status line | Becomes |
   | --- | --- |
   | A simple command, on macOS, Linux, or Windows with Git Bash | `"<loadline>" tap \| <command>` |
-  | Any other command on those systems, such as one with pipes, variables or several lines | `"<loadline>" tap \| { <command>` and `}` on a line of its own |
+  | Any other command on those systems, such as one with pipes, variables or several lines | `"<loadline>" tap \| ( ( <command>` and `) )` on a line of its own |
   | Any command, on Windows without Git Bash, where Claude Code uses PowerShell | `& "<loadline>" tap --run-b64 '<command as base64url>'` |
   | None | `"<loadline>" tap --print`, refreshing every 10 s (`&` in front for PowerShell) |
+
+  bash reads the whole wrapped command before it runs any of it. A command of several lines that
+  turns on a parse-time option for its own later lines, such as `shopt -s extglob` or
+  `shopt -s expand_aliases`, therefore stops working once wrapped. Keep such a command in a script
+  file and have the status line run the file.
 
   A status line Loadline cannot wrap safely is left alone, with a warning: one with no command, one
   that starts with Loadline but was edited by hand, one that ends in a backslash or holds a
