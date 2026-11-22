@@ -6,6 +6,8 @@ package datadir_test
 // and a data directory that is itself a link.
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
@@ -232,5 +235,90 @@ func TestSecure_RefusesADataDirectoryThatIsALink(t *testing.T) {
 	}
 	if after := fspermtest.AccessList(t, target); after != before {
 		t.Errorf("the access list of %s, where the link leads, went from %s to %s", target, before, after)
+	}
+}
+
+// refusedAsALink fails the test unless every way into the data directory
+// refuses home as a link. Verify, Secure and Check judge the folders above
+// first, and know the trusted top only by its plain name: for a name
+// written otherwise (plain false), any refusal of theirs will do, and Make,
+// which looks at home alone, must still say it is a link.
+func refusedAsALink(t *testing.T, home, top string, plain bool) {
+	t.Helper()
+	refused := func(err error) bool {
+		return err != nil && (!plain || strings.Contains(err.Error(), "is a link"))
+	}
+	if err := datadir.Verify(home, top); !refused(err) {
+		t.Errorf("Verify(%q) = %v, want it refused as a link", home, err)
+	}
+	if err := datadir.Make(home); err == nil || !strings.Contains(err.Error(), "is a link") {
+		t.Errorf("Make(%q) = %v, want it refused as a link", home, err)
+	}
+	if err := datadir.Secure(home, top); !refused(err) {
+		t.Errorf("Secure(%q) = %v, want it refused as a link", home, err)
+	}
+	got, err := datadir.Check(home, top)
+	if err != nil || got == "" || (plain && !strings.Contains(got, "is a link")) {
+		t.Errorf("Check(%q) = %q, %v; want it reported as a link", home, got, err)
+	}
+}
+
+// However the data directory's path is written, with a separator at its
+// end, a dot, another case or the \\?\ prefix, it names the same link,
+// which is refused, and nothing is written where it leads.
+func TestSecure_RefusesALinkedDataDirectoryHoweverItIsWritten(t *testing.T) {
+	top, home, target := linkedHome(t)
+	before := fspermtest.AccessList(t, target)
+	upper := filepath.Join(filepath.Dir(home), strings.ToUpper(filepath.Base(home)))
+
+	for _, written := range []string{home, home + `\`, home + `\.`, upper} {
+		refusedAsALink(t, written, top, true)
+	}
+	refusedAsALink(t, `\\?\`+home, top, false)
+	if _, err := config.EnsureToken(filepath.Join(home, "token")); err == nil || !strings.Contains(err.Error(), "is a link") {
+		t.Errorf("EnsureToken through the link = %v, want the token's creation refused", err)
+	}
+
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Errorf("%s, where the link leads, holds %d entries (%v), want nothing written", target, len(entries), err)
+	}
+	if after := fspermtest.AccessList(t, target); after != before {
+		t.Errorf("the access list of %s went from %s to %s", target, before, after)
+	}
+}
+
+// A link to a link: each is refused in turn, and the folder at the end,
+// named itself, is taken and made private.
+func TestSecure_RefusesALinkToALink(t *testing.T) {
+	top, home, target := linkedHome(t)
+	second := filepath.Join(filepath.Dir(home), "second")
+	junction(t, second, home)
+
+	refusedAsALink(t, second, top, true)
+
+	if err := datadir.Secure(target, top); err != nil {
+		t.Errorf("Secure(%s), the folder itself = %v", target, err)
+	}
+	if others := fspermtest.Others(t, target, fspermtest.Any); len(others) != 0 {
+		t.Errorf("%s admits %v", target, others)
+	}
+}
+
+// A link that leads nowhere is still a link: nothing is made through it or
+// in its place.
+func TestSecure_RefusesALinkedDataDirectoryThatLeadsNowhere(t *testing.T) {
+	top, home, target := linkedHome(t)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+
+	_, tokenErr := config.EnsureToken(filepath.Join(home, "token"))
+	for step, err := range map[string]error{"Verify": datadir.Verify(home, top), "Make": datadir.Make(home), "EnsureToken": tokenErr} {
+		if err == nil {
+			t.Errorf("%s took %s, a link that leads nowhere", step, home)
+		}
+	}
+	if _, err := os.Stat(target); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("%s was made where the link leads (%v)", target, err)
 	}
 }

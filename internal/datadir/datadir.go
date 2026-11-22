@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
@@ -26,6 +27,7 @@ const movableAdvice = ", and with it replace the binary every hook runs; " +
 // The check of the folders above dir goes up to the volume root, or when top
 // is set, stops below top, which it trusts with every folder above it.
 func Secure(dir, top string) error {
+	dir = filepath.Clean(dir)
 	if err := Verify(dir, top); err != nil {
 		return err
 	}
@@ -47,6 +49,7 @@ func Secure(dir, top string) error {
 // private already: Windows passes a new access list on a folder down to
 // everything in it, those files among them.
 func Make(dir string) error {
+	dir = filepath.Clean(dir)
 	problem, err := contentProblem(dir)
 	if err != nil {
 		return err
@@ -110,6 +113,7 @@ func clearOwnEntries(path string) error {
 // own, at the path the hooks run. It refuses what Make refuses. It changes
 // nothing.
 func Verify(dir, top string) error {
+	dir = filepath.Clean(dir)
 	problem, err := refusal(dir, top)
 	if err != nil {
 		return err
@@ -125,6 +129,7 @@ func Verify(dir, top string) error {
 // others have to dir or to one of Loadline's files in it. It returns "" when
 // there is none. A missing dir is an error that matches fs.ErrNotExist.
 func Check(dir, top string) (string, error) {
+	dir = filepath.Clean(dir)
 	if _, err := os.Stat(dir); err != nil {
 		return "", fmt.Errorf("read the data directory: %w", err)
 	}
@@ -175,6 +180,9 @@ func refusal(dir, top string) (string, error) {
 
 // contentProblem reports what Make refuses dir for, or "" when nothing.
 func contentProblem(dir string) (string, error) {
+	// Written with a separator at its end, a link's path would have Lstat
+	// look at where it leads, and every check here would judge that.
+	dir = filepath.Clean(dir)
 	if problem, err := dirLinkProblem(dir); err != nil || problem != "" {
 		return problem, err
 	}

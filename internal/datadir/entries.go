@@ -113,6 +113,7 @@ func foreignProblem(dir, name string) string {
 // link among Loadline's own files would put them, the binary every hook runs
 // among them, wherever it points.
 func CheckLink(path string) error {
+	path = filepath.Clean(path)
 	link, err := fsperm.IsLink(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
