@@ -472,43 +472,46 @@ func TestEstimateCredits_ReportedOverridesEstimate(t *testing.T) {
 	}
 }
 
-// A month of short stretches on credits, a call every 5 s through it: the
+// Many short stretches on credits, a call every 5 s through them: the
 // estimate walks the calls and the spans together, where looking through the
-// spans for each call would take minutes. Without the race detector the
-// estimate keeps to a bound in milliseconds; with it, which slows it several
-// times over and unevenly, it is held instead to a cost that grows linearly
-// with the spans.
+// spans for each call would take minutes over a month of them. Its cost is
+// held to one that grows linearly with the spans, which costtest checks on
+// any machine; BenchmarkEstimateCredits_ManySpansAndCalls measures fifty
+// thousand.
 func TestEstimateCredits_OnePassOverManySpansAndCalls(t *testing.T) {
-	const spanCount = 50_000
 	grants := []domain.CreditGrant{grant(1e9, -1)}
-	check := func(spanCount int, got domain.CreditEstimate) {
-		t.Helper()
+	// Four thousand spans against sixteen thousand show a quadratic cost
+	// plainly, in seconds where fifty thousand would take minutes. The race
+	// detector slows the estimate several times over, so under it a
+	// thousand against four thousand.
+	spanCount := 4000
+	if raceEnabled {
+		spanCount = 1000
+	}
+	costtest.AssertLinear(t, spanCount, "spans", func(spanCount int) func() {
+		spans, requests, now := shortStretches(spanCount)
 		// Each closed span holds the calls at its start and 5 s in; the open
 		// one holds the four from its start on.
+		got := domain.EstimateCredits(grants, spans, requests, now)
 		opened := at(20 * (spanCount - 1))
 		if want := float64(2*(spanCount-1) + 4); got.SpentUSD != want || !got.Active || !got.OnCreditsSince.Equal(opened) {
 			t.Errorf("EstimateCredits() over %d spans = %+v, want $%v spent, on credits since %v", spanCount, got, want, opened)
 		}
-	}
-	if raceEnabled {
-		// A thousand spans against four thousand show a quadratic cost
-		// plainly, in seconds where fifty thousand would take minutes.
-		costtest.AssertLinear(t, 1000, "spans", func(spanCount int) func() {
-			spans, requests, now := shortStretches(spanCount)
-			check(spanCount, domain.EstimateCredits(grants, spans, requests, now))
-			return func() { domain.EstimateCredits(grants, spans, requests, now) }
-		})
-		return
-	}
+		return func() { domain.EstimateCredits(grants, spans, requests, now) }
+	})
+}
 
-	spans, requests, now := shortStretches(spanCount)
-	start := time.Now()
-	got := domain.EstimateCredits(grants, spans, requests, now)
-	elapsed := time.Since(start)
+// BenchmarkEstimateCredits_ManySpansAndCalls measures an estimate over fifty
+// thousand short stretches on credits, as in
+// TestEstimateCredits_OnePassOverManySpansAndCalls, and two hundred thousand
+// calls through them.
+func BenchmarkEstimateCredits_ManySpansAndCalls(b *testing.B) {
+	grants := []domain.CreditGrant{grant(1e9, -1)}
+	spans, requests, now := shortStretches(50_000)
+	b.ReportAllocs()
 
-	check(spanCount, got)
-	if elapsed > time.Second {
-		t.Errorf("estimating %d calls over %d spans took %v, want well under a second", len(requests), spanCount, elapsed)
+	for b.Loop() {
+		domain.EstimateCredits(grants, spans, requests, now)
 	}
 }
 

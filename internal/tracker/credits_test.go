@@ -577,44 +577,35 @@ func TestTracker_AnIdleSessionsOlderReadingKeepsTheStretchOnCredits(t *testing.T
 }
 
 // A day of the same disagreement leaves the view as cheap as ever: the tracker
-// holds its lock while it builds one, so a slow view stalls ingest. Without
-// the race detector a view after the day keeps to a bound in milliseconds.
-// The detector slows a view several times over, and a loaded machine slows it
-// as much again, so with it the view is held instead to a cost that grows
-// linearly with the hours of readings.
+// holds its lock while it builds one, so a slow view stalls ingest. A view's
+// cost is held to one that grows linearly with the hours of readings, which
+// costtest checks on any machine; BenchmarkTracker_ViewAfterADayOfIdleReadings
+// measures a view after the day.
 func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
-	const hours = 24
 	after := func(hours int) *tracker.Tracker {
 		h := newSubscribedHarness(t, tracker.Config{Credits: aThousandDollars, Alerts: defaultAlerts})
 		disagreeFor(h.tr, h.clock, hours)
 		return h.tr
 	}
+	// Six hours of readings against a day of them show a quadratic cost
+	// plainly. The race detector slows building them several times over, and
+	// a loaded machine as much again, so under it two hours against eight,
+	// which build in seconds where a day of a quadratic cost takes minutes.
+	hours := 6
 	if raceEnabled {
-		// Two hours against eight show a quadratic cost plainly, and build in
-		// seconds where a day of a quadratic cost takes minutes.
-		costtest.AssertLinear(t, 2, "hours of readings", func(hours int) func() { return viewing(after(hours)) })
-		return
+		hours = 2
 	}
 
-	tr := after(hours)
-	for range 3 {
-		start := time.Now()
-		tr.Snapshot()
-		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-			t.Errorf("a view after %d hours took %v, want well under 100 ms", hours, elapsed)
-		}
-	}
+	costtest.AssertLinear(t, hours, "hours of readings", func(hours int) func() { return viewing(after(hours)) })
 }
 
 // A month of stretches on credits half a minute long, one every minute, each
 // with a call in it: a view walks the calls and the spans together, where
 // looking through the spans for each call would take seconds under the lock.
-// Without the race detector a view of the month keeps to a bound in
-// milliseconds; with it, the view is held to a cost that grows linearly with
-// the days of stretches (see
-// TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap).
+// A view's cost is held to one that grows linearly with the days of
+// stretches, which costtest checks on any machine;
+// BenchmarkTracker_ViewOverManySpansAndCalls measures a view of the month.
 func TestTracker_AViewTakesOnePassOverTheSpansAndCalls(t *testing.T) {
-	const days = 30
 	over := func(days int) *tracker.Tracker {
 		h := newSubscribedHarness(t, tracker.Config{Credits: aBillionDollars, Alerts: defaultAlerts})
 		stretches := restoreStretchesOnCredits(h.tr, days)
@@ -623,19 +614,16 @@ func TestTracker_AViewTakesOnePassOverTheSpansAndCalls(t *testing.T) {
 		}
 		return h.tr
 	}
+	// Four days against sixteen show a quadratic cost plainly, in seconds
+	// where a month of a quadratic cost takes minutes. Under the race
+	// detector, which slows the views several times over, one day against
+	// four.
+	days := 4
 	if raceEnabled {
-		// One day against four shows a quadratic cost plainly, in seconds
-		// where a month of a quadratic cost takes minutes.
-		costtest.AssertLinear(t, 1, "days of stretches on credits", func(days int) func() { return viewing(over(days)) })
-		return
+		days = 1
 	}
 
-	tr := over(days)
-	start := time.Now()
-	tr.Snapshot()
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("a view over %d days of spans and calls took %v, want well under a second", days, elapsed)
-	}
+	costtest.AssertLinear(t, days, "days of stretches on credits", func(days int) func() { return viewing(over(days)) })
 }
 
 func TestTracker_ADroppedWindowClosesASpanWithNoKnownReset(t *testing.T) {
