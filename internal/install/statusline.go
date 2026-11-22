@@ -26,16 +26,19 @@ import (
 // The subshells keep the meaning of a list, a script of several lines or a
 // command that starts with a reserved word: the pipe feeds all of it, as the
 // status-line JSON fed all of the original. A group would too, but bash 3.2,
-// macOS's /bin/bash and /bin/sh, runs an EXIT trap set in a group that is
-// part of a pipeline only if the group ends in exit. The inner subshell has
-// no pipe of its own, so a command in it run in the background reads
-// /dev/null, as it does in the original on its own; bash 4.4 and later give
-// it the pipe instead within the outer one. The closing parentheses go on a
-// line of their own so a trailing comment cannot swallow them; an original
-// that the wrap would still break is left alone. PowerShell gets the original
-// out of band, because it would re-encode JSON piped between commands and its
-// quoting of native arguments differs between versions; tap decodes the
-// original and runs it.
+// macOS's /bin/bash and /bin/sh, runs an EXIT trap set inside a group that is
+// part of a pipeline only when the shell exits from inside the group, through
+// exit or set -e. The inner subshell has no pipe of its own, so a command in
+// it run in the background reads /dev/null, as it does in the original on its
+// own; bash 4.4 and later give it the pipe instead within the outer one. The
+// closing parentheses go on a line of their own so a trailing comment cannot
+// swallow them; an original that the wrap would still break is left alone.
+// What no wrap keeps is a parse-time option a script turns on for its own
+// later lines, such as shopt -s extglob or expand_aliases: bash parses the
+// whole wrap before it runs any of it, so such a script belongs in a file of
+// its own. PowerShell gets the original out of band, because it would
+// re-encode JSON piped between commands and its quoting of native arguments
+// differs between versions; tap decodes the original and runs it.
 const (
 	// maxPowerShellCommand bounds the PowerShell form, in UTF-16 code units:
 	// parts of Windows cut a command line at 8191 characters.
@@ -43,11 +46,12 @@ const (
 
 	powerShellCall = "& "
 	tapPipe        = " tap | "
-	wrapOpen       = "( ( "
-	wrapClose      = "\n) )"
-	runB64Open     = " tap --run-b64 '"
-	runB64Close    = "'"
-	printSuffix    = " tap --print"
+	// Spaced, because (( would start arithmetic in bash and zsh.
+	wrapOpen    = "( ( "
+	wrapClose   = "\n) )"
+	runB64Open  = " tap --run-b64 '"
+	runB64Close = "'"
+	printSuffix = " tap --print"
 )
 
 // wraps are the ways a bash form can enclose an original that is not a plain
