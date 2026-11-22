@@ -240,10 +240,11 @@ describe('createStream', () => {
     expect(stream.opened).toHaveLength(1);
   });
 
-  it('asks once per run of failures whether the page is still signed in', async () => {
+  it('asks once per run of failures whether the page is still signed in, once the server answers', async () => {
     const probe = vi.fn(async () => 503);
     const stream = startStream(probe);
     stream.latest().fail();
+    await settled();
     waitForReconnect();
     stream.latest().fail();
     await settled();
@@ -254,6 +255,47 @@ describe('createStream', () => {
     stream.latest().fail();
     await settled();
     expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks again on later failures while the server gave no answer, and so notices a sign-out made meanwhile', async () => {
+    // The server is down for two failures, then back, refusing the page.
+    const answers: (() => Promise<number>)[] = [
+      async () => Promise.reject(new TypeError('Failed to fetch')),
+      async () => Promise.reject(new TypeError('Failed to fetch')),
+      async () => 401,
+    ];
+    const probe = vi.fn(async () => (answers.shift() ?? (async () => 401))());
+    const stream = startStream(probe);
+    stream.latest().send(JSON.stringify(view));
+
+    stream.latest().fail();
+    await settled();
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(stream.statuses).toEqual(['live', 'reconnecting']);
+
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(3);
+    expect(stream.statuses).toEqual(['live', 'reconnecting', 'signed_out']);
+
+    // Answered: later failures of the run ask no more.
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not ask again while a question is still out', async () => {
+    const probe = vi.fn(async () => new Promise<number>(() => undefined));
+    const stream = startStream(probe);
+    stream.latest().fail();
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('reports signed out when the server refuses the page, and keeps trying until it lets it in', async () => {

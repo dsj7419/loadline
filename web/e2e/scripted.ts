@@ -36,10 +36,17 @@ export type ScriptedServer = {
  */
 export async function startScriptedServer(first: View): Promise<ScriptedServer> {
   let latest = first;
+  let closing = false;
   const streams = new Set<ServerResponse>();
   const frame = (view: View): string => `event: view\ndata: ${JSON.stringify(view)}\n\n`;
 
   const server = createServer((request, response) => {
+    // A page left open reconnects and probes on its own schedule; once the
+    // test is done with the server, those requests must not keep it alive.
+    if (closing) {
+      response.writeHead(503, { connection: 'close' }).end();
+      return;
+    }
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (path === '/api/events') {
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
@@ -79,10 +86,15 @@ export async function startScriptedServer(first: View): Promise<ScriptedServer> 
       }
     },
     close: async () => {
+      closing = true;
       for (const stream of streams) {
         stream.end();
       }
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      const closed = new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      // server.close waits for every connection to end, and a browser keeps
+      // idle ones open, so they are cut here.
+      server.closeAllConnections();
+      await closed;
     },
   };
 }

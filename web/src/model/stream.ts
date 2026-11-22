@@ -33,9 +33,10 @@ const unauthorized = 401;
  * 10 s, starting over once a valid view arrives. onStatus hears each change:
  * live once a valid view arrives (an open connection alone proves nothing),
  * reconnecting when the connection fails. An EventSource cannot see why a
- * connection failed, so the first failure of each run asks the probe; a 401
- * reports signed out, which lasts until a view arrives. The returned
- * function stops it.
+ * connection failed, so the first failure of each run asks the probe, and
+ * later failures ask again for as long as the server gives no answer at all:
+ * a sign-out can happen while it is down. A 401 reports signed out, which
+ * lasts until a view arrives. The returned function stops it.
  */
 export function createStream(
   url: string,
@@ -48,6 +49,9 @@ export function createStream(
   let failures = 0;
   let status: StreamStatus | null = null;
   let stopped = false;
+  // Each view starts a new run of failures, which asks afresh.
+  let run = 0;
+  let question: 'none' | 'asking' | 'answered' | 'unanswered' = 'none';
 
   const report = (next: StreamStatus): void => {
     if (next !== status) {
@@ -59,14 +63,24 @@ export function createStream(
   // A view may arrive, or the stream stop, before the answer does; then the
   // answer is out of date.
   const checkSignIn = async (ask: () => Promise<number>): Promise<void> => {
+    const asked = run;
+    question = 'asking';
     let answer: number;
     try {
       answer = await ask();
     } catch {
       // Unreachable: the server is down, which reconnecting already says.
+      // The next failure asks again.
+      if (asked === run) {
+        question = 'unanswered';
+      }
       return;
     }
-    if (answer === unauthorized && !stopped && status === 'reconnecting') {
+    if (asked !== run || stopped) {
+      return;
+    }
+    question = 'answered';
+    if (answer === unauthorized && status === 'reconnecting') {
       report('signed_out');
     }
   };
@@ -85,6 +99,8 @@ export function createStream(
         return;
       }
       failures = 0;
+      run += 1;
+      question = 'none';
       onView(view);
       report('live');
     });
@@ -96,11 +112,10 @@ export function createStream(
       // Left open, the browser would retry on its own schedule alongside ours.
       current.close();
       source = null;
-      const firstOfRun = status !== 'reconnecting' && status !== 'signed_out';
       if (status !== 'signed_out') {
         report('reconnecting');
       }
-      if (firstOfRun && probe !== undefined) {
+      if (probe !== undefined && (question === 'none' || question === 'unanswered')) {
         void checkSignIn(probe);
       }
       retry = setTimeout(connect, firstRetryDelaysMs[failures] ?? maxRetryDelayMs);

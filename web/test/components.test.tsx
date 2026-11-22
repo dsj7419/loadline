@@ -261,6 +261,32 @@ describe('App', () => {
     expect(document.activeElement).toBe(button('s2'));
   });
 
+  it('puts focus back on the row without scrolling the page', () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1' }), sessionOf({ id: 's2', name: 's2', startedAt: '2026-11-21T17:30:00Z' })] }));
+    screen.getByRole('button', { name: / s1 / }).focus();
+    focus.mockClear();
+
+    send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1', state: 'needs_you' }), sessionOf({ id: 's2', name: 's2' })] }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: / s1 / }));
+    expect(focus.mock.calls).toEqual([[{ preventScroll: true }]]);
+    focus.mockRestore();
+  });
+
+  it('moves focus to the Sessions heading, without scrolling, when the focused session leaves the view', () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    const { send } = renderApp();
+    send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1' }), sessionOf({ id: 's2', name: 's2', startedAt: '2026-11-21T17:30:00Z' })] }));
+    screen.getByRole('button', { name: / s1 / }).focus();
+    focus.mockClear();
+
+    send(viewOf({ sessions: [sessionOf({ id: 's2', name: 's2' })] }));
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Sessions' }));
+    expect(focus.mock.calls).toEqual([[{ preventScroll: true }]]);
+    focus.mockRestore();
+  });
+
   it('leaves focus alone once the user has moved it off the rows', () => {
     const { send } = renderApp();
     send(viewOf({ sessions: [sessionOf({ id: 's1', name: 's1' }), sessionOf({ id: 's2', name: 's2', startedAt: '2026-11-21T17:30:00Z' })] }));
@@ -634,7 +660,7 @@ describe('Gauge', () => {
     [-5, '0'],
     [Number.NaN, '0'],
     [Number.POSITIVE_INFINITY, '0'],
-  ])('draws %s as %s%%', (value, want) => {
+  ])('draws a value of %s at %s on its 0 to 100 scale', (value, want) => {
     const { meter, fill } = renderGauge(value);
     expect(meter.getAttribute('aria-valuenow')).toBe(want);
     expect(fill?.width).toBe(`${want}%`);
