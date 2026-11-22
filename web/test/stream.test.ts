@@ -83,7 +83,7 @@ function fakeEventSources() {
   return { EventSource: FakeEventSource, opened };
 }
 
-function startStream() {
+function startStream(probe?: () => Promise<number>) {
   const sources = fakeEventSources();
   const views: View[] = [];
   const statuses: StreamStatus[] = [];
@@ -91,7 +91,7 @@ function startStream() {
     url,
     (view) => views.push(view),
     (status) => statuses.push(status),
-    sources.EventSource,
+    probe === undefined ? { eventSource: sources.EventSource } : { eventSource: sources.EventSource, probe },
   );
   const latest = () => {
     const source = sources.opened.at(-1);
@@ -101,6 +101,13 @@ function startStream() {
     return source;
   };
   return { views, statuses, close, opened: sources.opened, latest };
+}
+
+// Lets the answers to probes arrive.
+async function settled(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await Promise.resolve();
+  }
 }
 
 // Runs the pending reconnect and gives how long it waited.
@@ -231,6 +238,67 @@ describe('createStream', () => {
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(60_000);
     expect(stream.opened).toHaveLength(1);
+  });
+
+  it('asks once per run of failures whether the page is still signed in', async () => {
+    const probe = vi.fn(async () => 503);
+    const stream = startStream(probe);
+    stream.latest().fail();
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    waitForReconnect();
+    stream.latest().send(JSON.stringify(view));
+    stream.latest().fail();
+    await settled();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports signed out when the server refuses the page, and keeps trying until it lets it in', async () => {
+    const stream = startStream(async () => 401);
+    stream.latest().fail();
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting', 'signed_out']);
+
+    waitForReconnect();
+    stream.latest().fail();
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting', 'signed_out']);
+    expect(waitForReconnect()).toBe(2_000);
+
+    stream.latest().send(JSON.stringify(view));
+    expect(stream.statuses).toEqual(['reconnecting', 'signed_out', 'live']);
+  });
+
+  it.each<[string, () => Promise<number>]>([
+    ['answers 200', async () => 200],
+    ['answers 503', async () => 503],
+    ['cannot be reached', async () => Promise.reject(new TypeError('Failed to fetch'))],
+  ])('stays reconnecting when the server %s', async (_, probe) => {
+    const stream = startStream(probe);
+    stream.latest().fail();
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting']);
+  });
+
+  it('ignores an answer that comes after a view, or after it stopped', async () => {
+    let answer: (status: number) => void = () => undefined;
+    const late = () => new Promise<number>((resolve) => (answer = resolve));
+    const stream = startStream(late);
+    stream.latest().fail();
+    waitForReconnect();
+    stream.latest().send(JSON.stringify(view));
+    answer(401);
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting', 'live']);
+
+    stream.latest().fail();
+    stream.close();
+    answer(401);
+    await settled();
+    expect(stream.statuses).toEqual(['reconnecting', 'live', 'reconnecting']);
   });
 
   it('uses the browser EventSource by default', () => {

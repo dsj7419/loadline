@@ -127,6 +127,19 @@ html.has-dialog {
   text-align: center;
 }
 
+.signed-out {
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--warn) 9%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
+  border-left: 3px solid var(--warn);
+  border-radius: 8px;
+}
+
+.signed-out code {
+  font-size: 13px;
+}
+
 .panel {
   min-width: 0;
   padding: 16px;
@@ -226,13 +239,18 @@ html.has-dialog {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
 }
 
-.link-reconnecting {
+.link-reconnecting,
+.link-signed_out {
   color: var(--warn);
 }
 
 .link-reconnecting .link-dot {
   background: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+.link-signed_out .link-dot {
+  background: var(--warn);
 }
 
 @keyframes pulse {

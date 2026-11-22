@@ -96,8 +96,8 @@ function renderApp({ notifications = null }: { notifications?: NotificationApi |
         onStatus('live');
       });
     },
-    lose: () => {
-      act(() => onStatus('reconnecting'));
+    lose: (status: StreamStatus = 'reconnecting') => {
+      act(() => onStatus(status));
     },
   };
 }
@@ -335,6 +335,21 @@ describe('App', () => {
     expect(screen.getByRole('status').textContent).toMatch(/live/i);
     lose();
     expect(screen.getByRole('status').textContent).toMatch(/reconnecting/i);
+  });
+
+  it('tells a signed-out page how to sign in again, until a view comes', () => {
+    const { send, lose } = renderApp();
+    lose('signed_out');
+    expect(screen.getByText(/signed out — run/i).textContent).toBe('Signed out — run loadline open to sign in again.');
+    expect(screen.queryByText(/waiting for the loadline server/i)).toBeNull();
+    expect(screen.getByRole('status').textContent).toMatch(/signed out/i);
+
+    send(viewOf());
+    expect(screen.queryByText(/signed out — run/i)).toBeNull();
+
+    lose('signed_out');
+    expect(screen.getByText(/signed out — run/i)).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Sessions' })).toBeTruthy();
   });
 
   it('counts the time in state up each second without a new view', () => {

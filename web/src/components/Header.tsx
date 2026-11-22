@@ -9,6 +9,7 @@ const linkText: Readonly<Record<LinkStatus, string>> = {
   connecting: 'Connecting',
   live: 'Live',
   reconnecting: 'Reconnecting',
+  signed_out: 'Signed out',
 };
 
 type HeaderProps = {

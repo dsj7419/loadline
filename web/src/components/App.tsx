@@ -18,7 +18,15 @@ import { SessionGroup } from './SessionGroup';
 /** Follows the server's views until the returned function is called. */
 export type Connect = (onView: (view: View) => void, onStatus: (status: StreamStatus) => void) => () => void;
 
-const followServer: Connect = (onView, onStatus) => createStream('/api/events', onView, onStatus);
+// The snapshot needs the same sign-in as the stream, so its status tells a
+// signed-out page from a server that is down.
+async function snapshotStatus(): Promise<number> {
+  const response = await fetch('/api/snapshot', { cache: 'no-store' });
+  return response.status;
+}
+
+const followServer: Connect = (onView, onStatus) =>
+  createStream('/api/events', onView, onStatus, { probe: snapshotStatus });
 
 const tick = 1_000;
 
@@ -83,9 +91,14 @@ export function App({ connect = followServer, notifications, drawFavicon = drawT
     <>
       <div class="page" inert={open !== null}>
         <Header status={status} alertCount={alertCount} notifier={notifier} />
-        <main class={status === 'reconnecting' ? 'main is-stale' : 'main'}>
+        <main class={status === 'reconnecting' || status === 'signed_out' ? 'main is-stale' : 'main'}>
+          {status === 'signed_out' && (
+            <p class="signed-out" role="alert">
+              Signed out — run <code>loadline open</code> to sign in again.
+            </p>
+          )}
           {view === null ? (
-            <p class="waiting">Waiting for the Loadline server…</p>
+            status !== 'signed_out' && <p class="waiting">Waiting for the Loadline server…</p>
           ) : (
             <>
               <AlertBanner alerts={view.alerts} />
