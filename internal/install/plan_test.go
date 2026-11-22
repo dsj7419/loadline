@@ -559,8 +559,6 @@ func TestPlan_AnEmptyCommandBehindTheTapPrefixPrints(t *testing.T) {
 		"\"D:/old/loadline.exe\" tap | { \t \n}",
 		`& "D:/old/loadline.exe" tap --run-b64 ''`,
 		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("  \n ") + `'`,
-		"\"D:/old/loadline.exe\" tap | { # nothing\n}",
-		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("# nothing\n") + `'`,
 	} {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
 		for _, shell := range shells {
@@ -575,6 +573,29 @@ func TestPlan_AnEmptyCommandBehindTheTapPrefixPrints(t *testing.T) {
 			}
 			if !hasChange(changes, "statusLine.command", install.ActionUpdate) {
 				t.Errorf("shell %d: changes %+v, want statusLine.command updated", shell, changes)
+			}
+		}
+	}
+}
+
+// An earlier build wrapped originals that held only comments. They are the
+// user's own lines, so a new plan leaves the wrap for uninstall to undo
+// rather than turning it into the print form, which would lose them.
+func TestPlan_LeavesACommentOnlyWrapForUninstall(t *testing.T) {
+	for _, command := range []string{
+		"\"D:/old/loadline.exe\" tap | { # my status\n}",
+		`& "D:/old/loadline.exe" tap --run-b64 '` + b64("# my status") + `'`,
+	} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
+		for _, shell := range shells {
+			out, changes, warnings := plan(t, settings, options(shell))
+
+			if got := statusCommand(t, out); got != command {
+				t.Errorf("shell %d: %q became %q, want it left for uninstall", shell, command, got)
+			}
+			if !hasChange(changes, "statusLine.command", install.ActionSkip) ||
+				len(warnings) != 1 || !strings.Contains(warnings[0], "comment") {
+				t.Errorf("shell %d: changes %+v and warnings %q, want a skip saying it holds only comments", shell, changes, warnings)
 			}
 		}
 	}

@@ -81,10 +81,10 @@ const (
 	edited
 )
 
-// literal returns the command for shell as a JSON string literal; an
-// original with nothing to run gets the print form, never an empty group.
-// When the command cannot be built it returns instead why, as a phrase that
-// follows "statusLine.command".
+// literal returns the command for shell as a JSON string literal; a blank
+// original gets the print form, never an empty group. When the command
+// cannot be built it returns instead why, as a phrase that follows
+// "statusLine.command".
 func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 	launcher := `"` + exe + `"`
 	if shell == ShellPowerShell {
@@ -94,8 +94,13 @@ func (t tapCommand) literal(exe string, shell Shell) (string, string) {
 
 	var body string
 	switch {
-	case t.print || hasNoCommand(original):
+	case t.print || strings.TrimSpace(original) == "":
 		body = escapeJSON(launcher + printSuffix)
+	case hasNoCommand(original):
+		// Only an earlier build wrapped such an original: a group of nothing
+		// but comments does not parse, and the print form would lose the
+		// user's lines, so it stays as it is for uninstall to restore.
+		return "", "holds only comments, which Loadline no longer wraps; uninstall restores them"
 	case shell == ShellPowerShell:
 		command := launcher + runB64Open + base64.RawURLEncoding.EncodeToString([]byte(original)) + runB64Close
 		if utf16Len(command) > maxPowerShellCommand {
@@ -247,10 +252,11 @@ func parsePipe(rest []char) (tapCommand, tapMatch) {
 }
 
 // tappedOriginal is a tapped command with the user's own original. Nothing
-// to run behind the prefix, only blanks or comments, means there was no
-// status line of the user's own, so tap prints its own.
+// but blanks behind the prefix means there was no status line of the user's
+// own, so tap prints its own. Comments are the user's own lines, which an
+// earlier build wrapped, so they are kept for uninstall to restore.
 func tappedOriginal(original []char) (tapCommand, tapMatch) {
-	if hasNoCommand(text(original)) {
+	if strings.TrimSpace(text(original)) == "" {
 		return tapCommand{print: true}, tapped
 	}
 	return tapCommand{original: original}, tapped
