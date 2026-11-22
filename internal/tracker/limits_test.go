@@ -622,3 +622,40 @@ func TestTracker_AResumeWhileTheFirstProcessRunsKeepsTheMostAPITime(t *testing.T
 		t.Errorf("weekly window fell back to 97%% after %d of %d lines from the first process, want none", below, views)
 	}
 }
+
+// A session is resumed on account B while its first process stays open and
+// idle on account A. The resumed process's API time never passes the old
+// one's, so its calls wait unplaced. When the resumed process ends, the old
+// process's next line counts as a first line again, but the calls that were
+// waiting were made on B and must not freshen the old process's older
+// reading of A.
+func TestTracker_AnEndedResumeLeavesItsCallsOffTheOldProcesssAccount(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: twentyDollars, Alerts: defaultAlerts}, dirA, dirB)
+	moved, busyA := s1, s3
+	onB := func(st domain.Status) domain.Status {
+		st.Dir = dirB
+		st.Limits.SevenDay = window(10, weekResets.Add(48*time.Hour))
+		return st
+	}
+	h.tr.RecordAPI(request(at(0), moved, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(1, moved, 97), 50_000))
+	h.tr.RecordAPI(request(at(5), busyA, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(6, busyA, 100), 2000))
+	sec := 10
+	for ; sec < 110; sec += 10 {
+		h.tr.RecordAPI(request(at(sec+1), busyA, "Opus 5.5", 0.5))
+		shownWeekly(h, withAPITime(weeklyFrom(sec+2, busyA, 100), 2000+int64(sec)))
+		h.tr.RecordAPI(domain.APIRequest{At: at(sec + 3), Session: moved, Model: "Opus 5.5", CostUSD: 0.1})
+		h.clock.Set(at(sec + 4))
+		h.tr.Apply(withAPITime(onB(statusLine(sec+4, moved)), 1000+int64(sec)))
+		shownWeekly(h, withAPITime(weeklyFrom(sec+6, moved, 97), 50_000))
+	}
+	end := sessionEnd(sec, moved, "prompt_input_exit")
+	end.Dir, end.PID = dirB, pidB
+	h.clock.Set(at(sec))
+	h.tr.Apply(end)
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(sec+1, moved, 97), 50_000)); got != 100 {
+		t.Errorf("account A shown %v%% after the old process's next line, want 100%%: the calls it took were made on B", got)
+	}
+}

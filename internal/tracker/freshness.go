@@ -80,9 +80,12 @@ func (c *responseClock) date(dir domain.ConfigDir, at time.Time) {
 // ended notes that the session has ended. A process that resumes it counts
 // its API time from nothing, so the next line starts the count afresh, as a
 // first line does. Two processes that are both alive keep the most either
-// has reported, as nothing ends between them.
+// has reported, as nothing ends between them. Calls still waiting for a line
+// are dropped: the process that made them has gone, and the next line may
+// come from another one, on another account.
 func (c *responseClock) ended() {
 	c.mostAPIDurationMS, c.lineSeen = 0, false
+	c.unplaced = time.Time{}
 }
 
 // freshAs returns when the newest response known for the account in dir
