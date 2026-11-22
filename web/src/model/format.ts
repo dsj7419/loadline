@@ -80,6 +80,9 @@ export function formatUSDBrief(n: number): string {
   return full.endsWith('.00') ? full.slice(0, -'.00'.length) : full;
 }
 
+/** The largest pace formatPace shows as it is; a larger one shows as 99+. */
+export const paceCap = 99;
+
 /**
  * A pace multiplier, without its ×: 1.4 to one decimal below 10, whole
  * numbers such as 12 up to 99, and 99+ past that, so no pace can widen the
@@ -93,7 +96,7 @@ export function formatPace(n: number): string {
   if (shown < 10) {
     return shown.toFixed(1);
   }
-  return shown > 99 ? '99+' : String(shown);
+  return shown > paceCap ? `${paceCap}+` : String(shown);
 }
 
 /**

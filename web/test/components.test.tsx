@@ -638,18 +638,24 @@ describe('AccountCard', () => {
     expect(seenText(card)).toMatch(/5-hour\s*38%\s*resets Sat 20:10\s*×0\.4\s*Weekly\s*93%\s*resets Mon 09:00\s*×1\.4/);
   });
 
-  it.each<[number, string]>([
-    [1.44, '1.4'],
-    [12.4, '12'],
-    [1680, '99+'],
-  ])('explains a pace of %s in a tooltip, and to a screen reader in words', (pace, shown) => {
+  // The tooltip is worded by the figure shown: a fraction of the pace below
+  // ×1.0, the pace itself at ×1.0, and faster than it above.
+  it.each<[number, string, string, string]>([
+    [0.41, '0.4', 'Burning at 0.4× the pace that reaches 100% at reset.', 'Pace 0.4 times'],
+    [0.96, '1.0', 'Burning at the pace that reaches 100% at reset.', 'Pace 1.0 times'],
+    [1.04, '1.0', 'Burning at the pace that reaches 100% at reset.', 'Pace 1.0 times'],
+    [1.05, '1.1', 'Burning 1.1× faster than the pace that reaches 100% at reset.', 'Pace 1.1 times'],
+    [1.44, '1.4', 'Burning 1.4× faster than the pace that reaches 100% at reset.', 'Pace 1.4 times'],
+    [12.4, '12', 'Burning 12× faster than the pace that reaches 100% at reset.', 'Pace 12 times'],
+    [1680, '99+', 'Burning more than 99× faster than the pace that reaches 100% at reset.', 'Pace more than 99 times'],
+  ])('explains a pace of %s, shown as ×%s, in a tooltip and to a screen reader in words', (pace, shown, tooltip, spoken) => {
     render(<AccountCard range="today" account={accountOf({ sevenDay: { ...week, pace } })} now={signal(now)} />);
 
-    const multiplier = screen.getByText(`×${shown}`);
-    expect(multiplier.getAttribute('title')).toBe(`Burning ${shown}× faster than the pace that reaches 100% at reset.`);
-    const spoken = spokenText(screen.getByRole('article', { name: 'Main' }));
-    expect(spoken).toContain(`Pace ${shown} times the rate that reaches 100% at reset`);
-    expect(spoken).not.toContain('×');
+    expect(screen.getByText(`×${shown}`).getAttribute('title')).toBe(tooltip);
+    const heard = spokenText(screen.getByRole('article', { name: 'Main' }));
+    expect(heard).toContain(`${spoken} the rate that reaches 100% at reset`);
+    expect(heard).not.toContain('×');
+    expect(heard).not.toContain('99+');
   });
 
   // The colour follows the figure shown, so equal figures always get equal

@@ -2,7 +2,7 @@ import type { ReadonlySignal } from '@preact/signals';
 import { useId } from 'preact/hooks';
 import type { AccountView, CreditsView, WindowView } from '../api/types';
 import { isCurrent, windowNote } from '../model/describe';
-import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen, roundPace } from '../model/format';
+import { formatPace, formatPct, formatUSD, formatUSDBrief, formatWhen, paceCap, roundPace } from '../model/format';
 import { Gauge, type Tone } from './Gauge';
 import { WarningIcon } from './Icons';
 import { ModelSplit, rangeLegend, type Range } from './ModelsBar';
@@ -129,21 +129,33 @@ function WindowGauge({ label, window, ownerId, now }: WindowGaugeProps) {
 
 // How fast a window is burning, as a multiplier of the pace that reaches 100%
 // at reset. A screen reader hears it in words rather than as a × sign, and
-// the tooltip, on the figure itself, is not read out a second time.
+// the tooltip, on the figure itself, is not read out a second time. The
+// colour and the words both go by the figure shown.
 function Pace({ pace }: { readonly pace: number }) {
+  const rounded = roundPace(pace);
   const shown = formatPace(pace);
+  const spoken = rounded > paceCap ? `more than ${paceCap}` : shown;
   return (
     <>
-      <span
-        class={`pace num tone-${paceTone(roundPace(pace))}`}
-        aria-hidden="true"
-        title={`Burning ${shown}× faster than the pace that reaches 100% at reset.`}
-      >
+      <span class={`pace num tone-${paceTone(rounded)}`} aria-hidden="true" title={paceTooltip(rounded, shown)}>
         ×{shown}
       </span>
-      <span class="visually-hidden">Pace {shown} times the rate that reaches 100% at reset</span>
+      <span class="visually-hidden">Pace {spoken} times the rate that reaches 100% at reset</span>
     </>
   );
+}
+
+// The tooltip says a pace above ×1.0 is faster than the one that reaches 100%
+// at reset, and one below it a fraction of that pace.
+function paceTooltip(rounded: number, shown: string): string {
+  const target = 'the pace that reaches 100% at reset.';
+  if (rounded > paceCap) {
+    return `Burning more than ${paceCap}× faster than ${target}`;
+  }
+  if (rounded > 1) {
+    return `Burning ${shown}× faster than ${target}`;
+  }
+  return rounded === 1 ? `Burning at ${target}` : `Burning at ${shown}× ${target}`;
 }
 
 // A pace of 1 uses the window up just as it resets. Near it is worth
