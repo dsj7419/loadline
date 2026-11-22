@@ -3,7 +3,9 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -622,5 +624,23 @@ func TestInstall_RefusesALoadlineHomeThatHoldsOtherThings(t *testing.T) {
 	}
 	if names := entries(t, home); !slices.Equal(names, []string{"notes.txt"}) {
 		t.Errorf("LOADLINE_HOME holds %q after the refusal, want only notes.txt", names)
+	}
+}
+
+// Install makes the data directory private as soon as it can, but makes a
+// new one only once the user has agreed.
+func TestInstall_MakesNoDataDirWithoutAYes(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	t.Setenv("LOADLINE_HOME", home)
+	dir := t.TempDir()
+	writeSettings(t, dir, ownerSettings)
+
+	got := runWithInput(t, "n\n", "install", "--config-dir", dir)
+
+	if got.code != 1 {
+		t.Errorf("install = %d, want 1 when the answer is no", got.code)
+	}
+	if _, err := os.Stat(home); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("install made %s without a yes (%v)", home, err)
 	}
 }

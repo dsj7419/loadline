@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/datadir"
 )
@@ -117,5 +118,28 @@ func TestMake_RefusesAFolderNamedLikeTheSystemsOwnFiles(t *testing.T) {
 				t.Errorf("Make = %v, want it refused, naming %s", err, name)
 			}
 		})
+	}
+}
+
+// The token has two names for a moment while another caller puts it in
+// place: its temporary name goes once the link is made. Make waits that out
+// rather than take the token for a file that also lives elsewhere.
+func TestMake_WaitsForTheTokensTemporaryNameToGo(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "loadline")
+	token := filepath.Join(home, "token")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(token, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temporary := filepath.Join(home, ".token-1234")
+	if err := os.Link(token, temporary); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	time.AfterFunc(20*time.Millisecond, func() { _ = os.Remove(temporary) })
+
+	if err := datadir.Make(home); err != nil {
+		t.Errorf("Make = %v, want it to wait for %s to go", err, temporary)
 	}
 }
