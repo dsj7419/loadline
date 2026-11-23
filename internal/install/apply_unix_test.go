@@ -3,6 +3,7 @@
 package install_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,37 @@ import (
 
 	"github.com/dsj7419/loadline/internal/install"
 )
+
+// The owner's own bits are theirs to keep: a settings file made read-only, or
+// executable, stays so when Apply replaces it, and its backup matches. The
+// new file starts as a temporary one with 0600, so it gets them only because
+// Apply sets them.
+func TestApply_KeepsTheOwnersOwnPermissions(t *testing.T) {
+	for _, mode := range []fs.FileMode{0o400, 0o700} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		original := []byte(`{"model": "opus"}`)
+		writeFile(t, path, original)
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+
+		backup, err := install.Apply(path, original, []byte(`{}`), applyTime)
+		if err != nil {
+			t.Fatalf("mode %o: Apply: %v", mode, err)
+		}
+
+		for _, p := range []string{path, backup} {
+			info, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != mode {
+				t.Errorf("%s has mode %o, want the owner's %o kept", filepath.Base(p), got, mode)
+			}
+		}
+	}
+}
 
 // The ingest token must be readable only by the user. Install writes it into
 // settings.json, and uninstall backs up the file that holds it, so neither
