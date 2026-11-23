@@ -119,11 +119,6 @@ What it defends against:
   process), delete the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
-- **Cloud and deduplicated files.** Install and the server take every reparse point among
-  Loadline's own files for a link. Under a OneDrive folder with Files On-Demand, or on a volume
-  with data deduplication, those files can be reparse points of that kind, and install and the
-  server then refuse the data directory as holding a link. Keep the data directory out of such
-  folders.
 - **A refused server.** A server that refuses its data directory writes no log there, since it
   writes nothing into a folder it refused. A server a hook starts therefore says why only through
   `loadline doctor`, which reports the same refusal, and `loadline serve` run by hand prints it on
@@ -146,3 +141,63 @@ What it defends against:
   documented; when Loadline runs your status line for PowerShell, it uses PowerShell 7 (`pwsh`)
   if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` warns when the status
   line uses the PowerShell form, but cannot tell which shell Claude Code will actually use.
+
+## Known limitations
+
+These limits of the data-directory checks each need a setup you chose, such as a `LOADLINE_HOME`
+outside your profile, or an unusual profile. The default location (`%LOCALAPPDATA%\loadline` on
+Windows) on a standard profile meets none of them. Each one either fails closed, refusing to run,
+or is narrow.
+
+- **A file left over from before a refused run.**
+  - *What it takes:* a `LOADLINE_HOME` that was not private yet, holding two things. One is a
+    temporary file that another Loadline process began there before, whose name starts with
+    `.token-`, `.put-` or `.loadline-`. The other is something install or the server refuses,
+    such as a hard link, a link or a file that belongs to someone else, inside a folder of
+    Loadline's that kept you out.
+  - *Impact:* the refused run makes the data directory private and puts right what it has judged,
+    but it passes the directory's list down only when nothing is refused. That temporary file keeps
+    what it inherited before, which can let others read it. Later runs find the directory private
+    and leave such a file to its writer.
+  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default. Otherwise delete
+    the file and run `loadline install`.
+- **A data directory that keeps you out.**
+  - *What it takes:* a `LOADLINE_HOME` folder whose own access list does not let you list it, such
+    as one copied or restored with another account's permissions.
+  - *Impact:* install, the server and `loadline doctor` fail with "read the data directory: Access
+    is denied" instead of putting it right.
+  - *Mitigation:* use the default. Otherwise reset the folder's permissions (for example
+    `icacls <folder> /reset`) and run `loadline install`.
+- **A link further above the settings file.**
+  - *What it takes:* a link, a symbolic link or on Windows a junction, two or more levels above
+    `settings.json`, above the config folder that holds it, such as a linked home folder.
+  - *Impact:* `loadline doctor` warns when `settings.json` or its config folder is a link, but not
+    about links further up. Install then writes the token wherever that link leads without a
+    warning, which matters when it leads into a repository that gets published.
+  - *Mitigation:* use the default `~/.claude` in a standard profile, and keep the folders above a
+    custom config folder unlinked.
+- **Cloud and deduplicated files.**
+  - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, or on a volume
+    with data deduplication, where Loadline's own files can be reparse points.
+  - *Impact:* install and the server take every reparse point among Loadline's files for a link,
+    and refuse the data directory as holding one. This fails closed, but the message names a link.
+  - *Mitigation:* use the default, which is outside OneDrive, or keep `LOADLINE_HOME` inside your
+    profile and out of such folders.
+- **Volumes without a drive-letter name.**
+  - *What it takes:* a `LOADLINE_HOME` on a volume that Windows cannot name through a drive letter
+    when it follows the links on the way. Examples are some RAM-disk drivers, container bind mounts
+    and some network redirectors.
+  - *Impact:* install and the server cannot find the folders that really hold the data directory,
+    and refuse it: "find the folders that hold …; set LOADLINE_HOME to a folder in your user
+    profile". This fails closed.
+  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default.
+- **Folders owned by an old account or a group.**
+  - *What it takes:* the data directory, one of Loadline's files, or a folder above the data
+    directory, that belongs to anyone but you, SYSTEM, Administrators or TrustedInstaller. One case
+    is the SID of an account that no longer exists, after a profile was migrated or restored.
+    Another is a domain group.
+  - *Impact:* install and the server refuse the data directory, naming the folder and its owner,
+    since that owner can always change who may use it. On such a profile the default location can
+    be refused too.
+  - *Mitigation:* use the default on a standard profile. Otherwise take ownership of the folder it
+    names (for example `takeown /f <folder>`) and run `loadline install`.
