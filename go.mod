@@ -8,7 +8,7 @@ require (
 	github.com/tidwall/gjson v1.20.6
 	github.com/tidwall/sjson v1.2.11
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.62.0
 )
 
