@@ -77,10 +77,10 @@ func TestSecure_RefusesAJunctionNamedLikeAFileBeingWritten(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), link+" is a link") {
 				t.Errorf("Secure = %v, want it to refuse %s as a link", err, link)
 			}
-			if got := fspermtest.AccessList(t, project); got != beforeProject {
+			if got := fspermtest.AccessList(t, project); !got.Equal(beforeProject) {
 				t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", project, beforeProject, got)
 			}
-			if got := fspermtest.AccessList(t, doc); got != beforeDoc {
+			if got := fspermtest.AccessList(t, doc); !got.Equal(beforeDoc) {
 				t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, beforeDoc, got)
 			}
 		})
@@ -101,7 +101,7 @@ func TestMake_RefusesAJunctionNamedLikeAFileBeingWritten(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), link+" is a link") {
 		t.Errorf("Make = %v, want it to refuse %s as a link", err, link)
 	}
-	if got := fspermtest.AccessList(t, doc); got != before {
+	if got := fspermtest.AccessList(t, doc); !got.Equal(before) {
 		t.Errorf("Make changed the access list of %s, outside the data directory, from %s to %s", doc, before, got)
 	}
 }
@@ -233,7 +233,7 @@ func TestSecure_RefusesADataDirectoryThatIsALink(t *testing.T) {
 	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, want) {
 		t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
 	}
-	if after := fspermtest.AccessList(t, target); after != before {
+	if after := fspermtest.AccessList(t, target); !after.Equal(before) {
 		t.Errorf("the access list of %s, where the link leads, went from %s to %s", target, before, after)
 	}
 }
@@ -282,7 +282,7 @@ func TestSecure_RefusesALinkedDataDirectoryHoweverItIsWritten(t *testing.T) {
 	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
 		t.Errorf("%s, where the link leads, holds %d entries (%v), want nothing written", target, len(entries), err)
 	}
-	if after := fspermtest.AccessList(t, target); after != before {
+	if after := fspermtest.AccessList(t, target); !after.Equal(before) {
 		t.Errorf("the access list of %s went from %s to %s", target, before, after)
 	}
 }
@@ -362,7 +362,7 @@ func TestSecure_LeavesAFileOutsideTheDataDirectoryAsItIs(t *testing.T) {
 			if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 			}
-			if after := fspermtest.AccessList(t, doc); after != before {
+			if after := fspermtest.AccessList(t, doc); !after.Equal(before) {
 				t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
 			}
 			if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, event+" has another name") {
@@ -406,7 +406,7 @@ func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *t
 	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 	}
-	if after := fspermtest.AccessList(t, doc); after != before {
+	if after := fspermtest.AccessList(t, doc); !after.Equal(before) {
 		t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
 	}
 	// The directory itself is private first, refused or not.
@@ -441,7 +441,7 @@ func TestSecure_RefusesANameElsewhereHiddenBesideALeftoverTemporaryName(t *testi
 	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 	}
-	if after := fspermtest.AccessList(t, doc); after != before {
+	if after := fspermtest.AccessList(t, doc); !after.Equal(before) {
 		t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
 	}
 }
@@ -496,10 +496,10 @@ func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
 	if fspermtest.Protected(t, bin) {
 		t.Errorf("the refused Secure left %s with a list of its own: %s", bin, fspermtest.AccessList(t, bin))
 	}
-	if after := fspermtest.AccessList(t, begun); after != beforeBegun {
+	if after := fspermtest.AccessList(t, begun); !after.Equal(beforeBegun) {
 		t.Errorf("the refused Secure passed a list down to %s: %s became %s", begun, beforeBegun, after)
 	}
-	if after := fspermtest.AccessList(t, doc); after != beforeDoc {
+	if after := fspermtest.AccessList(t, doc); !after.Equal(beforeDoc) {
 		t.Errorf("the refused Secure changed the access list of %s, outside the data directory, from %s to %s", doc, beforeDoc, after)
 	}
 }
@@ -527,10 +527,10 @@ func TestSecure_RefusesAJunctionHiddenInAFolderThatKeepsTheUserOut(t *testing.T)
 	if err == nil || !strings.HasPrefix(err.Error(), hidden+" is a link") {
 		t.Errorf("Secure = %v, want it to refuse %s as a link", err, hidden)
 	}
-	if after := fspermtest.AccessList(t, project); after != beforeProject {
+	if after := fspermtest.AccessList(t, project); !after.Equal(beforeProject) {
 		t.Errorf("the access list of %s, where the junction leads, went from %s to %s", project, beforeProject, after)
 	}
-	if after := fspermtest.AccessList(t, doc); after != beforeDoc {
+	if after := fspermtest.AccessList(t, doc); !after.Equal(beforeDoc) {
 		t.Errorf("the access list of %s went from %s to %s", doc, beforeDoc, after)
 	}
 	if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, hidden+" is a link") {

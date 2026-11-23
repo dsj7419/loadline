@@ -140,7 +140,7 @@ func TestPrivate_ChangesNothingInAFolderThatIsPrivateAlready(t *testing.T) {
 		t.Fatalf("Private: %v", err)
 	}
 
-	if after := fspermtest.AccessList(t, inFlight); after != before {
+	if after := fspermtest.AccessList(t, inFlight); !after.Equal(before) {
 		t.Errorf("Private of the private %s rewrote the access list of %s from %s to %s", root, inFlight, before, after)
 	}
 }
@@ -177,7 +177,7 @@ func TestPrivate_ReplacesAnyOtherListOfTheFoldersOwn(t *testing.T) {
 				t.Fatalf("Private: %v", err)
 			}
 
-			if got := fspermtest.AccessList(t, root); got != want {
+			if got := fspermtest.AccessList(t, root); !got.Equal(want) {
 				t.Errorf("after Private, %s, which had %s, has %s; want %s", root, list, got, want)
 			}
 		})
@@ -854,7 +854,7 @@ func TestPrivateHere_PassesNothingDownToWhatTheFolderHolds(t *testing.T) {
 	if others := fspermtest.Others(t, root, fspermtest.Any); len(others) > 0 || !fspermtest.Protected(t, root) {
 		t.Errorf("%s admits %v (protected: %t), want the private list", root, others, fspermtest.Protected(t, root))
 	}
-	if after := fspermtest.AccessList(t, file); after != before {
+	if after := fspermtest.AccessList(t, file); !after.Equal(before) {
 		t.Errorf("PrivateHere changed the access list of %s, which %s holds, from %s to %s", file, root, before, after)
 	}
 }

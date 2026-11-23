@@ -20,7 +20,7 @@ import (
 func TestEnsureToken_LeavesTheFileAnotherCallerIsWritingAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "token")
 	var second []byte
-	var before, after string
+	var before, after fspermtest.List
 	calls := 0
 	config.SetBeforePublish(t, func(temp string) {
 		calls++
@@ -35,7 +35,7 @@ func TestEnsureToken_LeavesTheFileAnotherCallerIsWritingAlone(t *testing.T) {
 
 	first := ensureToken(t, path)
 
-	if after != before {
+	if !after.Equal(before) {
 		t.Errorf("the second caller changed the access list of the first's file from %s to %s", before, after)
 	}
 	if !bytes.Equal(first, second) {

@@ -328,7 +328,7 @@ func TestSecure_LeavesAFileAnotherProcessIsWritingAlone(t *testing.T) {
 				t.Fatalf("Make: %v", err)
 			}
 
-			if after := fspermtest.AccessList(t, path); after != before {
+			if after := fspermtest.AccessList(t, path); !after.Equal(before) {
 				t.Errorf("the access list of %s, another process's, went from %s to %s", path, before, after)
 			}
 		})
@@ -450,7 +450,7 @@ func TestSecure_LeavesLoadlinesPrivateFoldersAsTheyAre(t *testing.T) {
 	top := driveRoot(t)
 	home := filepath.Join(top, "loadline")
 	folders := []string{filepath.Join(home, "spool"), filepath.Join(home, "bin")}
-	before := make([]string, len(folders))
+	before := make([]fspermtest.List, len(folders))
 	for i, folder := range folders {
 		if err := fsperm.MkdirAll(folder); err != nil {
 			t.Fatal(err)
@@ -463,7 +463,7 @@ func TestSecure_LeavesLoadlinesPrivateFoldersAsTheyAre(t *testing.T) {
 	}
 
 	for i, folder := range folders {
-		if after := fspermtest.AccessList(t, folder); after != before[i] {
+		if after := fspermtest.AccessList(t, folder); !after.Equal(before[i]) {
 			t.Errorf("Secure changed the access list of %s from %s to %s", folder, before[i], after)
 		}
 	}
@@ -529,7 +529,7 @@ func TestMake_LeavesASystemNamedFolderOfOtherFilesAlone(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "desktop.ini, which is not Loadline's") {
 		t.Errorf("Make = %v, want it refused, naming desktop.ini", err)
 	}
-	if after := fspermtest.AccessList(t, notes); after != before {
+	if after := fspermtest.AccessList(t, notes); !after.Equal(before) {
 		t.Errorf("Make changed the access list of %s, in a folder named desktop.ini, from %s to %s", notes, before, after)
 	}
 }
@@ -557,7 +557,7 @@ func TestSecure_DoesNotFollowASystemNamedJunction(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "desktop.ini, which is not Loadline's") {
 		t.Errorf("Secure = %v, want it refused, naming desktop.ini", err)
 	}
-	if after := fspermtest.AccessList(t, shared); after != before {
+	if after := fspermtest.AccessList(t, shared); !after.Equal(before) {
 		t.Errorf("Secure changed the access list of %s, through a junction named desktop.ini, from %s to %s", shared, before, after)
 	}
 	if fspermtest.Protected(t, outside) {

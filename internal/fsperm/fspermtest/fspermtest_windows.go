@@ -131,17 +131,6 @@ func Others(tb testing.TB, path string, mask windows.ACCESS_MASK) []string {
 	return others
 }
 
-// AccessList returns the access list of path in the security descriptor
-// string format, to tell whether anything changed it.
-func AccessList(tb testing.TB, path string) string {
-	tb.Helper()
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		tb.Fatalf("read the access list of %s: %v", path, err)
-	}
-	return sd.String()
-}
-
 // DeletePending marks path, a file the test created, for deletion while
 // holding it open, as a process that deletes a file does for a moment and
 // as long as another holds it: until the returned release closes it, which

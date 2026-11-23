@@ -127,7 +127,7 @@ func TestSelfInstall_AnUpgradeLeavesTheFileAnotherInstallIsWritingAlone(t *testi
 
 	selfInstall(t, writeBinary(t, "loadline v3"), dir)
 
-	if after := fspermtest.AccessList(t, inFlight); after != before {
+	if after := fspermtest.AccessList(t, inFlight); !after.Equal(before) {
 		t.Errorf("the upgrade changed the access list of %s, another install's, from %s to %s", inFlight, before, after)
 	}
 }

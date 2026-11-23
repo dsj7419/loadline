@@ -47,7 +47,7 @@ func TestSecure_TakesOffAnObjectEntryThatAdmitsOthers(t *testing.T) {
 				t.Fatalf("Secure: %v", err)
 			}
 
-			if got := fspermtest.AccessList(t, path); strings.Contains(got, ";AU)") {
+			if got := fspermtest.AccessList(t, path); got.Names(wellKnown(t, windows.WinAuthenticatedUserSid)) {
 				t.Errorf("after Secure, %s still admits Authenticated Users: %s", path, got)
 			}
 		})
@@ -130,15 +130,13 @@ func TestSecure_TakesOffACreatorGroupEntryOnTheSpool(t *testing.T) {
 	}
 }
 
-// entriesOf returns the entries of an access list in the security
-// descriptor string format, without the owner, group and flags Windows
-// writes before them.
-func entriesOf(list string) string {
-	_, dacl, _ := strings.Cut(list, "D:")
-	if i := strings.IndexByte(dacl, '('); i >= 0 {
-		return dacl[i:]
+func wellKnown(t *testing.T, kind windows.WELL_KNOWN_SID_TYPE) *windows.SID {
+	t.Helper()
+	sid, err := windows.CreateWellKnownSid(kind)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return ""
+	return sid
 }
 
 // Whatever was given to one of Loadline's files or folders explicitly, a
@@ -167,16 +165,15 @@ func TestSecure_LeavesOnlyWhatTheDataDirectoryPassesDown(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			want, wantProtected := entriesOf(fspermtest.AccessList(t, fresh)), fspermtest.Protected(t, fresh)
+			want := fspermtest.AccessList(t, fresh)
 			fspermtest.SetAccessList(t, path, tt.list)
 
 			if err := datadir.Secure(home, top); err != nil {
 				t.Fatalf("Secure: %v", err)
 			}
 
-			if got := entriesOf(fspermtest.AccessList(t, path)); got != want || fspermtest.Protected(t, path) != wantProtected {
-				t.Errorf("after Secure, %s, given %s, has %s (protected: %t); want %s (protected: %t), as the data directory passes down",
-					path, tt.list, got, fspermtest.Protected(t, path), want, wantProtected)
+			if got := fspermtest.AccessList(t, path); !got.SameEntries(want) || got.Protected != want.Protected {
+				t.Errorf("after Secure, %s, given %s, has %s; want %s, as the data directory passes down", path, tt.list, got, want)
 			}
 		})
 	}
@@ -216,7 +213,7 @@ func TestSecure_TakesOffADenyEntryOnTheBinary(t *testing.T) {
 		t.Fatalf("Secure: %v", err)
 	}
 
-	if got := fspermtest.AccessList(t, exe); strings.Contains(got, "(D;") {
+	if got := fspermtest.AccessList(t, exe); got.Denies() {
 		t.Errorf("after Secure, nobody may run %s: %s", exe, got)
 	}
 }
@@ -293,7 +290,7 @@ func TestSecure_RestoresWhatTheDataDirectoryPassesDown(t *testing.T) {
 				t.Fatalf("Secure: %v", err)
 			}
 
-			if got := entriesOf(fspermtest.AccessList(t, path)); got != want[tt.folder] {
+			if got := fspermtest.AccessList(t, path); !got.SameEntries(fspermtest.ParseList(t, "D:"+want[tt.folder])) {
 				t.Errorf("after Secure, %s, given %s, holds %s; want what the data directory passes down, %s", path, tt.list, got, want[tt.folder])
 			}
 			if err := tt.usable(path); err != nil {
@@ -328,7 +325,8 @@ func TestSecure_ReplacesAProtectedListThatIsNotExactlyThePrivateOne(t *testing.T
 					t.Fatalf("Secure: %v", err)
 				}
 
-				if got := entriesOf(fspermtest.AccessList(t, path)); got != private && (where != "spool" || got != inherited) {
+				got := fspermtest.AccessList(t, path)
+				if !got.SameEntries(fspermtest.ParseList(t, "D:"+private)) && (where != "spool" || !got.SameEntries(fspermtest.ParseList(t, "D:"+inherited))) {
 					t.Errorf("after Secure, %s, given %s, holds %s; want the private list", path, list, got)
 				}
 			})
@@ -418,7 +416,7 @@ func TestSecure_PutsBackAListThatHoldsOneTrusteeTwice(t *testing.T) {
 			if tt.flags == folderFlags {
 				want = "(A;OICIID;FA;;;" + user + ")(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)"
 			}
-			if got := entriesOf(fspermtest.AccessList(t, path)); got != want {
+			if got := fspermtest.AccessList(t, path); !got.SameEntries(fspermtest.ParseList(t, "D:"+want)) {
 				t.Errorf("after Secure, %s holds %s; want what the data directory passes down, %s", path, got, want)
 			}
 			if err := tt.usable(path); err != nil {

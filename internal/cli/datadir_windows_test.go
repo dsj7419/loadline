@@ -388,7 +388,7 @@ func TestInstall_RepairsWhatKeepsTheUserOutOfLoadlinesFiles(t *testing.T) {
 
 			again := run(t, "install", "--config-dir", dir, "--yes")
 
-			if list := fspermtest.AccessList(t, path); again.code != 0 || strings.Contains(list, "(D;") {
+			if list := fspermtest.AccessList(t, path); again.code != 0 || list.Denies() {
 				t.Errorf("install again = %d, stderr %q; %s is still %s", again.code, again.stderr, path, list)
 			}
 		})
@@ -404,7 +404,7 @@ func TestServe_RepairsATokenNobodyMayRead(t *testing.T) {
 
 	f.start().stop(t)
 
-	if list := fspermtest.AccessList(t, f.paths.TokenFile); strings.Contains(list, "(D;") {
+	if list := fspermtest.AccessList(t, f.paths.TokenFile); list.Denies() {
 		t.Errorf("after the server started, %s is still %s", f.paths.TokenFile, list)
 	}
 }

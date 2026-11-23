@@ -85,9 +85,9 @@ func usedHome(t *testing.T) (home, top string) {
 }
 
 // accessLists returns the access list of every path in dir.
-func accessLists(t *testing.T, dir string) map[string]string {
+func accessLists(t *testing.T, dir string) map[string]fspermtest.List {
 	t.Helper()
-	lists := map[string]string{}
+	lists := map[string]fspermtest.List{}
 	if err := filepath.WalkDir(dir, func(path string, _ fs.DirEntry, err error) error {
 		lists[path] = fspermtest.AccessList(t, path)
 		return err
@@ -119,7 +119,7 @@ func TestSecure_WritesNothingToWhatLoadlineItselfLeaves(t *testing.T) {
 	}
 
 	for path, list := range accessLists(t, home) {
-		if list != before[path] {
+		if !list.Equal(before[path]) {
 			t.Errorf("Secure rewrote the access list of %s from %s to %s", path, before[path], list)
 		}
 	}
