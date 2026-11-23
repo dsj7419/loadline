@@ -51,6 +51,8 @@ var bashFormCases = []struct {
 	{"exit 3", plainForm},
 	{"exec cat", plainForm},
 	{"FOO=1 cat", plainForm},
+	// Letters and digits are plain up to either end of their ranges.
+	{"echo azAZ09", plainForm},
 	{"cat\n", plainForm},
 	{"echo 'a\"b'", plainForm},
 	{`echo a\ `, wrappedForm},

@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +153,29 @@ func TestPlan_ReportsEachChange(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("warnings = %q, want none", warnings)
+	}
+}
+
+// A hook's change says what it adds and, for an event a matcher narrows,
+// which matcher.
+func TestPlan_DescribesEachHookWithItsMatcher(t *testing.T) {
+	_, changes, _ := plan(t, []byte(`{}`), options(install.ShellBash))
+
+	want := map[string]string{
+		"hooks.Stop":         "async loadline hook",
+		"hooks.Notification": "async loadline hook for permission_prompt|elicitation_dialog|agent_needs_input|idle_prompt",
+		"hooks.PreToolUse":   "async loadline hook for AskUserQuestion",
+	}
+	for _, c := range changes {
+		if detail, ok := want[c.Path]; ok {
+			if c.Detail != detail {
+				t.Errorf("%s detail = %q, want %q", c.Path, c.Detail, detail)
+			}
+			delete(want, c.Path)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("no change for %q", slices.Sorted(maps.Keys(want)))
 	}
 }
 
@@ -325,6 +350,18 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `& "` + goldenExe + `" tap --print`,
 		},
 		{
+			name:     "PowerShell gets the text of the file's escapes, a pair among them, wherever they are",
+			settings: "{\"statusLine\": {\"type\": \"command\", \"command\": \"echo \\ud83d\\ude00 caf\\u00e9 \\ud83d\\ude00\"}}",
+			shell:    install.ShellPowerShell,
+			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64("echo 😀 café 😀") + `'`,
+		},
+		{
+			name:     "PowerShell gets the text of an escape that ends the command",
+			settings: "{\"statusLine\": {\"type\": \"command\", \"command\": \"echo caf\\u00e9\"}}",
+			shell:    install.ShellPowerShell,
+			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64("echo café") + `'`,
+		},
+		{
 			name:     "PowerShell gets the original out of band, whatever its quotes",
 			settings: `{"statusLine": {"type": "command", "command": "echo 'it''s' \"q\" ‘a’ $x"}}`,
 			shell:    install.ShellPowerShell,
@@ -408,6 +445,15 @@ func TestPlan_StatusLineForms(t *testing.T) {
 	}
 }
 
+func TestPlan_ReportsTheStatusLineItAdds(t *testing.T) {
+	_, changes, _ := plan(t, []byte(`{}`), options(install.ShellBash))
+
+	want := install.Change{Path: "statusLine", Action: install.ActionAdd, Detail: `"` + goldenExe + `" tap --print`}
+	if !slices.Contains(changes, want) {
+		t.Errorf("changes %+v lack %+v", changes, want)
+	}
+}
+
 func TestPlan_NewStatusLineRefreshesEveryTenSeconds(t *testing.T) {
 	out, _, _ := plan(t, []byte(`{}`), options(install.ShellBash))
 
@@ -467,6 +513,8 @@ func TestPlan_SkipsAHereDocumentAGroupWouldBreak(t *testing.T) {
 		"cat <<'EOF'\nterminated\nEOF",
 		"cat <<-EOF\n\tindented\n\tEOF",
 		"cat<<X\nx\nX",
+		// The operator may start the command, ahead of its name.
+		"<<EOF cat\nan unterminated here-document",
 	} {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
 
@@ -487,9 +535,17 @@ func TestPlan_SkipsAHereDocumentAGroupWouldBreak(t *testing.T) {
 		"cat <<EOF\nx\nEOF":       install.ShellPowerShell,
 	} {
 		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
+		var out []byte
+		var warnings []string
+		var err error
 
-		out, _, warnings := plan(t, settings, options(shell))
+		// Plan takes microseconds here. A search that stopped moving past
+		// each here-string it skips would never return.
+		within(10*time.Second, "Plan", func() { out, _, warnings, err = install.Plan(settings, options(shell)) })
 
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
 		if statusCommand(t, out) == original || len(warnings) != 0 {
 			t.Errorf("shell %d: %q left alone with warnings %q, want it tapped", shell, original, warnings)
 		}
@@ -878,6 +934,7 @@ func TestPlan_RejectsInvalidJSON(t *testing.T) {
 		`{"a": 1, "a": 2}`,
 		`{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "a", "command": "b"}]}]}}`,
 		`{"permissions": {"allow": [], "deny": [], "allow": ["Bash"]}}`,
+		`{"hooks": {"Stop": [{"hooks": []}, {"matcher": "a", "hooks": [], "matcher": "b"}]}}`,
 	} {
 		t.Run(settings, func(t *testing.T) {
 			out, changes, _, err := install.Plan([]byte(settings), options(install.ShellBash))
@@ -948,7 +1005,7 @@ func TestPlan_RejectsUnsafeOptions(t *testing.T) {
 }
 
 func TestPlan_AcceptsAbsoluteSlashPaths(t *testing.T) {
-	for _, exe := range []string{goldenExe, otherExe, "//server/share/loadline.exe", "c:/loadline.exe"} {
+	for _, exe := range []string{goldenExe, otherExe, "//server/share/loadline.exe", "c:/loadline.exe", "A:/loadline.exe", "z:/loadline.exe"} {
 		o := options(install.ShellBash)
 		o.Exe = exe
 
@@ -990,6 +1047,81 @@ func TestPlan_RefusesSettingsNestedTooDeep(t *testing.T) {
 	deepInText := `{"x": "` + strings.Repeat("[{", 1000) + `"}`
 	if _, _, _, err := install.Plan([]byte(deepInText), options(install.ShellBash)); err != nil {
 		t.Errorf("Plan refused brackets inside a string: %v", err)
+	}
+	// Nor are brackets that have closed: arrays side by side, however many,
+	// nest no deeper than one of them.
+	wide := `{"x": [` + strings.Repeat("[], ", 600) + `[]]}`
+	if _, _, _, err := install.Plan([]byte(wide), options(install.ShellBash)); err != nil {
+		t.Errorf("Plan refused 601 arrays side by side: %v", err)
+	}
+}
+
+func TestPlan_AcceptsEveryPortFromOneTo65535(t *testing.T) {
+	for _, port := range []int{1, 65535} {
+		o := options(install.ShellBash)
+		o.Port = port
+
+		out, _, _ := plan(t, []byte(`{}`), o)
+
+		want := "http://127.0.0.1:" + strconv.Itoa(port) + "/v1/logs"
+		if got := gjson.GetBytes(out, "env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").Str; got != want {
+			t.Errorf("port %d: endpoint = %q, want %q", port, got, want)
+		}
+	}
+}
+
+// The bound is on the whole command PowerShell receives: one of exactly 8000
+// characters is written, and one a character longer is not.
+func TestPlan_WritesAPowerShellFormOfExactlyTheLimit(t *testing.T) {
+	// 5942 bytes encode to 7923 base64 characters, which the call around them
+	// brings to 8000.
+	longest := strings.Repeat("x", 5942)
+	if form := `& "` + goldenExe + `" tap --run-b64 '` + b64(longest) + `'`; len(form) != 8000 {
+		t.Fatalf("the form of the longest original has %d characters; the test needs one of exactly 8000", len(form))
+	}
+	for original, fits := range map[string]bool{longest: true, longest + "x": false} {
+		settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, original) + `}}`)
+
+		out, _, warnings := plan(t, settings, options(install.ShellPowerShell))
+
+		if tapped := statusCommand(t, out) != original; tapped != fits {
+			t.Errorf("%d bytes: tapped = %v, want %v", len(original), tapped, fits)
+		}
+		if fits && len(warnings) != 0 || !fits && (len(warnings) != 1 || !strings.Contains(warnings[0], "8000")) {
+			t.Errorf("%d bytes: warnings = %q, want one naming the limit only when it does not fit", len(original), warnings)
+		}
+	}
+}
+
+// A file may start with a line break. Its line ending is still the one the
+// file uses, and reverting gives back its bytes.
+func TestPlan_FollowsAFileThatStartsWithALineBreak(t *testing.T) {
+	for name, newline := range map[string]string{"LF": "\n", "CRLF": "\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			input := []byte(newline + "{" + newline + `  "model": "opus"` + newline + "}" + newline)
+
+			out, _, _ := plan(t, input, options(install.ShellBash))
+
+			crlfs, lineFeeds := bytes.Count(out, []byte("\r\n")), bytes.Count(out, []byte("\n"))
+			if newline == "\r\n" && crlfs != lineFeeds || newline == "\n" && crlfs != 0 {
+				t.Errorf("%d of %d line endings are CRLF, want the file's %q throughout", crlfs, lineFeeds, newline)
+			}
+			if reverted, _ := revert(t, out, goldenExe); !bytes.Equal(reverted, input) {
+				t.Errorf("Revert = %q, want %q", reverted, input)
+			}
+		})
+	}
+}
+
+// A line of nothing but blanks, which editors can leave behind, shows no
+// indentation; the first line with content sets it.
+func TestPlan_CopiesTheIndentOfTheFirstLineWithContent(t *testing.T) {
+	input := []byte("{\n    \n  \"model\": \"opus\"\n}\n")
+
+	out, _, _ := plan(t, input, options(install.ShellBash))
+
+	if want := "\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n"; !bytes.Contains(out, []byte(want)) {
+		t.Errorf("output lacks %q, the file's two-space indent:\n%s", want, out)
 	}
 }
 
