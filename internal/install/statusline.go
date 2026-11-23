@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -193,18 +194,23 @@ func isPlainRune(r rune) bool {
 
 // parseTapCommand tells whether a status-line command, given as its JSON
 // string literal, is one install wrote, for any Loadline path or exe, and if
-// so recovers the user's own command.
+// so recovers the user's own command. Whitespace ahead of the program does
+// not hide a Loadline command, but install never writes any there, so such a
+// command counts as edited.
 func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 	chars := splitString(literal)
-	rest, powerShell := cutText(chars, powerShellCall)
+	command := trimLeadingSpace(chars)
+	call, powerShell := cutText(command, powerShellCall)
 	if !powerShell {
-		rest = chars
+		call = command
 	}
-	path, rest, quoted := cutLauncher(rest)
+	launcher := trimLeadingSpace(call)
+	path, rest, quoted := cutLauncher(launcher)
 	if !isLoadlinePath(text(path), exe) {
 		return tapCommand{}, foreign
 	}
-	if !quoted {
+	indented := len(command) < len(chars) || len(launcher) < len(call)
+	if !quoted || indented {
 		return tapCommand{}, edited
 	}
 	if text(rest) == printSuffix {
@@ -311,6 +317,15 @@ func cutText(chars []char, prefix string) ([]char, bool) {
 		i++
 	}
 	return chars[i:], true
+}
+
+// trimLeadingSpace returns chars without the whitespace they start with.
+func trimLeadingSpace(chars []char) []char {
+	start := slices.IndexFunc(chars, func(c char) bool { return !unicode.IsSpace(c.r) })
+	if start < 0 {
+		return nil
+	}
+	return chars[start:]
 }
 
 // cutSuffix reports whether chars end with suffix, and returns what precedes

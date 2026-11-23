@@ -606,6 +606,13 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 		`& "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `' extra`,
 		`loadline tap | foo`,
 		`/opt/loadline/bin/loadline status`,
+		// Install writes nothing ahead of the program, so blanks there are
+		// a hand edit too, however much of the form they leave intact.
+		`  "D:/old/loadline.exe" tap | my-status`,
+		"\n\t\"C:/x/loadline.exe\" tap | ( ( a && b\n) )",
+		` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`,
+		`&  "C:/x/loadline.exe" tap --print`,
+		`  loadline tap | foo`,
 	} {
 		t.Run(command, func(t *testing.T) {
 			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)

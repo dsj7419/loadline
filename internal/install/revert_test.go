@@ -201,6 +201,10 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		{"base64 with stray trailing bits", `& "C:/x/loadline.exe" tap --run-b64 'YR'`, skipped, ""},
 		{"print with more after it", `"C:/x/loadline.exe" tap --print --wide`, skipped, ""},
 		{"unquoted loadline", `loadline tap | foo`, skipped, ""},
+		{"blanks ahead of the prefix", `  "C:/x/loadline.exe" tap | foo`, skipped, ""},
+		{"blanks ahead of the PowerShell form", ` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
+		{"blanks after the PowerShell call", `&  "C:/x/loadline.exe" tap --print`, skipped, ""},
+		{"a command of the user's own that starts with a blank", ` cat ~/notes/loadline`, untouched, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},
 		{"loadline later in the command", `status.sh | "C:/x/loadline.exe" tap`, untouched, ""},
 	}
