@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -334,6 +335,75 @@ func TestSelfInstall_WaitsOutAccessDeniedOnAFreshName(t *testing.T) {
 				t.Errorf("%d refusals were never tried", len(left))
 			}
 		})
+	}
+}
+
+// The running binary can move aside to any of .old-1 to .old-100, so the
+// hundredth is used when it alone is free, and an upgrade that finds all of
+// them taken says so and leaves the previous binary in place.
+func TestSelfInstall_TriesAHundredNamesForTheRunningBinary(t *testing.T) {
+	for name, taken := range map[string]int{"the hundredth free": 99, "all taken": 100} {
+		t.Run(name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+			target := filepath.Join(dataDir, "bin", "loadline.exe")
+			writeFile(t, target+".old", []byte("an older binary that still runs"))
+			for n := 1; n <= taken; n++ {
+				writeFile(t, fmt.Sprintf("%s.old-%d", target, n), []byte("taken"))
+			}
+			install.SetRename(t, (&refusals{running: map[string]bool{target: true, target + ".old": true}}).rename)
+
+			_, err := install.SelfInstall(writeBinary(t, "loadline v2"), dataDir)
+
+			if taken == 100 {
+				if err == nil || !strings.Contains(err.Error(), ".old-1 to -100 are taken") {
+					t.Errorf("err = %v, want it to say .old-1 to -100 are taken", err)
+				}
+				if content := readFile(t, target); string(content) != "loadline v1" {
+					t.Errorf("target holds %q, want the previous binary left in place", content)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SelfInstall: %v", err)
+			}
+			if aside := readFile(t, target+".old-100"); string(aside) != "loadline v1" {
+				t.Errorf(".old-100 holds %q, want the previous binary", aside)
+			}
+			if content := readFile(t, target); string(content) != "loadline v2" {
+				t.Errorf("target holds %q, want the new binary", content)
+			}
+		})
+	}
+}
+
+// The pause between attempts doubles, so a hold that outlasts the budget
+// costs a handful of renames rather than a busy loop.
+func TestSelfInstall_PausesLongerBeforeEachAttempt(t *testing.T) {
+	dataDir := t.TempDir()
+	selfInstall(t, writeBinary(t, "loadline v1"), dataDir)
+	target := filepath.Join(dataDir, "bin", "loadline.exe")
+	attempts := 0
+	install.SetRename(t, func(from, to string) error {
+		switch {
+		case from == target:
+			attempts++
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_SHARING_VIOLATION}
+		case to == target:
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: windows.ERROR_ACCESS_DENIED}
+		}
+		return os.Rename(from, to)
+	})
+	install.SetRenameBudget(t, 50*time.Millisecond)
+
+	if _, err := install.SelfInstall(writeBinary(t, "loadline v2"), dataDir); !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("err = %v, want the sharing violation", err)
+	}
+
+	// Pauses of 1, 2, 4, 8 and 16 ms let .old be tried at most six times
+	// within the 50 ms, and .old-1 at most five more in what is left of it.
+	if attempts > 11 {
+		t.Errorf("tried to move the held binary %d times in 50ms, want at most 11", attempts)
 	}
 }
 
