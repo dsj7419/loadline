@@ -218,3 +218,10 @@ or is narrow.
     the link, and changes who may use the file there.
   - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default, where nobody else
     can put anything.
+- **File identity on ReFS.**
+  - *What it takes:* a `LOADLINE_HOME` on a ReFS volume, such as a Dev Drive, where two files in
+    one folder happen to share a 64-bit file index. Windows does not promise that index is unique
+    on ReFS.
+  - *Impact:* install and the server could take another Loadline process's temporary file for the
+    token's own leftover name and remove it, or accept one name more than they should.
+  - *Mitigation:* keep `LOADLINE_HOME` on an NTFS volume, or use the default.
