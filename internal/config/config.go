@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dsj7419/loadline/internal/domain"
 )
@@ -36,6 +37,9 @@ var openModes = []OpenMode{OpenOncePerLogin, OpenAlways, OpenNever}
 const (
 	minPort = 1024
 	maxPort = 65535
+	// maxPlanLength is the most characters an account's plan may have: it
+	// is shown in a badge.
+	maxPlanLength = 32
 )
 
 // Config is the user-editable configuration. Every field has a default, so a
@@ -79,6 +83,10 @@ type AccountSetting struct {
 	ConfigDir string `json:"configDir"`
 	// Label is the name shown for the account. Empty means derive one.
 	Label string `json:"label"`
+	// Plan is the plan name shown for the account in place of the one Claude
+	// Code reports, which may be a legacy tier name. Empty means show the
+	// reported one. It changes nothing but what is shown.
+	Plan string `json:"plan"`
 	// DailyBudgetUSD is the daily spend that is considered a full budget for
 	// an API account. Zero means no budget.
 	DailyBudgetUSD float64 `json:"dailyBudgetUSD"`
@@ -131,6 +139,11 @@ func Load(path, home string) (Config, error) {
 	cfg := Defaults()
 	if err := decodeStrict(bytes.TrimPrefix(data, utf8BOM), &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	// The spaces around a plan are not part of the name it shows, so a blank
+	// plan names none.
+	for i := range cfg.Accounts {
+		cfg.Accounts[i].Plan = strings.TrimSpace(cfg.Accounts[i].Plan)
 	}
 	if err := cfg.validate(home); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
@@ -250,6 +263,9 @@ func (a AccountSetting) validate(home string) error {
 		return fmt.Errorf("configDir %q starts from the home directory, which is not known", a.ConfigDir)
 	case !fromHome && !filepath.IsAbs(a.ConfigDir):
 		return fmt.Errorf("configDir %q must be an absolute path or start with ~/", a.ConfigDir)
+	}
+	if n := utf8.RuneCountInString(a.Plan); n > maxPlanLength {
+		return fmt.Errorf("plan is %d characters, more than %d", n, maxPlanLength)
 	}
 	if a.DailyBudgetUSD < 0 {
 		return fmt.Errorf("dailyBudgetUSD %v is below 0", a.DailyBudgetUSD)

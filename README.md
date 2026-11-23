@@ -96,7 +96,7 @@ Loadline works without a config file. To change a default, create one with just 
 | `alerts.weeklyPct` | `90` | Alert when an account reaches this share of its weekly limit. |
 | `alerts.contextPct` | `85` | Alert when a session's context window is this full. |
 | `alerts.needsYouSeconds` | `20` | Alert when a session has waited on you this long. |
-| `accounts` | `[]` | Claude Code config directories to watch from the start, each with `configDir` (absolute, or starting with `~/`), an optional `label`, an optional `dailyBudgetUSD` and optional `credits` (see [Usage credits](#usage-credits)). |
+| `accounts` | `[]` | Claude Code config directories to watch from the start, each with `configDir` (absolute, or starting with `~/`), an optional `label`, an optional `plan` (up to 32 characters), an optional `dailyBudgetUSD` and optional `credits` (see [Usage credits](#usage-credits)). Claude Code may report a legacy tier name; set `plan` to show your own. |
 
 Unknown keys and out-of-range values are errors, which `loadline doctor` reports. The server reads
 the file when it starts.

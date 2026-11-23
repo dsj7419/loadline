@@ -39,6 +39,11 @@ type Config struct {
 	// US dollars a day.
 	Labels  map[domain.ConfigDir]string
 	Budgets map[domain.ConfigDir]float64
+	// Plans are the plan names the owner gave accounts, keyed by normalized
+	// config dir. The view shows one in place of the plan its account
+	// reports; everything else, the history included, keeps the reported
+	// plan.
+	Plans map[domain.ConfigDir]string
 	// Credits are the usage credits the owner recorded for each account,
 	// keyed by normalized config dir.
 	Credits map[domain.ConfigDir][]domain.CreditGrant
@@ -117,7 +122,8 @@ func New(clock Clock, cfg Config, rec Recorder) *Tracker {
 	if rec == nil {
 		rec = NopRecorder{}
 	}
-	cfg.Labels, cfg.Budgets, cfg.Credits = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets), cloneGrants(cfg.Credits)
+	cfg.Labels, cfg.Budgets, cfg.Plans = maps.Clone(cfg.Labels), maps.Clone(cfg.Budgets), maps.Clone(cfg.Plans)
+	cfg.Credits = cloneGrants(cfg.Credits)
 	if cfg.ShareWindow <= 0 {
 		cfg.ShareWindow = defaultShareWindow
 	}
@@ -276,7 +282,7 @@ func sameIdentity(a, b domain.Account) bool {
 // shownDifferently reports whether the view shows who owns a differently
 // from b.
 func (t *Tracker) shownDifferently(a, b domain.Account) bool {
-	return t.label(a) != t.label(b) || a.Email != b.Email || a.Plan != b.Plan || a.Auth != b.Auth
+	return t.label(a) != t.label(b) || a.Email != b.Email || t.plan(a) != t.plan(b) || a.Auth != b.Auth
 }
 
 // Restore installs the state a store kept from an earlier run. It is meant

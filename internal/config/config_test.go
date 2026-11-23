@@ -107,7 +107,7 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		"claudePath": "C:/tools/claude.exe",
 		"alerts": {"weeklyPct": 75.5, "contextPct": 60, "needsYouSeconds": 45},
 		"accounts": [
-			{"configDir": `+q(t, abs(".claude"))+`, "label": "Main",
+			{"configDir": `+q(t, abs(".claude"))+`, "label": "Main", "plan": "Ultra",
 				"credits": [{"usd": 20, "addedAt": "2026-11-21T12:00:00-08:00"}, {"usd": 7.5, "addedAt": "2026-11-22T09:30:00Z"}]},
 			{"configDir": `+q(t, abs(".claude-b"))+`, "label": "B", "dailyBudgetUSD": 25.5}
 		]
@@ -123,7 +123,7 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		ClaudePath:      "C:/tools/claude.exe",
 		Alerts:          config.AlertSettings{WeeklyPct: 75.5, ContextPct: 60, NeedsYouSeconds: 45},
 		Accounts: []config.AccountSetting{
-			{ConfigDir: abs(".claude"), Label: "Main", Credits: []config.CreditGrant{
+			{ConfigDir: abs(".claude"), Label: "Main", Plan: "Ultra", Credits: []config.CreditGrant{
 				{USD: 20, AddedAt: time.Date(2026, 11, 21, 20, 0, 0, 0, time.UTC)},
 				{USD: 7.5, AddedAt: time.Date(2026, 11, 22, 9, 30, 0, 0, time.UTC)},
 			}},
@@ -287,6 +287,36 @@ func TestLoad_CreditGrantValidation(t *testing.T) {
 		t.Run("accepts "+name, func(t *testing.T) {
 			mustLoad(t, account(credits))
 		})
+	}
+}
+
+// An account's plan is only a name to show, read without the spaces around
+// it, so a blank one names none, and as short as a badge needs.
+func TestLoad_AccountPlan(t *testing.T) {
+	account := func(plan string) string {
+		return `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `},{"configDir":` + q(t, abs(".claude-b")) +
+			`,"plan":` + q(t, plan) + `}]}`
+	}
+	for name, tc := range map[string]struct{ plan, want string }{
+		"a name":                       {"Ultra", "Ultra"},
+		"a name in spaces":             {" \tUltra 20x \n", "Ultra 20x"},
+		"blank":                        {" \t\n", ""},
+		"none":                         {"", ""},
+		"32 characters":                {strings.Repeat("é", 32), strings.Repeat("é", 32)},
+		"32 characters inside spaces":  {"  " + strings.Repeat("x", 32) + "  ", strings.Repeat("x", 32)},
+		"a no-break space around them": {" Ultra ", "Ultra"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := mustLoad(t, account(tc.plan))
+			if got := cfg.Accounts[1].Plan; got != tc.want {
+				t.Errorf("plan %q loads as %q, want %q", tc.plan, got, tc.want)
+			}
+		})
+	}
+
+	_, err := config.Load(writeConfig(t, account(strings.Repeat("é", 33))), home)
+	if want := "accounts[1].plan is 33 characters, more than 32"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Load of a 33-character plan: error %v, want one containing %q", err, want)
 	}
 }
 

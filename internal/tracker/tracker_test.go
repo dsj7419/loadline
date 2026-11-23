@@ -1540,6 +1540,50 @@ func TestTracker_AccountLabels(t *testing.T) {
 	}
 }
 
+// A plan the owner names for an account is what its card shows. It is only
+// shown: the history keeps the plan the account reported.
+func TestTracker_AccountPlans(t *testing.T) {
+	h := newHarness(t, tracker.Config{Plans: map[domain.ConfigDir]string{dirA: "Ultra"}})
+	h.tr.SetAccount(domain.Account{Dir: dirA, Plan: "Max 20x", Auth: domain.AuthSubscription})
+	h.tr.SetAccount(domain.Account{Dir: dirB, Plan: "Max 20x", Auth: domain.AuthSubscription})
+	h.tr.Apply(onDir(hook(0, s1, "SessionStart"), dirC))
+
+	for dir, want := range map[domain.ConfigDir]string{dirA: "Ultra", dirB: "Max 20x", dirC: ""} {
+		if got := h.account(dir).Plan; got != want {
+			t.Errorf("plan of %s = %q, want %q", dir, got, want)
+		}
+	}
+	_, recorded, _, _ := h.rec.recorded()
+	kept := slices.IndexFunc(recorded, func(a domain.Account) bool { return a.Dir == dirA })
+	if kept < 0 || recorded[kept].Plan != "Max 20x" {
+		t.Errorf("the history keeps %+v, want %s on the reported Max 20x", recorded, dirA)
+	}
+}
+
+// Under a named plan, another reported tier is recorded, but the card shows
+// the same plan, so there is no new view to publish. Without one, there is.
+func TestTracker_ANamedPlanHidesChangesOfTheReportedOne(t *testing.T) {
+	h := newHarness(t, tracker.Config{Plans: map[domain.ConfigDir]string{dirA: "Ultra"}})
+	views, cancel := h.tr.Subscribe()
+	defer cancel()
+	for _, dir := range []domain.ConfigDir{dirA, dirB} {
+		h.tr.SetAccount(domain.Account{Dir: dir, Plan: "Max 20x", Auth: domain.AuthSubscription})
+		receive(t, views)
+		h.clock.Advance(time.Second)
+	}
+
+	h.tr.SetAccount(domain.Account{Dir: dirA, Plan: "Max 5x", Auth: domain.AuthSubscription})
+	assertNoView(t, views)
+	if _, recorded, _, _ := h.rec.recorded(); recorded[len(recorded)-1].Plan != "Max 5x" {
+		t.Errorf("the history last kept %+v, want the reported Max 5x", recorded[len(recorded)-1])
+	}
+	h.tr.SetAccount(domain.Account{Dir: dirB, Plan: "Max 5x", Auth: domain.AuthSubscription})
+	published := receive(t, views).Accounts
+	if i := slices.IndexFunc(published, func(a tracker.AccountView) bool { return a.Dir == dirB }); i < 0 || published[i].Plan != "Max 5x" {
+		t.Errorf("the published view shows %+v, want %s on Max 5x", published, dirB)
+	}
+}
+
 func TestTracker_SessionFigures(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
@@ -21,8 +22,10 @@ func FuzzLoad(f *testing.F) {
 		`{"port":8300,"openOnStart":"always","browser":"brave","appWindow":false,"idleExitMinutes":0,` +
 			`"retentionDays":7,"claudePath":"/usr/local/bin/claude",` +
 			`"alerts":{"weeklyPct":75,"contextPct":100,"needsYouSeconds":1},` +
-			`"accounts":[{"configDir":"~/.claude","label":"Main","dailyBudgetUSD":25,` +
+			`"accounts":[{"configDir":"~/.claude","label":"Main","plan":"Ultra","dailyBudgetUSD":25,` +
 			`"credits":[{"usd":20,"addedAt":"2026-11-21T12:00:00-08:00"}]},{"configDir":"~/.claude-b"}]}`,
+		`{"accounts":[{"configDir":"~/a","plan":" Ultra "}]}`,
+		`{"accounts":[{"configDir":"~/a","plan":"` + strings.Repeat("x", 40) + `"}]}`,
 		"\xef\xbb\xbf{\"port\":1024}",
 		`{"port":80}`, `{"port":65536}`, `{"openOnStart":"sometimes"}`, `{"browser":" "}`,
 		`{"idleExitMinutes":-1}`, `{"retentionDays":0}`, `{"alerts":{"weeklyPct":100.5}}`,
@@ -80,6 +83,9 @@ func checkBounds(t *testing.T, cfg config.Config, homeDir string) {
 			t.Errorf("account %+v has the config dir %q, want one absolute and its own", account, dir)
 		}
 		dirs[dir] = true
+		if account.Plan != strings.TrimSpace(account.Plan) || utf8.RuneCountInString(account.Plan) > 32 {
+			t.Errorf("account %+v has the plan %q, want one trimmed and at most 32 characters", account, account.Plan)
+		}
 		if !(account.DailyBudgetUSD >= 0) {
 			t.Errorf("account %+v has the daily budget %v", account, account.DailyBudgetUSD)
 		}

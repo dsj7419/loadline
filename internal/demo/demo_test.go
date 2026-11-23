@@ -1,6 +1,7 @@
 package demo_test
 
 import (
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/claudecli"
 	"github.com/dsj7419/loadline/internal/demo"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -24,6 +26,7 @@ func seeded(t *testing.T, at time.Time) tracker.View {
 	t.Helper()
 	accounts, events, api := demo.Scenario(at)
 	tr := tracker.New(func() time.Time { return at }, tracker.Config{
+		Plans:    demo.Plans(),
 		Budgets:  demo.Budgets(),
 		Credits:  demo.Credits(at),
 		Alerts:   alertConfig,
@@ -110,6 +113,29 @@ func TestScenario_ProducesAllStates(t *testing.T) {
 	}
 	if len(v.Sessions) != 5 {
 		t.Errorf("view lists %d sessions, want 5", len(v.Sessions))
+	}
+}
+
+// The page shows only what real accounts and a config can give it: each
+// subscription reports the plan claude reads from its tier, and Main shows
+// Ultra because its config names that plan.
+func TestScenario_PlansAreReportedOrConfigured(t *testing.T) {
+	accounts, _, _ := demo.Scenario(now)
+	maxTier := claudecli.AuthStatus{SubscriptionType: "max", PlanTier: "max_20x"}.Account("", "", now).Plan
+
+	reported := make(map[string]string, len(accounts))
+	dirs := make(map[string]domain.ConfigDir, len(accounts))
+	for _, a := range accounts {
+		reported[a.Label], dirs[a.Label] = a.Plan, a.Dir
+	}
+	if want := map[string]string{"Main": maxTier, "B": maxTier, "API": ""}; !maps.Equal(reported, want) {
+		t.Errorf("the scenario's accounts report the plans %v, want %v", reported, want)
+	}
+	if want := map[domain.ConfigDir]string{dirs["Main"]: "Ultra"}; !maps.Equal(demo.Plans(), want) {
+		t.Errorf("the demo's config names the plans %v, want %v", demo.Plans(), want)
+	}
+	if main := accountByLabel(t, seeded(t, now), "Main"); main.Plan != "Ultra" {
+		t.Errorf("Main shows the plan %q, want Ultra", main.Plan)
 	}
 }
 

@@ -39,6 +39,12 @@ var (
 	haiku  = model{id: "claude-haiku-5-5", name: "Haiku 5.5", tokensPerUSD: 15}
 )
 
+// Plans returns the plan name the scenario's config gives each account that
+// has one: Main reports the Max 20x tier, and its owner calls it Ultra.
+func Plans() map[domain.ConfigDir]string {
+	return map[domain.ConfigDir]string{dirMain: "Ultra"}
+}
+
 // Budgets returns the daily budget, in US dollars, of each scenario account
 // that has one.
 func Budgets() map[domain.ConfigDir]float64 {
@@ -54,16 +60,18 @@ func Credits(now time.Time) map[domain.ConfigDir][]domain.CreditGrant {
 // Scenario returns the scenario's accounts, session events and model calls as
 // of now, each list in time order. It is deterministic: the same now gives the
 // same scenario. Seed a tracker with SetAccount for each account, then Apply
-// each event, then RecordAPI each call.
+// each event, then RecordAPI each call. Plans, Budgets and Credits hold what
+// the scenario's config says of these accounts.
 //
-// Main is an Ultra subscription that reached its weekly limit 18 minutes ago,
-// well before the week resets, and has worked on its usage credits since:
-// about $6.20 of its $20. B is a subscription with a 5-hour window as well,
-// both on course to stay under their limits; API is billed per token, under
-// its daily budget with spend spread over the past fortnight. Between them,
-// the windows show a pace in each of the bands the page colors. The sessions
-// are one waiting on a permission prompt, one working with two subagents, one
-// compacting, one idle and one parked background session.
+// Main is the subscription its config calls Ultra; it reached its weekly
+// limit 18 minutes ago, well before the week resets, and has worked on its
+// usage credits since: about $6.20 of its $20. B is a subscription with a
+// 5-hour window as well, both on course to stay under their limits; API is
+// billed per token, under its daily budget with spend spread over the past
+// fortnight. Between them, the windows show a pace in each of the bands the
+// page colors. The sessions are one waiting on a permission prompt, one
+// working with two subagents, one compacting, one idle and one parked
+// background session.
 func Scenario(now time.Time) (accounts []domain.Account, events []domain.Event, api []domain.APIRequest) {
 	s := script{now: now, midnight: startOfDay(now)}
 	s.copperLantern()
@@ -228,7 +236,7 @@ func (s *script) callsOnDay(x session, m model, costUSD float64, days int, from,
 func (s *script) accounts() []domain.Account {
 	probed := s.ago(time.Hour)
 	return []domain.Account{
-		{Dir: dirMain, Label: "Main", Email: "dev@example.com", Plan: "Ultra", Auth: domain.AuthSubscription, ProbedAt: probed},
+		{Dir: dirMain, Label: "Main", Email: "dev@example.com", Plan: "Max 20x", Auth: domain.AuthSubscription, ProbedAt: probed},
 		{Dir: dirB, Label: "B", Email: "dev.b@example.com", Plan: "Max 20x", Auth: domain.AuthSubscription, ProbedAt: probed},
 		{Dir: dirAPI, Label: "API", Auth: domain.AuthAPIKey, ProbedAt: probed},
 	}

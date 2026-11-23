@@ -287,6 +287,12 @@ func (t *Tracker) label(a domain.Account) string {
 	return cmp.Or(t.cfg.Labels[a.Dir], a.Label, local, filepath.Base(string(a.Dir)))
 }
 
+// plan is the account's plan as shown: the one configured for it, else the
+// one it reported.
+func (t *Tracker) plan(a domain.Account) string {
+	return cmp.Or(t.cfg.Plans[a.Dir], a.Plan)
+}
+
 // shownSessions returns the sessions the view lists, in its order: by state,
 // then the most recently seen first. A session that /clear replaced is left
 // out; its successor continues its row.
@@ -313,7 +319,7 @@ func (t *Tracker) accountView(a domain.Account, p domain.WindowProjections, spen
 		Dir:           a.Dir,
 		Label:         a.Label,
 		Email:         a.Email,
-		Plan:          a.Plan,
+		Plan:          t.plan(a),
 		Auth:          a.Auth,
 		FiveHour:      windowView(a.Limits.FiveHour, domain.FiveHourLength, a.Limits.ObservedAt, p.FiveHour, now),
 		SevenDay:      windowView(a.Limits.SevenDay, domain.SevenDayLength, a.Limits.ObservedAt, p.SevenDay, now),

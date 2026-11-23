@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -851,6 +852,31 @@ func TestServe_LabelsAndBudgetsComeFromTheConfig(t *testing.T) {
 	})
 }
 
+// The plan the config names for an account replaces the tier claude reports
+// for it, and no other account's.
+func TestServe_PlanComesFromTheConfig(t *testing.T) {
+	f := newServeFixture(t)
+	b := f.dir(".claude-b")
+	f.mkdirs(b)
+	const maxTier = `{"loggedIn":true,"authMethod":"claude.ai","email":"dev@example.com","subscriptionType":"max","planTier":"max_20x"}`
+	f.claude.auth[b], f.claude.auth[f.defaultDir()] = maxTier, maxTier
+	f.writeConfig(`{"accounts":[{"configDir":"~/.claude-b","label":"B","plan":"Ultra"}]}`)
+	f.start()
+
+	waitFor(t, "both accounts probed", func() bool {
+		view := f.snapshot()
+		configured, okB := accountByDir(view, b)
+		other, okDefault := accountByDir(view, f.defaultDir())
+		return okB && okDefault && configured.Email != "" && other.Email != ""
+	})
+	view := f.snapshot()
+	for dir, want := range map[domain.ConfigDir]string{b: "Ultra", f.defaultDir(): "Max 20x"} {
+		if a, _ := accountByDir(view, dir); a.Plan != want {
+			t.Errorf("account %s shows the plan %q, want %q", dir, a.Plan, want)
+		}
+	}
+}
+
 // Every account the config names is listed, under its label, from the
 // moment the server is ready, and stays listed though nothing is ever seen
 // of it: claude cannot be run for one, and the other's dir is missing.
@@ -932,6 +958,21 @@ func TestServe_DemoShowsAnAccountOnCredits(t *testing.T) {
 	}
 	if !slices.Equal(onCredits, []string{"Main"}) {
 		t.Errorf("accounts on credits %v, want Main", onCredits)
+	}
+}
+
+// Main reports the tier claude reports for max_20x; the demo's config names
+// its plan Ultra, as an owner's would.
+func TestServe_DemoNamesMainsPlanInItsConfig(t *testing.T) {
+	f := newServeFixture(t)
+	f.start(func(o *cli.ServeOptions) { o.Demo = true })
+
+	plans := make(map[string]string)
+	for _, a := range f.snapshot().Accounts {
+		plans[a.Label] = a.Plan
+	}
+	if want := map[string]string{"Main": "Ultra", "B": "Max 20x", "API": ""}; !maps.Equal(plans, want) {
+		t.Errorf("demo plans %v, want %v", plans, want)
 	}
 }
 

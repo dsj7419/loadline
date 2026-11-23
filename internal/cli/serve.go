@@ -272,7 +272,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	}
 	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo}
 	if o.Demo {
-		trackerCfg.Budgets, trackerCfg.Credits = demo.Budgets(), demo.Credits(clock())
+		trackerCfg.Plans, trackerCfg.Budgets, trackerCfg.Credits = demo.Plans(), demo.Budgets(), demo.Credits(clock())
 		s.tracker = tracker.New(clock, trackerCfg, tracker.NopRecorder{})
 		seedDemo(s.tracker, clock())
 		deps.State = s.tracker
@@ -285,6 +285,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 	s.configured = settings.dirs
 	startDirs := slices.Concat(settings.dirs, []domain.ConfigDir{defaultDir})
 	trackerCfg.Labels, trackerCfg.Budgets, trackerCfg.Credits = settings.labels, settings.budgets, settings.credits
+	trackerCfg.Plans = settings.plans
 	// Credit estimates count no further back than the history keeps, which
 	// is all a restart gives back.
 	trackerCfg.CreditDays = cfg.RetentionDays
@@ -334,11 +335,12 @@ func claudeRunner(cfg config.Config, home string) claudecli.Exec {
 }
 
 // configuredAccounts is what the config says of its accounts: the config dir
-// of each, and the labels, daily budgets and usage credits it gives them,
-// keyed by those dirs.
+// of each, and the labels, plans, daily budgets and usage credits it gives
+// them, keyed by those dirs.
 type configuredAccounts struct {
 	dirs    []domain.ConfigDir
 	labels  map[domain.ConfigDir]string
+	plans   map[domain.ConfigDir]string
 	budgets map[domain.ConfigDir]float64
 	credits map[domain.ConfigDir][]domain.CreditGrant
 }
@@ -346,6 +348,7 @@ type configuredAccounts struct {
 func accountSettings(settings []config.AccountSetting, home string) configuredAccounts {
 	c := configuredAccounts{
 		labels:  make(map[domain.ConfigDir]string),
+		plans:   make(map[domain.ConfigDir]string),
 		budgets: make(map[domain.ConfigDir]float64),
 		credits: make(map[domain.ConfigDir][]domain.CreditGrant),
 	}
@@ -354,6 +357,9 @@ func accountSettings(settings []config.AccountSetting, home string) configuredAc
 		c.dirs = append(c.dirs, dir)
 		if account.Label != "" {
 			c.labels[dir] = account.Label
+		}
+		if account.Plan != "" {
+			c.plans[dir] = account.Plan
 		}
 		if account.DailyBudgetUSD > 0 {
 			c.budgets[dir] = account.DailyBudgetUSD
