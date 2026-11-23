@@ -320,6 +320,37 @@ func TestLoad_AccountPlan(t *testing.T) {
 	}
 }
 
+// An account's label is the title of its card, read without the spaces around
+// it, so a blank one is unset and the label is derived, and as short as a
+// card title needs.
+func TestLoad_AccountLabel(t *testing.T) {
+	account := func(label string) string {
+		return `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `},{"configDir":` + q(t, abs(".claude-b")) +
+			`,"label":` + q(t, label) + `}]}`
+	}
+	for name, tc := range map[string]struct{ label, want string }{
+		"a name":                       {"Main", "Main"},
+		"a name in spaces":             {" \tWork laptop \n", "Work laptop"},
+		"blank":                        {" \t\n", ""},
+		"none":                         {"", ""},
+		"32 characters":                {strings.Repeat("é", 32), strings.Repeat("é", 32)},
+		"32 characters inside spaces":  {"  " + strings.Repeat("x", 32) + "  ", strings.Repeat("x", 32)},
+		"a no-break space around them": {"\u00a0Main\u00a0", "Main"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := mustLoad(t, account(tc.label))
+			if got := cfg.Accounts[1].Label; got != tc.want {
+				t.Errorf("label %q loads as %q, want %q", tc.label, got, tc.want)
+			}
+		})
+	}
+
+	_, err := config.Load(writeConfig(t, account(strings.Repeat("é", 33))), home)
+	if want := "accounts[1].label is 33 characters, more than 32"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Load of a 33-character label: error %v, want one containing %q", err, want)
+	}
+}
+
 func TestLoad_RejectsMalformedFiles(t *testing.T) {
 	for name, contents := range map[string]string{
 		"not json":            `port = 8289`,

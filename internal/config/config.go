@@ -40,6 +40,9 @@ const (
 	// maxPlanLength is the most characters an account's plan may have: it
 	// is shown in a badge.
 	maxPlanLength = 32
+	// maxLabelLength is the most characters an account's label may have: it
+	// is the title of the account's card.
+	maxLabelLength = 32
 )
 
 // Config is the user-editable configuration. Every field has a default, so a
@@ -140,9 +143,10 @@ func Load(path, home string) (Config, error) {
 	if err := decodeStrict(bytes.TrimPrefix(data, utf8BOM), &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	// The spaces around a plan are not part of the name it shows, so a blank
-	// plan names none.
+	// The spaces around a label or plan are not part of the name it shows, so
+	// a blank label is unset and a blank plan names none.
 	for i := range cfg.Accounts {
+		cfg.Accounts[i].Label = strings.TrimSpace(cfg.Accounts[i].Label)
 		cfg.Accounts[i].Plan = strings.TrimSpace(cfg.Accounts[i].Plan)
 	}
 	if err := cfg.validate(home); err != nil {
@@ -263,6 +267,9 @@ func (a AccountSetting) validate(home string) error {
 		return fmt.Errorf("configDir %q starts from the home directory, which is not known", a.ConfigDir)
 	case !fromHome && !filepath.IsAbs(a.ConfigDir):
 		return fmt.Errorf("configDir %q must be an absolute path or start with ~/", a.ConfigDir)
+	}
+	if n := utf8.RuneCountInString(a.Label); n > maxLabelLength {
+		return fmt.Errorf("label is %d characters, more than %d", n, maxLabelLength)
 	}
 	if n := utf8.RuneCountInString(a.Plan); n > maxPlanLength {
 		return fmt.Errorf("plan is %d characters, more than %d", n, maxPlanLength)
