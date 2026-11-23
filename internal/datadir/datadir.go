@@ -42,10 +42,10 @@ func Secure(dir, top string) error {
 // It then creates dir, and each missing folder above it, private to the
 // user, or makes the existing dir private: it judges each of Loadline's own
 // files and folders, refusing a link, a file with another name and one that
-// belongs to someone else, before it passes anything down, and only then
-// takes off each of them whatever its access list holds of its own, which
-// making the dir private leaves (fsperm.EntryPrivate), and has the dir pass
-// its list down.
+// belongs to someone else, and takes off each that it found none of that in
+// whatever its access list holds of its own, which making the dir private
+// leaves (fsperm.EntryPrivate), even when it goes on to refuse another. Only
+// when it refuses none does it have the dir pass its list down.
 //
 // Several Loadline processes may run it at once, and write files in dir
 // meanwhile (Temporary), which it leaves alone. It changes nothing that is
@@ -63,12 +63,14 @@ func Make(dir string) error {
 	if err := fsperm.MkdirAll(dir); err != nil {
 		return fmt.Errorf("create the data directory: %w", err)
 	}
-	// Nothing is passed down, and nothing cleaned, until the walk has judged
-	// every one of Loadline's paths: a list passed down would go through a
-	// folder that keeps the user out until then to a file there that has a
-	// name elsewhere too, and change the file there. The dir, and then each
-	// folder that is not private, gets the private list alone, which Windows
-	// passes down to nothing it holds, so that the walk can list it.
+	// Nothing is passed down to what the walk has not judged: a list passed
+	// down would go through a folder that keeps the user out until then to a
+	// file there that has a name elsewhere too, and change the file there.
+	// The dir, and then each folder that is not private, gets the private
+	// list alone, which Windows passes down to nothing it holds, so that the
+	// walk can list it. A file is cleaned as soon as it is judged, since its
+	// list reaches nothing else, and a folder once the walk is through what
+	// it holds, which its list reaches.
 	private, err := fsperm.DirPrivate(dir)
 	if err != nil {
 		return err
@@ -78,35 +80,34 @@ func Make(dir string) error {
 			return err
 		}
 	}
-	var cleanups []func() error
-	found, err := ownPaths(dir, func(path string, folder bool) error {
-		problem, err := ownerProblem(path)
-		if err != nil {
+	unlocked := map[string]bool{}
+	found, err := ownPaths(dir, &repair{
+		before: func(path string, folder bool) error {
+			problem, err := ownerProblem(path)
+			if err != nil {
+				return err
+			}
+			if problem != "" {
+				return errors.New(problem)
+			}
+			if !folder {
+				return clearOwnEntries(path)
+			}
+			unlocked[path], err = makePrivateHere(path)
 			return err
-		}
-		if problem != "" {
-			return errors.New(problem)
-		}
-		if !folder {
-			cleanups = append(cleanups, func() error { return clearOwnEntries(path) })
-			return nil
-		}
-		unlocked, err := makePrivateHere(path)
-		if unlocked {
-			cleanups = append(cleanups, func() error { return clearExplicit(path) })
-		}
-		return err
+		},
+		after: func(path string) error {
+			if !unlocked[path] {
+				return nil
+			}
+			return clearExplicit(path)
+		},
 	})
 	if err != nil {
 		return err
 	}
 	if problem := found.linkProblem(); problem != "" {
 		return errors.New(problem)
-	}
-	for _, clean := range cleanups {
-		if err := clean(); err != nil {
-			return err
-		}
 	}
 	if private {
 		return nil

@@ -418,29 +418,61 @@ func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *t
 	}
 }
 
-// Secure puts nothing back on Loadline's files until it has judged them all:
-// a refused Secure has changed only the lists it had to change to look into
-// a folder. The binary, which the walk comes to before the spool, keeps the
-// entry it was given.
-func TestSecure_PutsNothingBackUntilItHasFoundNothingToRefuse(t *testing.T) {
-	home, top := loadlineHome(t)
+// A refused Secure still puts right each of Loadline's files and folders
+// that the walk judged before it came to what it refused: a file as soon as
+// it is judged, since its list reaches nothing else, and a folder once the
+// walk has been through what it holds, which its list reaches. The data
+// directory passes nothing down, so a file another process began there
+// before it was private keeps what it had. Nothing outside changes.
+func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
+	top := privateTop(t)
 	_, doc := elsewhere(t, top)
-	binary := filepath.Join(home, "bin", "loadline.exe")
+	dir, parent := openDataDir(t, top)
+	bin := filepath.Join(dir, "bin")
+	binary := filepath.Join(bin, "loadline.exe")
+	spool := filepath.Join(dir, "spool")
+	for _, folder := range []string{bin, spool} {
+		if err := os.Mkdir(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, binary)
 	fspermtest.Grant(t, binary, windows.FILE_GENERIC_READ, windows.NO_INHERITANCE)
-	spool := filepath.Join(home, "spool")
+	begun := filepath.Join(dir, ".token-1234")
+	writeFile(t, begun)
+	// The token's name comes after the spool's, so the binary, which the walk
+	// comes to before the spool, stands for Loadline's files here.
 	if err := os.Link(doc, filepath.Join(spool, "1-0000000b.json")); err != nil {
 		t.Skipf("cannot make a hard link here: %v", err)
 	}
 	fspermtest.SetAccessListAsIs(t, spool, "D:P(A;OICI;FA;;;SY)")
 	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
-	before := fspermtest.AccessList(t, binary)
+	for _, path := range []string{bin, binary, begun} {
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
+			t.Fatalf("%s admits nobody else, so the test proves nothing", path)
+		}
+	}
+	beforeBegun, beforeDoc := fspermtest.AccessList(t, begun), fspermtest.AccessList(t, doc)
 
-	if err := datadir.Secure(home, top); err == nil {
-		t.Fatal("Secure succeeded, want it refused for the hard link in the spool")
+	if err := datadir.Secure(dir, parent); err == nil || !strings.Contains(err.Error(), "has another name") {
+		t.Fatalf("Secure = %v, want it refused for the hard link in the spool", err)
 	}
 
-	if after := fspermtest.AccessList(t, binary); after != before {
-		t.Errorf("the refused Secure changed the access list of %s from %s to %s", binary, before, after)
+	for _, path := range []string{bin, binary} {
+		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+			t.Errorf("the refused Secure left %s admitting %v, want it put right", path, others)
+		}
+	}
+	// Put right, the folder takes what the data directory passes down, not
+	// the list of its own it was given to be listed.
+	if fspermtest.Protected(t, bin) {
+		t.Errorf("the refused Secure left %s with a list of its own: %s", bin, fspermtest.AccessList(t, bin))
+	}
+	if after := fspermtest.AccessList(t, begun); after != beforeBegun {
+		t.Errorf("the refused Secure passed a list down to %s: %s became %s", begun, beforeBegun, after)
+	}
+	if after := fspermtest.AccessList(t, doc); after != beforeDoc {
+		t.Errorf("the refused Secure changed the access list of %s, outside the data directory, from %s to %s", doc, beforeDoc, after)
 	}
 }
 
