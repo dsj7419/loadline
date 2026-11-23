@@ -12,13 +12,18 @@ const (
 	// Windows refuses to open while another Loadline process deletes it. A
 	// deletion takes far less; the budget covers a scanner's brief hold.
 	settleBudget = 500 * time.Millisecond
+	// leftoverBudget bounds how long Make tries to remove a temporary name
+	// left beside one of Loadline's files while something holds it. What it
+	// cannot remove in that time it leaves for a later run.
+	leftoverBudget = 100 * time.Millisecond
 	// maxSettleDelay caps the pause between attempts.
 	maxSettleDelay = 50 * time.Millisecond
 )
 
-// errMoreNames is how a look at one of Loadline's files says that it has
-// more than one name. The token has two for a moment: another caller has
-// linked it into place from its temporary file and is about to remove that.
+// errMoreNames is how a look at one of Loadline's files says that it has a
+// name besides its own and its own temporary ones. The token has another
+// for a moment: another caller has linked it into place from its temporary
+// file, and the look came between the link and that name's removal.
 var errMoreNames = errors.New("the file has more than one name")
 
 // settle runs op, which reads or changes one of Loadline's files, and runs
@@ -34,7 +39,12 @@ var errMoreNames = errors.New("the file has more than one name")
 // not open, so op's error is returned as it is. A second name that outlasts
 // it is no token being put in place (errMoreNames).
 func settle(op func() error) error {
-	deadline := time.Now().Add(settleBudget)
+	return settleWithin(settleBudget, op)
+}
+
+// settleWithin is settle with budget in place of settleBudget.
+func settleWithin(budget time.Duration, op func() error) error {
+	deadline := time.Now().Add(budget)
 	delay := time.Millisecond
 	for {
 		err := op()

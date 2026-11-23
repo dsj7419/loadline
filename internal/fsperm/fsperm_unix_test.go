@@ -196,14 +196,18 @@ func TestInspect_TellsWhatAPathIs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 2}) {
+	got, err := fsperm.Inspect(file)
+	if err != nil || got.Link || got.Folder || got.Names != 2 {
 		t.Errorf("Inspect(%s) = %+v, %v; want a file of two names", file, got, err)
+	}
+	if other, err := fsperm.Inspect(filepath.Join(dir, "elsewhere")); err != nil || other.ID != got.ID {
+		t.Errorf("Inspect of its second name = %+v, %v; want the same file as %+v", other, err, got)
 	}
 	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
 		t.Errorf("Inspect(%s) = %+v, %v; want a link", link, got, err)
 	}
-	if got, err := fsperm.Inspect(dir); err != nil || !got.Folder || got.Link {
-		t.Errorf("Inspect(%s) = %+v, %v; want a folder", dir, got, err)
+	if folder, err := fsperm.Inspect(dir); err != nil || !folder.Folder || folder.Link || folder.ID == got.ID {
+		t.Errorf("Inspect(%s) = %+v, %v; want a folder, which is not the file", dir, folder, err)
 	}
 }
 

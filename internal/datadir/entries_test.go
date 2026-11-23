@@ -143,3 +143,55 @@ func TestMake_WaitsForTheTokensTemporaryNameToGo(t *testing.T) {
 		t.Errorf("Make = %v, want it to wait for %s to go", err, temporary)
 	}
 }
+
+// Only the file's own temporary name in its own folder stands beside it. A
+// name elsewhere is refused even with such a name there too, and so is a
+// temporary name in another folder, which no writer of the token makes.
+func TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		names []string
+		// another is a file of its own under a temporary name, another
+		// writer's, which is no name of the token's and is left alone.
+		another bool
+	}{
+		{name: "a name elsewhere too", names: []string{".token-1234", "elsewhere"}},
+		{name: "a name elsewhere, beside another file's temporary name", names: []string{"elsewhere"}, another: true},
+		{name: "a temporary name in the spool", names: []string{filepath.Join("spool", ".put-1234.tmp")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "loadline")
+			token := filepath.Join(home, "token")
+			if err := os.MkdirAll(filepath.Join(home, "spool"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(token, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tt.names {
+				other := filepath.Join(home, name)
+				if name == "elsewhere" {
+					other = filepath.Join(t.TempDir(), "shared.txt")
+				}
+				if err := os.Link(token, other); err != nil {
+					t.Skipf("cannot make a hard link here: %v", err)
+				}
+			}
+			writing := filepath.Join(home, ".token-5678")
+			if tt.another {
+				if err := os.WriteFile(writing, []byte(strings.Repeat("cd", 32)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			err := datadir.Make(home)
+
+			if want := token + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("Make = %v, want it refused, starting %q", err, want)
+			}
+			if _, err := os.Lstat(writing); tt.another && err != nil {
+				t.Errorf("Make removed %s, another writer's file (%v)", writing, err)
+			}
+		})
+	}
+}

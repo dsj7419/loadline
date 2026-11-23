@@ -21,6 +21,14 @@ type Entry struct {
 	// Names is how many names the file has: more than one when it was hard
 	// linked, and it is then also wherever its other names are.
 	Names uint64
+	// ID tells the file from every other on the machine: two names with
+	// the same ID are names of one file.
+	ID FileID
+}
+
+// FileID is a file's identity: the volume it is on and its number there.
+type FileID struct {
+	volume, index uint64
 }
 
 // andList joins names as a sentence lists them: "a", "a and b", "a, b and c".

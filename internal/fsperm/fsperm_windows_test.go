@@ -808,14 +808,19 @@ func TestInspect_TellsWhatAPathIsEvenOneThatKeepsTheUserOut(t *testing.T) {
 	}
 	file := filepath.Join(root, "token")
 	write(t, file)
-	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 1}) {
-		t.Errorf("Inspect of a new file = %+v, %v; want a file of one name", got, err)
+	created, err := fsperm.Inspect(file)
+	if err != nil || created.Link || created.Folder || created.Names != 1 {
+		t.Errorf("Inspect of a new file = %+v, %v; want a file of one name", created, err)
 	}
-	if got, err := fsperm.Inspect(root); err != nil || !got.Folder || got.Link {
-		t.Errorf("Inspect of a folder = %+v, %v; want a folder", got, err)
+	if got, err := fsperm.Inspect(root); err != nil || !got.Folder || got.Link || got.ID == created.ID {
+		t.Errorf("Inspect of a folder = %+v, %v; want a folder, which is not the file %+v", got, err, created)
 	}
-	if err := os.Link(file, filepath.Join(root, "elsewhere")); err != nil {
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.Link(file, elsewhere); err != nil {
 		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	if got, err := fsperm.Inspect(elsewhere); err != nil || got.ID != created.ID {
+		t.Errorf("Inspect of the file's second name = %+v, %v; want the file %+v", got, err, created)
 	}
 	link := filepath.Join(root, "bin")
 	junction(t, link, t.TempDir())
@@ -827,8 +832,8 @@ func TestInspect_TellsWhatAPathIsEvenOneThatKeepsTheUserOut(t *testing.T) {
 		t.Fatalf("%s can still be read, so the test proves nothing", file)
 	}
 
-	if got, err := fsperm.Inspect(file); err != nil || got != (fsperm.Entry{Names: 2}) {
-		t.Errorf("Inspect of a file with a second name that keeps the user out = %+v, %v; want a file of two names", got, err)
+	if got, err := fsperm.Inspect(file); err != nil || got.Link || got.Folder || got.Names != 2 || got.ID != created.ID {
+		t.Errorf("Inspect of a file with a second name that keeps the user out = %+v, %v; want the file %+v, of two names", got, err, created)
 	}
 	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
 		t.Errorf("Inspect of a junction that keeps the user out = %+v, %v; want a link", got, err)

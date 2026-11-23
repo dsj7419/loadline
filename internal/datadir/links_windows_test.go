@@ -418,6 +418,34 @@ func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *t
 	}
 }
 
+// A file's own leftover temporary name beside it excuses no other name. In a
+// spool that keeps the user out, a spooled event has both, its temporary
+// name and a name elsewhere: Secure removes the leftover, judges the event
+// again, and refuses it for the name elsewhere, which keeps its list.
+func TestSecure_RefusesANameElsewhereHiddenBesideALeftoverTemporaryName(t *testing.T) {
+	home, top := loadlineHome(t)
+	_, doc := elsewhere(t, top)
+	spool := filepath.Join(home, "spool")
+	event := filepath.Join(spool, "1-0000000b.json")
+	for _, name := range []string{event, filepath.Join(spool, ".put-1234.tmp")} {
+		if err := os.Link(doc, name); err != nil {
+			t.Skipf("cannot make a hard link here: %v", err)
+		}
+	}
+	fspermtest.SetAccessListAsIs(t, spool, "D:P(A;OICI;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+	before := fspermtest.AccessList(t, doc)
+
+	err := datadir.Secure(home, top)
+
+	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
+	}
+	if after := fspermtest.AccessList(t, doc); after != before {
+		t.Errorf("Secure changed the access list of %s, outside the data directory, from %s to %s", doc, before, after)
+	}
+}
+
 // A refused Secure still puts right each of Loadline's files and folders
 // that the walk judged before it came to what it refused: a file as soon as
 // it is judged, since its list reaches nothing else, and a folder once the

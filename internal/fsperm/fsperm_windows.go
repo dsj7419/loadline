@@ -336,6 +336,10 @@ func Inspect(path string) (Entry, error) {
 		Link:   info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0,
 		Folder: info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0,
 		Names:  uint64(info.NumberOfLinks),
+		ID: FileID{
+			volume: uint64(info.VolumeSerialNumber),
+			index:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
+		},
 	}, nil
 }
 

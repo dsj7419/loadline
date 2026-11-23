@@ -205,6 +205,59 @@ type repair struct {
 	after func(path string) error
 }
 
+// judgeNames tells what path itself is, and returns errMoreNames when it is
+// a file with a name besides its own and its own temporary ones (leftovers).
+// A second name puts the file wherever that name is too, and whatever is
+// done to it here is done to it there. A temporary name beside it in its own
+// folder is no such name: the token is written under one and then linked
+// into place, and that name stays when its writer is ended before it
+// removes it, or cannot remove it while a scanner holds the file. When tidy
+// is set, judgeNames tries to remove those leftovers, as far as it can for
+// a moment, and judges the file again.
+func judgeNames(path string, tidy bool) (fsperm.Entry, error) {
+	entry, err := fsperm.Inspect(path)
+	if err != nil || entry.Link || entry.Folder || entry.Names == 1 {
+		return entry, err
+	}
+	own, err := leftovers(path, entry.ID)
+	if err != nil {
+		return entry, err
+	}
+	if tidy && len(own) > 0 {
+		for _, name := range own {
+			_ = settleWithin(leftoverBudget, func() error { return os.Remove(name) })
+		}
+		return judgeNames(path, false)
+	}
+	if entry.Names > uint64(len(own))+1 {
+		return entry, errMoreNames
+	}
+	return entry, nil
+}
+
+// leftovers returns the temporary names in path's folder (Temporary) that
+// are names of the file id tells of, path's own.
+func leftovers(path string, id fsperm.FileID) ([]string, error) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !Temporary(entry.Name()) || !entry.Type().IsRegular() {
+			continue
+		}
+		name := filepath.Join(dir, entry.Name())
+		// One that cannot be looked at, as while its writer deletes it, is
+		// not counted: the walk then waits for it to go (settle).
+		if other, err := fsperm.Inspect(name); err == nil && other.ID == id {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // walk adds path, whose type its folder's listing gave as typ, and when it
 // is a folder, everything below it, stopping at the first link and passing
 // over the regular files that are still being written.
@@ -220,15 +273,8 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 	// out, as one in a folder that was just made listable may.
 	var entry fsperm.Entry
 	err := settle(func() (err error) {
-		if entry, err = fsperm.Inspect(path); err != nil {
-			return err
-		}
-		// A second name puts the file wherever that name is too, and
-		// whatever is done to it here is done to it there.
-		if !entry.Link && !entry.Folder && entry.Names > 1 {
-			return errMoreNames
-		}
-		return nil
+		entry, err = judgeNames(path, fix != nil)
+		return err
 	})
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
