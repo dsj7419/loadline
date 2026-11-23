@@ -612,6 +612,7 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 		"\n\t\"C:/x/loadline.exe\" tap | ( ( a && b\n) )",
 		` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`,
 		`&  "C:/x/loadline.exe" tap --print`,
+		`&"C:/x/loadline.exe" tap --print`,
 		`  loadline tap | foo`,
 	} {
 		t.Run(command, func(t *testing.T) {

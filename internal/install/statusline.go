@@ -194,29 +194,28 @@ func isPlainRune(r rune) bool {
 
 // parseTapCommand tells whether a status-line command, given as its JSON
 // string literal, is one install wrote, for any Loadline path or exe, and if
-// so recovers the user's own command. Whitespace ahead of the program does
-// not hide a Loadline command, but install never writes any there, so such a
-// command counts as edited.
+// so recovers the user's own command. Neither whitespace nor PowerShell's
+// call operator, spaced or not, hides a Loadline command, but install writes
+// only the operator and one space ahead of the program, so a command with
+// anything else there counts as edited.
 func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 	chars := splitString(literal)
-	command := trimLeadingSpace(chars)
-	call, powerShell := cutText(command, powerShellCall)
-	if !powerShell {
-		call = command
+	launcher := trimLeadingSpace(chars)
+	if afterCall, called := cutText(launcher, "&"); called {
+		launcher = trimLeadingSpace(afterCall)
 	}
-	launcher := trimLeadingSpace(call)
 	path, rest, quoted := cutLauncher(launcher)
 	if !isLoadlinePath(text(path), exe) {
 		return tapCommand{}, foreign
 	}
-	indented := len(command) < len(chars) || len(launcher) < len(call)
-	if !quoted || indented {
+	lead := text(chars[:len(chars)-len(launcher)])
+	if !quoted || lead != "" && lead != powerShellCall {
 		return tapCommand{}, edited
 	}
 	if text(rest) == printSuffix {
 		return tapCommand{print: true}, tapped
 	}
-	if powerShell {
+	if lead == powerShellCall {
 		return parseRunB64(rest)
 	}
 	return parsePipe(rest)

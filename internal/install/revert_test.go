@@ -204,6 +204,8 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		{"blanks ahead of the prefix", `  "C:/x/loadline.exe" tap | foo`, skipped, ""},
 		{"blanks ahead of the PowerShell form", ` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
 		{"blanks after the PowerShell call", `&  "C:/x/loadline.exe" tap --print`, skipped, ""},
+		{"no blank after the PowerShell call", `&"C:/x/loadline.exe" tap --print`, skipped, ""},
+		{"a PowerShell call of the user's own", `&"C:/x/other.exe" --print`, untouched, ""},
 		{"a command of the user's own that starts with a blank", ` cat ~/notes/loadline`, untouched, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},
 		{"loadline later in the command", `status.sh | "C:/x/loadline.exe" tap`, untouched, ""},
