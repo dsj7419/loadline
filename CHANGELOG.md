@@ -6,7 +6,11 @@ All notable changes to Loadline are recorded here. The format follows
 
 ## [Unreleased]
 
-The first release, to be tagged 0.1.0.
+## [0.1.0] - 2026-11-22
+
+The first release. It has been run day to day on Windows with two subscription accounts. The macOS
+and Linux builds pass the full test suite in CI but have not yet been used with live sessions;
+reports from those systems are welcome.
 
 ### Added
 
@@ -41,4 +45,5 @@ The first release, to be tagged 0.1.0.
 - Release builds for Windows, macOS and Linux on amd64 and arm64, with checksums and build
   provenance attestations.
 
-[Unreleased]: https://github.com/dsj7419/loadline/commits/main
+[Unreleased]: https://github.com/dsj7419/loadline/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/dsj7419/loadline/releases/tag/v0.1.0
