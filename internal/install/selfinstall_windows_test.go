@@ -400,10 +400,12 @@ func TestSelfInstall_PausesLongerBeforeEachAttempt(t *testing.T) {
 		t.Fatalf("err = %v, want the sharing violation", err)
 	}
 
-	// Pauses of 1, 2, 4, 8 and 16 ms let .old be tried at most six times
-	// within the 50 ms, and .old-1 at most five more in what is left of it.
-	if attempts > 11 {
-		t.Errorf("tried to move the held binary %d times in 50ms, want at most 11", attempts)
+	// Pauses of 1, 2, 4, 8 and 16 ms let .old be tried six times within the
+	// 50 ms, and .old-1 at most five more in what is left of it. The bound
+	// leaves room for a coarse clock, which can fit in a few more; without the
+	// pauses the same 50 ms hold over a million attempts.
+	if attempts > 20 {
+		t.Errorf("tried to move the held binary %d times in 50ms, want at most 20", attempts)
 	}
 }
 
