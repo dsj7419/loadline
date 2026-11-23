@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"runtime/metrics"
 	"testing"
 	"time"
@@ -43,34 +44,49 @@ func TestMain(m *testing.M) {
 }
 
 // within runs f and stops the whole test binary if f has not returned by the
-// deadline, or if the heap grows past maxHeap meanwhile. A loop that never
-// ended would otherwise hold the suite until its timeout, or fill memory
-// first if it allocates as it goes, and a failing test cannot stop the
-// goroutine running it. f must not call t's methods.
+// deadline, or if the heap grows by more than maxHeapGrowth meanwhile. A loop
+// that never ended would otherwise hold the suite until its timeout, or fill
+// memory first if it allocates as it goes, and a failing test cannot stop the
+// goroutine running it. A panic in f is raised again here, on the caller's
+// goroutine, so that the testing package names the test it failed. f must
+// not call t's methods.
 func within(deadline time.Duration, what string, f func()) {
-	done := make(chan struct{})
+	heap := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(heap)
+	baseline := heap[0].Value.Uint64()
+
+	done := make(chan string, 1)
 	go func() {
-		defer close(done)
+		failure := ""
+		defer func() { done <- failure }()
+		defer func() {
+			if r := recover(); r != nil {
+				failure = fmt.Sprintf("%s panicked: %v\n%s", what, r, debug.Stack())
+			}
+		}()
 		f()
 	}()
-	heap := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	timeout := time.After(deadline)
 	for {
 		select {
-		case <-done:
+		case failure := <-done:
+			if failure != "" {
+				panic(failure)
+			}
 			return
 		case <-timeout:
 			panic(fmt.Sprintf("%s did not return within %s", what, deadline))
 		case <-tick.C:
-			if metrics.Read(heap); heap[0].Value.Uint64() > maxHeap {
-				panic(fmt.Sprintf("%s grew the heap past %d MiB", what, maxHeap>>20))
+			if metrics.Read(heap); heap[0].Value.Uint64() > baseline+maxHeapGrowth {
+				panic(fmt.Sprintf("%s grew the heap by more than %d MiB", what, maxHeapGrowth>>20))
 			}
 		}
 	}
 }
 
-// maxHeap is many times what the tests hold at once, and a fraction of the
-// memory a runaway takes before anything outside the tests stops it.
-const maxHeap = 512 << 20
+// maxHeapGrowth is many times what any call these tests guard allocates, and
+// a fraction of the memory a runaway takes before anything outside the tests
+// stops it.
+const maxHeapGrowth = 512 << 20
