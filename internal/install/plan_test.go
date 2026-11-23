@@ -374,6 +374,12 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `"` + goldenExe + `" tap | FOO=bar npx -y ccstatusline@latest --theme "dark mode" ~/x,y:1+2%`,
 		},
 		{
+			name:     "a command that starts with a blank is the user's own, whatever it ends in",
+			settings: `{"statusLine": {"type": "command", "command": " cat ~/notes/loadline"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap |  cat ~/notes/loadline`,
+		},
+		{
 			name:     "a list is wrapped so the pipe feeds all of it",
 			settings: `{"statusLine": {"type": "command", "command": "jq -r '.model' 2>/dev/null && echo \"ok\" | tr a-z A-Z"}}`,
 			shell:    install.ShellBash,
