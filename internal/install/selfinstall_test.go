@@ -179,6 +179,23 @@ func TestSelfInstall_MissingSourceFails(t *testing.T) {
 	}
 }
 
+// A source that opens but cannot be read, as a directory does, must fail the
+// install and leave nothing in bin: an empty file in the binary's place would
+// break every hook.
+func TestSelfInstall_ReportsACopyThatFails(t *testing.T) {
+	dataDir := t.TempDir()
+	unreadable := t.TempDir()
+
+	got, err := install.SelfInstall(unreadable, dataDir)
+
+	if err == nil {
+		t.Errorf("SelfInstall = %q, want an error for a source that cannot be read", got)
+	}
+	if entries := dirEntries(t, filepath.Join(dataDir, "bin")); len(entries) != 0 {
+		t.Errorf("bin holds %q after a failed copy, want nothing", entries)
+	}
+}
+
 // The binary's folder must be what the data directory's check takes for
 // Loadline's own.
 func TestInstalledPath_TheDataDirectoryOwnsItsFolder(t *testing.T) {
