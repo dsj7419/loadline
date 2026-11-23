@@ -21,11 +21,13 @@ import (
 // Administrators, and to nobody else, and that every file and directory
 // created below inherits.
 func privateDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	user, err := currentUser()
 	if err != nil {
-		return nil, fmt.Errorf("identify the current user: %w", err)
+		return nil, err
 	}
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + user.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	// The SID in its S-1-… form, which the format reads back as the SID it
+	// is, whatever alias it may write it by.
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + user.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
 		return nil, fmt.Errorf("build a private access list: %w", err)
 	}
@@ -711,12 +713,23 @@ var ownerOf = func(path string) (*windows.SID, error) {
 	return owner.Copy()
 }
 
-// trustedSIDs are the principals a private directory admits: the user, and
-// the two that can take any file on the machine anyway.
-func trustedSIDs() ([]*windows.SID, error) {
+// currentUser returns the SID of the user Loadline runs as. Tests replace
+// it, to judge lists for a user whose SID has an alias in the security
+// descriptor string format, as the built-in Administrator's does.
+var currentUser = func() (*windows.SID, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return nil, fmt.Errorf("identify the current user: %w", err)
+	}
+	return user.User.Sid.Copy()
+}
+
+// trustedSIDs are the principals a private directory admits: the user, and
+// the two that can take any file on the machine anyway.
+func trustedSIDs() ([]*windows.SID, error) {
+	user, err := currentUser()
+	if err != nil {
+		return nil, err
 	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
@@ -726,7 +739,7 @@ func trustedSIDs() ([]*windows.SID, error) {
 	if err != nil {
 		return nil, fmt.Errorf("identify Administrators: %w", err)
 	}
-	return []*windows.SID{user.User.Sid, system, admins}, nil
+	return []*windows.SID{user, system, admins}, nil
 }
 
 // accountName is DOMAIN\name for sid, or the SID itself when no account
