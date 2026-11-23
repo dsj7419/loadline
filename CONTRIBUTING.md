@@ -2,7 +2,8 @@
 
 Thanks for your interest in Loadline. Bug reports, fixes and improvements are welcome. For a larger
 change, please open an issue first, so we can agree on the approach before you put work into it.
-Report security problems privately, as [SECURITY.md](SECURITY.md) describes.
+Report security problems privately, as [SECURITY.md](SECURITY.md) describes. Everyone taking part
+agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## What you need
 
@@ -68,3 +69,5 @@ bundled into the dashboard, update [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.
   `fix(server): …`, `test(tracker): …`.
 - Keep each commit to one change, with its tests, and leave the tree passing `make check`.
 - Record user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+- A pull request is squash-merged once every CI check passes and the maintainer has reviewed it.
+  On a first-time contributor's pull request, the checks start after the maintainer approves them.

@@ -1,0 +1,22 @@
+name: Question
+description: Ask how something in Loadline works.
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [README](https://github.com/dsj7419/loadline#readme) covers installing, configuring and troubleshooting Loadline; `loadline doctor` checks a setup and says what it finds.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What you are trying to do, your OS, and `loadline version` if it is relevant.

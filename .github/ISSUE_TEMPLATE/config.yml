@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/dsj7419/loadline/security/advisories/new
+    about: Report it privately, as SECURITY.md describes. Please do not open a public issue.
+  - name: Report a conduct problem
+    url: https://github.com/dsj7419/loadline/security/advisories/new
+    about: Report it privately with a title that starts with "Conduct report", as CODE_OF_CONDUCT.md describes.
