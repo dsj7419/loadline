@@ -6,6 +6,12 @@ All notable changes to Loadline are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- An account's `label` in `config.json` is read without the spaces around it, as its `plan` is:
+  a blank label falls back to the derived name instead of giving the card a blank title, and a
+  label longer than 32 characters is refused.
+
 ## [0.1.0] - 2026-11-22
 
 The first release. It has been run day to day on Windows with two subscription accounts. The macOS
