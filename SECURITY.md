@@ -166,8 +166,13 @@ or is narrow.
 - **A data directory that keeps you out.**
   - *What it takes:* a `LOADLINE_HOME` folder whose own access list does not let you list it, such
     as one copied or restored with another account's permissions.
-  - *Impact:* install, the server and `loadline doctor` fail with "read the data directory: Access
-    is denied" instead of putting it right.
+  - *Impact:* install, the server and `loadline doctor` fail instead of putting it right. The
+    message depends on what the list leaves you:
+    - when it gives you nothing at all, the folder cannot even be opened to find the folders that
+      hold it: "find the folders that hold <folder>: open <folder>: Access is denied.; set
+      LOADLINE_HOME to a folder in your user profile";
+    - when it lets you open the folder but not list it: "read the data directory: open <folder>:
+      Access is denied."
   - *Mitigation:* use the default. Otherwise reset the folder's permissions (for example
     `icacls <folder> /reset`) and run `loadline install`.
 - **A link further above the settings file.**
@@ -203,3 +208,13 @@ or is narrow.
     be refused too.
   - *Mitigation:* use the default on a standard profile. Otherwise take ownership of the folder it
     names (for example `takeown /f <folder>`) and run `loadline install`.
+- **A hard link under a temporary name.**
+  - *What it takes:* a `LOADLINE_HOME` that was not private yet, into which someone put a hard
+    link to a file elsewhere under one of the names Loadline writes files under before it puts
+    them in place (`.token-…`, `.put-….tmp`, `.loadline-….tmp`).
+  - *Impact:* install and the server leave such files to the Loadline process writing them, and
+    do not open them, so they never refuse that link. When they put right the folder that holds
+    it, or the data directory passes its list down, that list reaches the file elsewhere through
+    the link, and changes who may use the file there.
+  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default, where nobody else
+    can put anything.
