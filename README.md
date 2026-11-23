@@ -356,6 +356,23 @@ It exits 1 when any check fails. Common fixes:
   `loadline install` again.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
 
+## Roadmap
+
+Planned releases are tracked as milestones:
+
+- [**0.1.1**](https://github.com/dsj7419/loadline/milestone/1): polish and hardening. It covers the
+  dashboard window's own browser profile, a clean hand-over when an upgrade replaces a running
+  server, Windows data-directory edge cases, and the Preact 11 and TypeScript 7 upgrades.
+- [**0.2.0**](https://github.com/dsj7419/loadline/milestone/2): accounts by purpose. Each account gets
+  a purpose, project folders are assigned to accounts in the config, `loadline start` (and an
+  opt-in `claude` wrapper) launches the account a folder is assigned to, and
+  `loadline accounts add` sets up a new account.
+
+Ideas that are not scheduled yet carry the
+[`idea`](https://github.com/dsj7419/loadline/labels/idea) label; comments on them are welcome.
+Issues labelled [`good first issue`](https://github.com/dsj7419/loadline/labels/good%20first%20issue)
+are a good place to start contributing; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Trademarks
 
 Not affiliated with Anthropic. Claude and Claude Code are trademarks of Anthropic.
