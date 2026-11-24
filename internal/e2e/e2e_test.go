@@ -275,6 +275,25 @@ func needsYouAlerts(v tracker.View, id domain.SessionID) int {
 	return n
 }
 
+// watched describes what the waits of the end-to-end test watch in v: each
+// session's state and account, and the email account A shows. A wait that
+// times out names only what it waited for; this tells which of the poll of
+// dirA, the poll of dirB and the probe of account A never landed.
+func watched(v tracker.View, dirA domain.ConfigDir) string {
+	describe := func(id domain.SessionID) string {
+		s, ok := session(v, id)
+		if !ok {
+			return "absent"
+		}
+		return fmt.Sprintf("%s under %s", s.State, s.Dir)
+	}
+	email := "absent"
+	if a, ok := account(v, dirA); ok {
+		email = fmt.Sprintf("%q", a.Email)
+	}
+	return fmt.Sprintf("s1 %s, s2 %s, account A's email %s", describe(s1), describe(s2), email)
+}
+
 func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	t.Setenv("LOADLINE_HOME", t.TempDir())
 	paths, err := config.DefaultPaths()
@@ -319,10 +338,20 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	// hook asks for then polls dirB as well as dirA.
 	fedAt := t0
 	clock.Advance(time.Second)
+	// What the waits below last saw goes to the log if the test fails, since
+	// a wait that times out says nothing of the state.
+	var lastSeen string
+	defer func() {
+		if t.Failed() && lastSeen != "" {
+			t.Logf("the last wait saw %s", lastSeen)
+		}
+	}()
 	m.send(forward.StatusPath, protocol.KindStatus, dirB, fedAt,
 		`{"session_id":"`+string(s2)+`","model":{"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"}}`)
 	eventually(t, "s2's status line", func() bool {
-		s, ok := session(m.snapshot(), s2)
+		snapshot := m.snapshot()
+		lastSeen = watched(snapshot, dirA)
+		s, ok := session(snapshot, s2)
 		return ok && s.Dir == dirB
 	})
 	m.send(forward.HookPath, protocol.KindHook, dirA, fedAt,
@@ -339,6 +368,7 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	var v tracker.View
 	eventually(t, "s1 to need the user, s2 to work and account A's probed email", func() bool {
 		v = m.snapshot()
+		lastSeen = watched(v, dirA)
 		first, firstOK := session(v, s1)
 		second, secondOK := session(v, s2)
 		a, aOK := account(v, dirA)
