@@ -165,8 +165,8 @@ func DecodeStatus(b []byte) (StatusInput, error) {
 }
 
 // StatusEvent maps a status-line payload to the domain event, stamped with
-// the envelope's time and config dir. The rate-limit windows are observed at
-// the envelope's time; a window the payload lacks is nil.
+// the envelope's time, config dir and process ID. The rate-limit windows are
+// observed at the envelope's time; a window the payload lacks is nil.
 func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 	if in.SessionID == "" {
 		return domain.Status{}, errors.New("status input has no session_id")
@@ -181,6 +181,7 @@ func StatusEvent(env Envelope, in StatusInput) (domain.Status, error) {
 		At:         env.At,
 		Dir:        domain.ConfigDir(env.ConfigDir),
 		Session:    domain.SessionID(in.SessionID),
+		PID:        env.PID,
 		Name:       in.SessionName,
 		ProjectDir: cmp.Or(orZero(in.Workspace).ProjectDir, in.Cwd),
 		Metrics: domain.Metrics{

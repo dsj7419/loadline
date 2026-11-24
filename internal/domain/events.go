@@ -44,11 +44,13 @@ type Absent struct {
 	Session SessionID
 }
 
-// Status is one status-line update.
+// Status is one status-line update. PID is the Claude process that ran the
+// status line, zero when unknown.
 type Status struct {
 	At      time.Time
 	Dir     ConfigDir
 	Session SessionID
+	PID     int
 
 	Name, ProjectDir string
 

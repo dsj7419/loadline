@@ -498,13 +498,14 @@ func appendTransition(timeline []domain.Transition, tr domain.Transition) []doma
 }
 
 // observeStatus applies what a status line reports of its account: the rate
-// limits, as fresh as the newest response its session, nil when it has none,
-// is known to have got on that account, and the spend limit.
+// limits, as fresh as the newest response the line's process is known to
+// have got on that account, and the spend limit. session is the line's
+// session, nil when it has none, and then no response is known.
 func (t *Tracker) observeStatus(st domain.Status, session *sessionEntry) {
 	var freshAs time.Time
 	if session != nil {
-		session.responses.line(st.Dir, st.APIDurationMS, st.At)
-		freshAs = session.responses.freshAs(st.Dir)
+		session.responses.line(st.Dir, st.PID, st.APIDurationMS, st.At)
+		freshAs = session.responses.freshAs(st.Dir, st.PID)
 	}
 	t.observeLimits(st.Dir, st.Limits, freshAs)
 	t.account(st.Dir).credits.observe(st.SpendLimit, st.At)

@@ -641,6 +641,74 @@ func TestTracker_AResumeWhileTheFirstProcessRunsKeepsTheMostAPITime(t *testing.T
 	}
 }
 
+// fromProcess is st sent from the Claude process pid.
+func fromProcess(st domain.Status, pid int) domain.Status {
+	st.PID = pid
+	return st
+}
+
+// A session is resumed on the same account while its first process stays
+// open and idle, and the owner's reset keeps the reset time. When the lines
+// name their processes, each is judged by its own: the resumed process's API
+// time growing from where its first line put it dates its 0%, however far
+// below the first process's count it stays, and the first process's older 97%
+// does not come back. The resumed process counts from nothing when the session
+// saved no API time, and otherwise continues from what it saved.
+func TestTracker_ASameWindowResetShowsWhileAnotherProcessOfTheSessionLives(t *testing.T) {
+	for name, base := range map[string]int64{
+		"counting from nothing":                              0,
+		"continuing from a restored count below the first's": 30_000,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			shared := s1
+			first := func(sec int) domain.Status {
+				return fromProcess(withAPITime(weeklyFrom(sec, shared, 97), 50_000), pidA)
+			}
+			shownWeekly(h, fromProcess(withAPITime(weeklyFrom(0, shared, 97), 49_000), pidA))
+			shownWeekly(h, first(1))
+			start := hook(5, shared, "SessionStart")
+			start.Source, start.PID = "resume", pidB
+			h.clock.Set(at(5))
+			h.tr.Apply(start)
+
+			if got := shownWeekly(h, fromProcess(withAPITime(weeklyFrom(10, shared, 0), base), pidB)); got != 97 {
+				t.Errorf("shown %v%% from the resumed process's first line, want the 97%% held: nothing says what its count started from", got)
+			}
+			shownWeekly(h, first(12))
+			if got := shownWeekly(h, fromProcess(withAPITime(weeklyFrom(20, shared, 0), base+400), pidB)); got != 0 {
+				t.Errorf("shown %v%% once the resumed process's API time grew from %d, want 0%%", got, base)
+			}
+			for sec := 25; sec < 120; sec += 5 {
+				if got := shownWeekly(h, first(sec)); got != 0 {
+					t.Fatalf("at %ds the first process's older 97%% came back (%v%%)", sec, got)
+				}
+			}
+		})
+	}
+}
+
+// Every line from a current Claude Code names its process. The calls waiting
+// for a line date the process whose line takes them, so a reset that keeps
+// its reset time shows from the busy session's next response, as it does when
+// lines name no process.
+func TestTracker_TheCallsALineTakesDateItsProcess(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, idle := s1, s2
+	h.tr.RecordAPI(request(at(0), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, fromProcess(weeklyFrom(1, idle, 95), pidA))
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, fromProcess(weeklyFrom(11, busy, 95), pidB))
+
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0.1))
+	if got := shownWeekly(h, fromProcess(weeklyFrom(61, busy, 0), pidB)); got != 0 {
+		t.Errorf("shown %v%% after the busy process's response since the reset, want 0%%", got)
+	}
+	if got := shownWeekly(h, fromProcess(weeklyFrom(66, idle, 95), pidA)); got != 0 {
+		t.Errorf("shown %v%% after the idle process's older reading, want the 0%% still", got)
+	}
+}
+
 // A session is resumed on account B while its first process stays open and
 // idle on account A. The resumed process's API time never passes the old
 // one's, so its calls wait unplaced. When the resumed process ends, the old

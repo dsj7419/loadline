@@ -37,8 +37,8 @@ type heldReading struct {
 	// takenAt is when the reading was first taken. A line that reports it
 	// again leaves it, so it dates how long the window has stood as it is.
 	takenAt time.Time
-	// freshAs is when the newest response came that the reading's session
-	// was known to have got, zero when none was (see responseClock).
+	// freshAs is when the newest response came that the process behind the
+	// reading was known to have got, zero when none was (see responseClock).
 	freshAs time.Time
 }
 
@@ -69,7 +69,7 @@ func (a *accountEntry) sevenDay() windowState {
 }
 
 // observe applies the rate limits a status line reports, as fresh as freshAs,
-// when the newest response its session is known to have got came, zero when
+// when the newest response its process is known to have got came, zero when
 // none is known. A line that reports no window is no observation of them,
 // and one observed no later than the limits held is older news. Each window
 // is judged on its own (see windowState.observe), and the limits are observed
