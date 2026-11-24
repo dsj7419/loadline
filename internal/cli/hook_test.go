@@ -220,10 +220,11 @@ func TestRunHook_OtherEventsDoNotStartTheServer(t *testing.T) {
 // TestClient_DefaultHealthTimeoutIs150ms the one on its check.
 //
 // The server times each wait, so the hook's work around them, which a
-// loaded machine can slow without bound, does not count; the whole hook is
-// timed only against a hang. The server's start, between the check and the
-// post, is slow enough here to take the hook as a whole past both bounds
-// and their margin.
+// loaded machine can slow without bound, does not count. The whole hook
+// takes at least both waits and the server's start, which load can only
+// lengthen, and is otherwise timed only against a hang. The server's start,
+// between the check and the post, is slow enough here to take the hook as a
+// whole past both bounds and their margin.
 func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
 	const check, send = 300 * time.Millisecond, 300 * time.Millisecond
 	cli.SetHookSendTimeout(t, send)
@@ -237,7 +238,12 @@ func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
 
 	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 
-	if took, hang := time.Since(start), 10*(check+send); took >= hang {
+	took := time.Since(start)
+	if least := check + f.spawns.delay + send; took < least {
+		t.Errorf("the hook returned after %v, want no sooner than its %v check, the %v start and its %v post: %v",
+			took, check, f.spawns.delay, send, least)
+	}
+	if hang := 10 * (check + send); took >= hang {
 		t.Errorf("the hook returned after %v, want it well within %v", took, hang)
 	}
 	if code != 0 {

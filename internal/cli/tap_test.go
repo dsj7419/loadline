@@ -238,9 +238,11 @@ func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
 // loaded machine; TestRunTap_CapsItsPostAt100ms pins the tap's.
 //
 // The server times the wait, so the tap's work around it, which a loaded
-// machine can slow without bound, does not count; the whole tap is timed
-// only against a hang. The server's start, after the post, is slow enough
-// here to take the tap as a whole past the bound and its margin.
+// machine can slow without bound, does not count. The whole tap takes at
+// least the wait and the server's start, which load can only lengthen, and
+// is otherwise timed only against a hang. The server's start, after the
+// post, is slow enough here to take the tap as a whole past the bound and
+// its margin.
 func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
 	const deadline = 400 * time.Millisecond
 	cli.SetTapSendTimeout(t, deadline)
@@ -254,7 +256,12 @@ func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	if took, hang := time.Since(start), 10*deadline; took >= hang {
+	took := time.Since(start)
+	if least := deadline + f.spawns.delay; took < least {
+		t.Errorf("the tap returned after %v, want no sooner than its %v post and the %v start: %v",
+			took, deadline, f.spawns.delay, least)
+	}
+	if hang := 10 * deadline; took >= hang {
 		t.Errorf("the tap returned after %v, want it well within %v", took, hang)
 	}
 	if code != 0 {
