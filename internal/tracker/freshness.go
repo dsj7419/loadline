@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"maps"
+	"math"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
@@ -13,13 +14,22 @@ import (
 // Claude Code reports from the process's own last response: a process that
 // sits idle goes on reporting what it last heard.
 //
-// The newest response is the latest of the calls and of the status lines on
-// which the process's API time grew, since such a line came with the response
-// that grew it. The line's API time is the signal rather than its cost: it
-// grows by a whole number of milliseconds with every response, whatever the
-// call cost, where the cost stays put for a call priced at nothing. Until
-// either is seen, and so for every session after a restart, as what the
-// tracker knows of responses is kept in memory only, no response is known.
+// A response is dated when its call began. Claude Code takes the rate limits
+// from the response's headers, which come as the call begins, but reports
+// them on the process's lines only once the call has ended, when the
+// process's API time grows by the whole call. So the newest response is the
+// latest of the calls' starts, each call's end less its duration, and of the
+// starts the status lines show, each line's time less the growth of its
+// process's API time, since such a line came with the responses that grew
+// it. Calls that run side by side, as subagents' do, grow the API time by
+// more than the time they took together, which dates their line too early:
+// that errs toward the readings already held, and a line is never dated
+// before the response its process last heard (see date). The line's API time
+// is the signal rather than its cost: it grows by a whole number of
+// milliseconds with every response, whatever the call cost, where the cost
+// stays put for a call priced at nothing. Until either is seen, and so for
+// every session after a restart, as what the tracker knows of responses is
+// kept in memory only, no response is known.
 //
 // One session ID can belong to two live processes at once, as Claude Code
 // keeps it when a session is resumed while its first terminal is still open,
@@ -59,10 +69,11 @@ type processAccount struct {
 	dir domain.ConfigDir
 }
 
-// call notes a call the session made at at.
-func (c *responseClock) call(at time.Time) {
-	if at.After(c.unplaced) {
-		c.unplaced = at
+// call notes a call of the session that ended at at, after durationMS, or
+// after a time unknown when durationMS is not positive.
+func (c *responseClock) call(at time.Time, durationMS int64) {
+	if began := startOf(at, durationMS); began.After(c.unplaced) {
+		c.unplaced = began
 	}
 }
 
@@ -80,7 +91,7 @@ func (c *responseClock) line(dir domain.ConfigDir, pid int, apiDurationMS int64,
 	}
 	process := processAccount{pid: pid, dir: dir}
 	if grew {
-		c.date(process, at)
+		c.date(process, startOf(at, growth(previous, apiDurationMS)))
 	}
 	if first || grew || c.mostAPIDurationMS[pid] == 0 {
 		c.date(process, c.unplaced)
@@ -88,7 +99,30 @@ func (c *responseClock) line(dir domain.ConfigDir, pid int, apiDurationMS int64,
 	}
 }
 
-// date notes a response that came at at to process, on its account.
+// startOf returns when the calls that took durationMS in all, and ended at
+// end, began. A garbled count dates them no later than end, since one that is
+// not positive says nothing of when they began, and no earlier than the
+// longest time.Duration before end.
+func startOf(end time.Time, durationMS int64) time.Time {
+	if durationMS <= 0 {
+		return end
+	}
+	durationMS = min(durationMS, int64(math.MaxInt64/time.Millisecond))
+	return end.Add(-time.Duration(durationMS) * time.Millisecond)
+}
+
+// growth returns how much a count grew from previous to latest, which is
+// more than previous, or as much as an int64 holds when it grew by more.
+func growth(previous, latest int64) int64 {
+	if previous < 0 && latest > math.MaxInt64+previous {
+		return math.MaxInt64
+	}
+	return latest - previous
+}
+
+// date notes a response that came at at to process, on its account. A
+// process hears its responses in order, so one dated no later than the
+// newest known of it changes nothing.
 func (c *responseClock) date(process processAccount, at time.Time) {
 	if !at.After(c.newest[process]) {
 		return

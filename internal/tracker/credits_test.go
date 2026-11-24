@@ -655,3 +655,161 @@ func TestTracker_ADroppedWindowClosesASpanWithNoKnownReset(t *testing.T) {
 		t.Errorf("last sample recorded %+v, want the 5-hour window back at 0%% when the line dropped it, so a restart keeps the span closed", last)
 	}
 }
+
+// busyAccount plays the sessions of account A, sending the signals that date
+// the readings their status lines carry: the process's API time on each line,
+// when apiTime, and each call, with how long it took, when calls.
+type busyAccount struct {
+	h              *harness
+	apiTime, calls bool
+}
+
+// line applies a status line of id at sec that reports the weekly window at
+// pct, and the process's API time as apiMS, and returns the weekly usage
+// shown after it.
+func (b busyAccount) line(sec int, id domain.SessionID, pct float64, apiMS int64) float64 {
+	st := weeklyFrom(sec, id, pct)
+	if b.apiTime {
+		st = withAPITime(st, apiMS)
+	}
+	return shownWeekly(b.h, st)
+}
+
+// call records a call of id that ended at sec, costing costUSD, after
+// durationMS.
+func (b busyAccount) call(sec int, id domain.SessionID, costUSD float64, durationMS int64) {
+	if !b.calls {
+		return
+	}
+	r := request(at(sec), id, "Opus 5.5", costUSD)
+	r.DurationMS = durationMS
+	b.h.tr.RecordAPI(r)
+}
+
+// crossTheLimit plays two busy sessions of account A up to its weekly limit:
+// long's line at 0 s, its API time at longAPIMS, and short's at 2 s report
+// 98%, and short's calls report 100% from its line at 62 s. Meanwhile long
+// begins a call at 5 s, whose response headers report 98%.
+func (b busyAccount) crossTheLimit(long, short domain.SessionID, longAPIMS int64) {
+	b.line(0, long, 98, longAPIMS)
+	b.line(2, short, 98, 4_000)
+	b.call(60, short, 1, 2_000)
+	b.line(62, short, 100, 6_000)
+	b.call(120, short, 2, 2_000)
+	b.line(122, short, 100, 8_000)
+}
+
+// onCreditsSpans returns account A's spans on credits as of sec, from the
+// weekly samples recorded.
+func onCreditsSpans(h *harness, sec int) []domain.OnCreditsSpan {
+	return domain.OnCreditsSpans(domain.WindowSamples{SevenDay: recordedWeeklySamples(h)}, at(sec))
+}
+
+// Two sessions of one account are busy as it crosses its weekly limit. A
+// status line carries the rate limits that came with the response headers of
+// its process's newest call, as the call began, but only once the call has
+// ended, when the line's API time grows by the whole call. long's four-minute
+// call began at 98%, and its line at 246 s still reports that 98%, after
+// short's calls have reported 100% since 62 s. The reading is older than the
+// crossing, so the stretch on credits that began there goes on: one span, one
+// since, and every call made in it counted.
+func TestTracker_TwoBusySessionsCrossingTheLimitKeepOneSpan(t *testing.T) {
+	h := newSubscribedHarness(t, tracker.Config{Credits: aThousandDollars, Alerts: defaultAlerts})
+	account := busyAccount{h: h, apiTime: true, calls: true}
+	long, short := s1, s2
+	sinces := map[int64]bool{}
+	shownBelowLimit := 0
+	look := func() {
+		if pct := pctOf(h.account(dirA).SevenDay); pct != 100 {
+			shownBelowLimit++
+		}
+		for _, a := range alertsOfKind(h.tr.Snapshot(), domain.AlertCreditsActive) {
+			sinces[a.Since.UnixMilli()] = true
+		}
+	}
+
+	account.crossTheLimit(long, short, 10_000)
+	look()
+	account.call(245, long, 4, 240_000)
+	account.line(246, long, 98, 250_000)
+	look()
+	account.call(300, short, 8, 2_000)
+	account.line(302, short, 100, 10_000)
+	look()
+	account.call(360, short, 16, 2_000)
+	account.line(362, short, 100, 12_000)
+	look()
+	h.clock.Set(at(370))
+
+	if spans := onCreditsSpans(h, 370); len(spans) != 1 || !spans[0].From.Equal(at(62)) || !spans[0].To.IsZero() {
+		t.Errorf("spans %v of the samples recorded, want one open since %v", spans, at(62))
+	}
+	want := tracker.CreditsView{
+		BalanceUSD: 1000, SpentUSD: 30, RemainingUSD: 970, Days: 30,
+		OnCreditsSince: tracker.Timestamp(at(62)), Active: true, Source: domain.CreditSourceEstimate,
+	}
+	if got := h.account(dirA).Credits; got == nil || *got != want {
+		t.Errorf("credits %+v, want %+v: every call after the crossing was made at the limit", got, want)
+	}
+	if len(sinces) != 1 {
+		t.Errorf("credits_active came with %d different since times, want 1: the page notifies afresh for each new since", len(sinces))
+	}
+	if shownBelowLimit != 0 {
+		t.Errorf("the card showed the weekly window below 100%% in %d views after the crossing, want none", shownBelowLimit)
+	}
+}
+
+// The same crossing, from a Claude Code that sends only one of the signals
+// that date a reading: the line's API time, when its calls are not exported,
+// or the call's duration, when its lines report no API time. Either alone
+// dates long's 98% to before the crossing.
+func TestTracker_EitherSignalAloneDatesALongCallsReadingAtItsStart(t *testing.T) {
+	for name, account := range map[string]busyAccount{
+		"the line's API time": {apiTime: true},
+		"the call's duration": {calls: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			account.h = newHarness(t, tracker.Config{})
+			long, short := s1, s2
+			account.crossTheLimit(long, short, 10_000)
+			account.call(245, long, 4, 240_000)
+
+			if got := account.line(246, long, 98, 250_000); got != 100 {
+				t.Errorf("shown %v%% after long's line, want 100%%: its 98%% was heard before the crossing", got)
+			}
+			account.call(300, short, 8, 2_000)
+			account.line(302, short, 100, 10_000)
+			if spans := onCreditsSpans(account.h, 310); len(spans) != 1 || !spans[0].From.Equal(at(62)) || !spans[0].To.IsZero() {
+				t.Errorf("spans %v of the samples recorded, want one open since %v", spans, at(62))
+			}
+		})
+	}
+}
+
+// The crossing again, but long's last call is a short one that began at 244 s,
+// after the crossing, and its line reports 0%: the owner's mid-week reset,
+// which kept its reset time. The reading was taken after the crossing, so it
+// ends the stretch on credits, from either signal or both, however much API
+// time long had counted before.
+func TestTracker_AResetHeardAfterTheCrossingEndsTheSpan(t *testing.T) {
+	const anHourMS = 3_600_000
+	for name, account := range map[string]busyAccount{
+		"the line's API time and the call's duration": {apiTime: true, calls: true},
+		"the line's API time":                         {apiTime: true},
+		"the call's duration":                         {calls: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			account.h = newHarness(t, tracker.Config{})
+			long, short := s1, s2
+			account.crossTheLimit(long, short, anHourMS)
+			account.call(245, long, 4, 1_000)
+
+			if got := account.line(246, long, 0, anHourMS+2_000); got != 0 {
+				t.Errorf("shown %v%% after long's line, want the 0%% it heard after the crossing", got)
+			}
+			if spans := onCreditsSpans(account.h, 250); len(spans) != 1 || !spans[0].From.Equal(at(62)) || !spans[0].To.Equal(at(246)) {
+				t.Errorf("spans %v of the samples recorded, want one from %v to %v", spans, at(62), at(246))
+			}
+		})
+	}
+}

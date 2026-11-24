@@ -151,6 +151,7 @@ func TestDecodeLogs_RealFixture(t *testing.T) {
 		CacheRead:  17156,
 		CacheWrite: 20819,
 		CostUSD:    0.1700712,
+		DurationMS: 2426,
 	}
 	if request != want {
 		t.Errorf("request = %+v, want %+v", request, want)
@@ -214,11 +215,12 @@ func TestDecodeLogs_IntAsString(t *testing.T) {
 		intStrAttr("cache_read_tokens", 33),
 		intStrAttr("cache_creation_tokens", 44),
 		intStrAttr("cost_usd_micros", 250_000),
+		intStrAttr("duration_ms", 55),
 	)))
 
 	want := domain.APIRequest{
 		Session: testSession, Input: 11, Output: 22, CacheRead: 33, CacheWrite: 44,
-		CostUSD: 0.25,
+		CostUSD: 0.25, DurationMS: 55,
 	}
 	got.At = time.Time{}
 	if got != want {
@@ -456,9 +458,10 @@ func TestDecodeLogs_NegativeCountsClampToZero(t *testing.T) {
 		intAttr("output_tokens", -2),
 		intAttr("cache_read_tokens", -3),
 		intStrAttr("cache_creation_tokens", -4),
+		intAttr("duration_ms", -5),
 	)))
 
-	if got.Input != 0 || got.Output != 0 || got.CacheRead != 0 || got.CacheWrite != 0 {
+	if got.Input != 0 || got.Output != 0 || got.CacheRead != 0 || got.CacheWrite != 0 || got.DurationMS != 0 {
 		t.Errorf("request = %+v, want every negative count clamped to 0", got)
 	}
 }
@@ -480,8 +483,10 @@ func TestDecodeLogs_CountsAboveTheCapReadAsAbsent(t *testing.T) {
 				tt.attr("output_tokens", maxCount),
 				tt.attr("cache_read_tokens", maxCount),
 				tt.attr("cache_creation_tokens", maxCount),
+				tt.attr("duration_ms", maxCount),
 			)))
-			if atCap.Input != maxCount || atCap.Output != maxCount || atCap.CacheRead != maxCount || atCap.CacheWrite != maxCount {
+			if atCap.Input != maxCount || atCap.Output != maxCount || atCap.CacheRead != maxCount || atCap.CacheWrite != maxCount ||
+				atCap.DurationMS != maxCount {
 				t.Errorf("request = %+v, want every count at the cap kept", atCap)
 			}
 
@@ -490,8 +495,9 @@ func TestDecodeLogs_CountsAboveTheCapReadAsAbsent(t *testing.T) {
 				tt.attr("output_tokens", maxCount+1),
 				tt.attr("cache_read_tokens", maxCount+1),
 				tt.attr("cache_creation_tokens", maxCount+1),
+				tt.attr("duration_ms", maxCount+1),
 			)))
-			if overCap.Input != 0 || overCap.Output != 0 || overCap.CacheRead != 0 || overCap.CacheWrite != 0 {
+			if overCap.Input != 0 || overCap.Output != 0 || overCap.CacheRead != 0 || overCap.CacheWrite != 0 || overCap.DurationMS != 0 {
 				t.Errorf("request = %+v, want every count over the cap read as 0", overCap)
 			}
 		})
@@ -542,6 +548,19 @@ func TestDecodeLogs_EventTimeComesFromTheRecordOnly(t *testing.T) {
 
 	if len(got) != 0 {
 		t.Errorf("DecodeLogs = %+v, want none: a resource's event.timestamp is not any record's time", got)
+	}
+}
+
+// A call's duration, with its time, says when the call began, so it is the
+// record's own, as its time is.
+func TestDecodeLogs_DurationComesFromTheRecordOnly(t *testing.T) {
+	resource := attrs(intAttr("duration_ms", 9_000))
+
+	if got := decodeOne(t, export(resource, apiRequest())); got.DurationMS != 0 {
+		t.Errorf("DurationMS = %d, want 0: a resource's duration_ms is not any record's", got.DurationMS)
+	}
+	if got := decodeOne(t, export(resource, apiRequest(intAttr("duration_ms", 2_400)))); got.DurationMS != 2_400 {
+		t.Errorf("DurationMS = %d, want the record's 2400", got.DurationMS)
 	}
 }
 

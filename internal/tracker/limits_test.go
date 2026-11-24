@@ -1,6 +1,7 @@
 package tracker_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -395,6 +396,63 @@ func TestTracker_ALateLineDoesNotMakeTheNextOneFresh(t *testing.T) {
 
 	if got := shownWeekly(h, withAPITime(weeklyFrom(15, late, 95), 1200)); got != 96 {
 		t.Errorf("shown %v%%, want the 96%% of the fresher session: the late line's API time had not grown since", got)
+	}
+}
+
+// A process takes its readings in the order it heard them, so its line is
+// never dated before the response it last heard from. Its API time grows by
+// more than the time between its lines when its calls run side by side, as
+// two subagents' half-minute calls do here, and the growth alone would date
+// the line before the response its last line came with.
+func TestTracker_ALineIsNeverDatedBeforeItsProcesssLastResponse(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.RecordAPI(request(at(100), s1, "Opus 5.5", 0.1))
+	shownWeekly(h, withAPITime(weeklyFrom(101, s1, 97), 10_000))
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(130, s1, 98), 70_000)); got != 98 {
+		t.Errorf("shown %v%%, want the 98%% the process heard after its 97%%", got)
+	}
+}
+
+// A garbled count can put a response's start further back than a duration
+// reaches, or after the call that brought it. The response is then dated as
+// long ago as a duration reaches, or when the call ended, and never ahead of
+// the line or call that brought it, which would make its process's readings
+// the freshest from then on.
+func TestTracker_AGarbledCountDatesNoResponseAhead(t *testing.T) {
+	for name, garbled := range map[string]func(h *harness){
+		"a line's API time grown past what a duration holds": func(h *harness) {
+			shownWeekly(h, withAPITime(weeklyFrom(20, s1, 97), 1000))
+			shownWeekly(h, withAPITime(weeklyFrom(30, s1, 97), math.MaxInt64))
+		},
+		"a line's API time grown from below zero past what an int64 holds": func(h *harness) {
+			shownWeekly(h, withAPITime(weeklyFrom(20, s1, 97), -1))
+			shownWeekly(h, withAPITime(weeklyFrom(30, s1, 97), math.MaxInt64))
+		},
+		"a call that took longer than a duration holds": func(h *harness) {
+			r := request(at(25), s1, "Opus 5.5", 0.1)
+			r.DurationMS = math.MaxInt64
+			h.tr.RecordAPI(r)
+			shownWeekly(h, weeklyFrom(30, s1, 97))
+		},
+		"a call that took less than no time": func(h *harness) {
+			r := request(at(5), s1, "Opus 5.5", 0.1)
+			r.DurationMS = -60_000
+			h.tr.RecordAPI(r)
+			shownWeekly(h, weeklyFrom(30, s1, 97))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			h.tr.RecordAPI(request(at(10), s2, "Opus 5.5", 0.1))
+			shownWeekly(h, weeklyFrom(11, s2, 100))
+
+			garbled(h)
+
+			if got := pctOf(h.account(dirA).SevenDay); got != 100 {
+				t.Errorf("shown %v%%, want the 100%% heard at 10 s: the garbled reading is no fresher", got)
+			}
+		})
 	}
 }
 
