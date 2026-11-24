@@ -23,7 +23,14 @@ var syncRoot = fsperm.SyncRoot
 // movableAncestor is fsperm.MovableAncestor. Tests replace it: an account
 // that is not elevated cannot give a folder another owner, least of all an
 // account this computer no longer has.
-var movableAncestor = fsperm.MovableAncestor
+var movableAncestor = func(dir, top string) (fsperm.Movable, error) {
+	found, err := fsperm.MovableAncestor(dir, top)
+	// Every owner reads as trusted.
+	if found.Owner != (fsperm.Owner{}) {
+		return fsperm.Movable{}, err
+	}
+	return found, err
+}
 
 // inProfile is fsperm.InProfile. Tests replace it: the folders a test makes
 // are wherever its temporary folder is, which need not be in the profile.
