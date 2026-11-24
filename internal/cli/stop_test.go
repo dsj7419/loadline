@@ -622,9 +622,11 @@ func TestOldServerInstruction(t *testing.T) {
 				t.Errorf("instruction %q lacks %q", text, want)
 			}
 		}
-		m := regexp.MustCompile(`pkill -f '([^']*)'`).FindStringSubmatch(text)
+		// Run as root, pkill would end every user's server: the line keeps
+		// to the processes of the user who runs it, as it says.
+		m := regexp.MustCompile(`pkill -u "\$\(id -u\)" -f '([^']*)'`).FindStringSubmatch(text)
 		if m == nil {
-			t.Fatalf("instruction %q, want a pkill -f line", text)
+			t.Fatalf("instruction %q, want a pkill line kept to the user's own processes", text)
 		}
 		pattern, err := regexp.Compile(m[1])
 		if err != nil {
