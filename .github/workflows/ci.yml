@@ -133,6 +133,32 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -count=1 -v -run 'TestSyncRoot_|InsideASyncRoot$|IntoASyncRoot$' ./internal/fsperm/ ./internal/datadir/
+      - name: Make a second local account
+        # The TestIntegration_ tests give a data directory to this account.
+        # It has no password, so the log holds nothing secret. The runner is
+        # an administrator, whose SeRestorePrivilege lets the tests give a
+        # folder to another account, and back again.
+        id: second-account
+        if: runner.os == 'Windows'
+        run: New-LocalUser -Name loadline-it -NoPassword
+      - name: Make a folder another account owns
+        # The TestIntegration_ test on Linux and macOS takes this folder as its
+        # data directory. The runner empties RUNNER_TEMP when the job ends.
+        if: runner.os != 'Windows'
+        run: sudo install -d -o nobody -m 0755 "$RUNNER_TEMP/loadline-it"
+      - name: Test the refusal of a data directory another account owns
+        # Each test skips unless its variable is set, and fails when what that
+        # names cannot be used. The log lists each test as run, so none of
+        # them passed by being skipped.
+        env:
+          CGO_ENABLED: "1"
+          LOADLINE_IT_OTHER_ACCOUNT: loadline-it
+          LOADLINE_IT_FOREIGN_DIR: ${{ runner.temp }}/loadline-it
+        run: go test -race -count=1 -v -run TestIntegration_ ./internal/cli/
+      - name: Remove the second local account
+        # Whatever came of the tests, once the step that makes it has run.
+        if: always() && steps.second-account.outcome != 'skipped'
+        run: Remove-LocalUser -Name loadline-it
       - name: Test the full generated cases and the real tap under every shell
         # Under the race detector these tests run a reduced set of cases, or
         # one shell, to stay inside CI time; without it they run every case
