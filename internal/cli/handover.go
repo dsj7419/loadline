@@ -54,10 +54,14 @@ type handoverOptions struct {
 // that runs the binary install has just put in place, on the configured
 // port. Until it exits, a server keeps the binary it started from and the
 // port it listens on, and while sessions keep it busy it never exits. So
-// handOver asks the server that holds the history to stop when it serves
-// another port than the configured one, as after the port changed in the
-// config, since no server can start beside it; failing that, once install
-// has replaced the binary, it asks the server on the configured port. It
+// handOver asks the server that holds the history to stop when it was
+// started on its configured port and that is no longer the configured one,
+// as after the port changed in the config, since no server can start beside
+// it; failing that, once install has replaced the binary, it asks the
+// server on the configured port. A server the user started on a port of
+// their choosing, with serve --port, often because the configured one
+// cannot take a server, is left where it is, with the line that stops it:
+// install cannot tell whether a server can start on the configured port. It
 // waits until that server's process is gone, and starts the new one itself:
 // only a session's start starts one, and OpenTelemetry posts sent in the gap
 // would be lost. That server waits for the lock on the history, which covers
@@ -78,12 +82,18 @@ type handoverOptions struct {
 // covers whatever it still writes.
 func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld bool, err error) {
 	from := o.port
-	if elsewhere, ok := holderElsewhere(o.lockPath, o.port); ok {
-		if stoppedOld, err = stopToHandOver(ctx, out, o, elsewhere); err != nil {
+	holder, elsewhere := holderElsewhere(o.lockPath, o.port)
+	switch {
+	case elsewhere && holder.PortGiven:
+		out.printf("Note: the Loadline server on port %d was started with serve --port, and was left running; "+
+			"while it runs, no server starts on the configured port %d. Stop it with loadline stop --port %d to let one start there.\n",
+			holder.Port, o.port, holder.Port)
+	case elsewhere:
+		if stoppedOld, err = stopToHandOver(ctx, out, o, holder.Port); err != nil {
 			return false, err
 		}
 		if stoppedOld {
-			from = elsewhere
+			from = holder.Port
 		}
 	}
 	if !stoppedOld && o.replaced {
@@ -122,17 +132,17 @@ func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld 
 	return true, nil
 }
 
-// holderElsewhere returns the port that the server holding the history's
-// lock at lockPath recorded, when that is another than port.
-func holderElsewhere(lockPath string, port int) (int, bool) {
+// holderElsewhere returns what the server holding the history's lock at
+// lockPath recorded of itself, when it serves another port than port.
+func holderElsewhere(lockPath string, port int) (serverlock.Holder, bool) {
 	if !historyHeld(lockPath) {
-		return 0, false
+		return serverlock.Holder{}, false
 	}
 	holder, known := serverlock.ReadHolder(lockPath)
 	if !known || holder.Port == port {
-		return 0, false
+		return serverlock.Holder{}, false
 	}
-	return holder.Port, true
+	return holder, true
 }
 
 // stopToHandOver asks the server on port to stop, with the installation's

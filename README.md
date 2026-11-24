@@ -91,7 +91,7 @@ Loadline works without a config file. To change a default, create one with just 
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `port` | `8289` | Loopback port of the dashboard and the ingest endpoint, 1024 to 65535. Run `loadline install` again after changing it: it points the settings at the new port, and moves a running server from the old port to the new one. A server started with `loadline serve --port` stops with `loadline stop --port` and that port. |
+| `port` | `8289` | Loopback port of the dashboard and the ingest endpoint, 1024 to 65535. Run `loadline install` again after changing it: it points the settings at the new port, and moves a running server from the old port to the new one. Install leaves a server started with `loadline serve --port` where it is; stop that one with `loadline stop --port` and its port. |
 | `openOnStart` | `once_per_login` | When a starting server opens the dashboard: `once_per_login` (the first start after the computer boots), `always` or `never`. |
 | `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser, or of a batch file (`.cmd` or `.bat`) that starts one. A batch file, named with its extension or without, opens the dashboard in your normal profile, with `--app=<url>` alone: Windows runs it through cmd.exe, which would cut a profile path at an `&` or `^`. |
 | `appWindow` | `true` | Opens a Chromium-family browser as an app window, without tabs or an address bar. Firefox and the system default ignore it. |

@@ -18,6 +18,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/dsj7419/loadline/internal/cli"
+	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/serverlock"
 )
@@ -287,15 +288,29 @@ func TestInstall_DoesNotHandOverWhenTheBinaryIsUnchanged(t *testing.T) {
 }
 
 // holdHistoryUntilGone holds the history's lock of the installation in home
-// for fake, recorded as fake's, as a running server holds it, and lets go of
-// it once fake has stopped.
+// for fake, recorded as fake's on its configured port, as a running server
+// holds it, and lets go of it once fake has stopped.
 func holdHistoryUntilGone(t *testing.T, home string, fake *fakeLoadline) {
+	t.Helper()
+	holdHistoryFor(t, home, fake, serverlock.Holder{Port: fake.port, PID: fake.process.PID()})
+}
+
+// holdHistoryGivenPort is holdHistoryUntilGone for a server that was given
+// its port, as serve --port gives it.
+func holdHistoryGivenPort(t *testing.T, home string, fake *fakeLoadline) {
+	t.Helper()
+	holdHistoryFor(t, home, fake, serverlock.Holder{Port: fake.port, PID: fake.process.PID(), PortGiven: true})
+}
+
+// holdHistoryFor holds the history's lock of the installation in home,
+// recorded as holder, until fake has stopped.
+func holdHistoryFor(t *testing.T, home string, fake *fakeLoadline, holder serverlock.Holder) {
 	t.Helper()
 	lock, err := serverlock.Acquire(filepath.Join(home, "server.lock"), 0, nil)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	if err := lock.Record(serverlock.Holder{Port: fake.port, PID: fake.process.PID()}); err != nil {
+	if err := lock.Record(holder); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	letGo := sync.OnceFunc(func() { _ = lock.Release() })
@@ -498,6 +513,65 @@ func TestInstall_SaysWhatToDoWhenTheHandOverFails(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.FromSlash(installedExe(home))); err != nil || !gjson.Get(readSettings(t, dir), "hooks.SessionStart").Exists() {
 				t.Errorf("the settings or the binary are not in place (%v)", err)
+			}
+		})
+	}
+}
+
+// A server the user started with serve --port runs on the port they chose,
+// often because the configured one cannot take a server, as Loadline's own
+// refusal of a taken port advises. Install cannot tell whether a server can
+// start on the configured port now, so it leaves that one where it is,
+// whether or not it has anything to write, and says how to stop it.
+func TestInstall_LeavesAServerStartedWithServePortWhereItIs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// rewrite gives install something to write.
+		rewrite bool
+		// taken has another program on the configured port.
+		taken bool
+	}{
+		{name: "nothing to write, the configured port free"},
+		{name: "nothing to write, the configured port another program's", taken: true},
+		{name: "something to write, the configured port another program's", rewrite: true, taken: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setVersion(t, "0.1.1-test")
+			cli.SetElevated(t, false)
+			home, dir := sandbox(t, ownerSettings)
+			if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+				t.Fatalf("the first install: %s", got.stderr)
+			}
+			cfg, err := config.Load(filepath.Join(home, "config.json"), home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.taken {
+				listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Port)))
+				if err != nil {
+					t.Fatalf("listen on the configured port: %v", err)
+				}
+				other := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: hangBound}
+				go func() { _ = other.Serve(listener) }()
+				t.Cleanup(func() { _ = other.Close() })
+			}
+			if tc.rewrite {
+				writeSettings(t, dir, ownerSettings)
+			}
+			chosen := newFakeLoadline(t, ours(installToken(t, home)))
+			holdHistoryGivenPort(t, home, chosen)
+			noStarts(t)
+
+			got := run(t, "install", "--config-dir", dir, "--yes")
+
+			note := fmt.Sprintf("Note: the Loadline server on port %d was started with serve --port, and was left running; "+
+				"while it runs, no server starts on the configured port %d. Stop it with loadline stop --port %d to let one start there.\n",
+				chosen.port, cfg.Port, chosen.port)
+			if got.code != 0 || got.stderr != "" || strings.Count(got.stdout, note) != 1 {
+				t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and, once, %q", got.code, got.stderr, got.stdout, note)
+			}
+			if n := chosen.stopsAsked(); n != 0 || !chosen.answers() || exited(t, chosen.process.PID()) {
+				t.Errorf("the server started with serve --port was asked to stop %d times, or no longer runs; want it left running", n)
 			}
 		})
 	}

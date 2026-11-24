@@ -318,7 +318,7 @@ func TestLock_RecordReplacesWhatTheFileHeld(t *testing.T) {
 	path := lockPath(t)
 	lock := acquire(t, path)
 	defer release(t, lock)
-	for _, want := range []serverlock.Holder{{Port: 61234, PID: 42}, {Port: 1024, PID: 7}} {
+	for _, want := range []serverlock.Holder{{Port: 61234, PID: 42, PortGiven: true}, {Port: 1024, PID: 7}} {
 		if err := lock.Record(want); err != nil {
 			t.Fatalf("Record(%+v): %v", want, err)
 		}
@@ -326,6 +326,22 @@ func TestLock_RecordReplacesWhatTheFileHeld(t *testing.T) {
 		if got, ok := serverlock.ReadHolder(path); !ok || got != want {
 			t.Errorf("ReadHolder after Record(%+v) = %+v, %v", want, got, ok)
 		}
+	}
+}
+
+// A record written before holders said whether they were given their port
+// names one that serves the port it was configured with.
+func TestReadHolder_ARecordThatDoesNotSayReadsAsTheConfiguredPort(t *testing.T) {
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"port":8289,"pid":4242}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := serverlock.ReadHolder(path); !ok || got != (serverlock.Holder{Port: 8289, PID: 4242}) {
+		t.Errorf("ReadHolder = %+v, %v; want port 8289, process 4242, not given its port", got, ok)
 	}
 }
 

@@ -2161,6 +2161,29 @@ func TestServe_SaysWhatEndsAHolderOfTheHistoryThatRecordedNothing(t *testing.T) 
 	}
 }
 
+// The server records whether it was given its port, as serve --port gives
+// it, or took the configured one: install moves only a server of the
+// configured port, which a port change leaves on the old one.
+func TestServe_RecordsWhetherItWasGivenItsPort(t *testing.T) {
+	for name, given := range map[string]bool{"the configured port": false, "a port given with --port": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newServeFixture(t)
+			f.writeConfig(fmt.Sprintf(`{"port":%d,"claudePath":%q}`, f.port, filepath.Join(f.home, "no-claude")))
+			port := 0
+			if given {
+				port = f.port
+			}
+
+			f.start(func(o *cli.ServeOptions) { o.Port = port })
+
+			want := serverlock.Holder{Port: f.port, PID: os.Getpid(), PortGiven: given}
+			if got, ok := serverlock.ReadHolder(f.paths.ServerLock); !ok || got != want {
+				t.Errorf("the lock's record = %+v, %v; want %+v", got, ok, want)
+			}
+		})
+	}
+}
+
 // A data directory on a file system that takes no lock, as some network
 // shares do, served before servers took one there: the server still starts,
 // and says in its log that servers are not kept from the history there.

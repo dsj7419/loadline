@@ -196,7 +196,7 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 			_ = listener.Close()
 			return failToStart(err)
 		default:
-			unrecorded = lock.Record(serverlock.Holder{Port: port, PID: os.Getpid()})
+			unrecorded = lock.Record(serverlock.Holder{Port: port, PID: os.Getpid(), PortGiven: o.Port != 0})
 		}
 	}
 	// Opened only once the port and the history are ours, so that one

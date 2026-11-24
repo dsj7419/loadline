@@ -104,6 +104,10 @@ type Holder struct {
 	Port int `json:"port"`
 	// PID is its process.
 	PID int `json:"pid"`
+	// PortGiven says it was given its port, as serve --port gives it,
+	// rather than taking the configured one. A record that does not say
+	// names a server on its configured port.
+	PortGiven bool `json:"portGiven,omitempty"`
 }
 
 // maxRecord is far more than a record takes.
