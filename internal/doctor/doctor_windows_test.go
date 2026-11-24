@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/dsj7419/loadline/internal/doctor"
 	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
@@ -76,6 +78,21 @@ func TestSymlinked_FollowsTheFileThroughALinkedFolderAbove(t *testing.T) {
 		Status: doctor.Warn,
 		Detail: "the file is a symlink to " + resolved + ", so install writes the ingest token there; " +
 			"keep that file out of any repository you share",
+	}})
+}
+
+// A link of a kind Go cannot read, such as a symbolic link of the Windows
+// Subsystem for Linux, still stands for another path. Where it points cannot
+// be named, but why it cannot be followed can.
+func TestSymlinked_SaysWhyALinkItCannotReadCannotBeFollowed(t *testing.T) {
+	settings := settingsWithTag(t, fspermtest.TagLXSymlink, fsperm.NameSurrogate)
+
+	got := doctor.Symlinked(settings)
+
+	assertChecks(t, got, []doctor.Check{{
+		Name:   "token in " + settings,
+		Status: doctor.Warn,
+		Detail: "the file is a symlink that cannot be followed: " + windows.ERROR_CANT_ACCESS_FILE.Error(),
 	}})
 }
 

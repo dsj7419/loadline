@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1118,4 +1119,28 @@ func TestSymlinked_StillWarnsFirstOfTheFileAndItsFolder(t *testing.T) {
 			},
 		})
 	})
+}
+
+// A settings file that is a link whose target has gone cannot be followed.
+// The warning still names where the link points, so that its owner can put
+// it right, and says why without naming the file again: the check's name
+// does. A junction stands in for the link on Windows, where a symbolic link
+// would take a privilege to make.
+func TestSymlinked_NamesWhereABrokenFileLinkPoints(t *testing.T) {
+	root := t.TempDir()
+	linkFolder(t, filepath.Join(root, "home"), filepath.Join(root, "dotfiles", "home"))
+	settings := filepath.Join(root, "home", ".claude", "settings.json")
+	missing := filepath.Join(root, "elsewhere", "settings")
+	linkFolder(t, settings, missing)
+	if err := os.Remove(missing); err != nil {
+		t.Fatal(err)
+	}
+
+	got := doctor.Symlinked(settings)
+
+	assertChecks(t, got, []doctor.Check{{
+		Name:   "token in " + settings,
+		Status: doctor.Warn,
+		Detail: "the file is a symlink to " + missing + ", which cannot be followed: " + syscall.ENOENT.Error(),
+	}})
 }

@@ -337,7 +337,7 @@ func symlinked(path string) []Check {
 	if isLink(path) {
 		target, err := fsperm.FinalPath(path)
 		if err != nil {
-			return []Check{{Name: name, Status: Warn, Detail: "the file is a symlink that cannot be followed: " + err.Error()}}
+			return []Check{{Name: name, Status: Warn, Detail: brokenFileLink(path, err)}}
 		}
 		return []Check{{
 			Name:   name,
@@ -359,6 +359,25 @@ func symlinked(path string) []Check {
 		}
 	}
 	return nil
+}
+
+// brokenFileLink says that the settings file at path is a link the system
+// cannot follow, for the reason err gives. It names where the link points,
+// as the link holds it, when that can be read, and gives only the root cause
+// of err: the context around it names path, which the check's name holds.
+func brokenFileLink(path string, err error) string {
+	cause := err
+	for next := errors.Unwrap(cause); next != nil; next = errors.Unwrap(cause) {
+		cause = next
+	}
+	target, readErr := os.Readlink(path)
+	if readErr != nil {
+		return "the file is a symlink that cannot be followed: " + cause.Error()
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return "the file is a symlink to " + target + ", which cannot be followed: " + cause.Error()
 }
 
 // linkedFolder warns, as check name, that folder, which holds the settings
