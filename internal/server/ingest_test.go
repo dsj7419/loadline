@@ -111,7 +111,7 @@ func TestIngest_HookAppliesAndKicks(t *testing.T) {
 		At:      eventTime,
 		Dir:     domain.ConfigDir(configDir),
 		Session: "s1",
-		PID:     4242,
+		PID:     testPID,
 		Name:    "SessionStart",
 		Source:  "startup",
 	}
@@ -155,6 +155,36 @@ func TestIngest_StatusAppliesAndNotesTheDir(t *testing.T) {
 	}
 	if len(dirs) != 1 || dirs[0] != domain.ConfigDir(configDir) {
 		t.Errorf("noted dirs %v, want [%s]", dirs, configDir)
+	}
+}
+
+// A status line's rate limits are judged by the process it came from, which
+// its envelope names as a hook's does, and an envelope that names none leaves
+// it unknown.
+func TestIngest_AStatusLineCarriesItsProcess(t *testing.T) {
+	withoutPID := envelopeWith(t, protocol.KindStatus, statusPayload, func(fields map[string]json.RawMessage) {
+		delete(fields, "pid")
+	})
+	for name, tc := range map[string]struct {
+		body []byte
+		want int
+	}{
+		"the envelope's pid": {body: statusEnvelope(t, eventID(1)), want: testPID},
+		"no pid":             {body: withoutPID, want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+
+			assertStatus(t, h.do(statusRequest(tc.body)), http.StatusOK)
+
+			events, _ := h.sink.recorded()
+			if len(events) != 1 {
+				t.Fatalf("applied %d events, want 1", len(events))
+			}
+			if got, ok := events[0].(domain.Status); !ok || got.PID != tc.want {
+				t.Errorf("applied %+v, want the status line of pid %d", events[0], tc.want)
+			}
+		})
 	}
 }
 
