@@ -368,6 +368,24 @@ func TestPlan_StatusLineForms(t *testing.T) {
 			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64(`echo 'it''s' "q" ‘a’ $x`) + `'`,
 		},
 		{
+			name:     "another program in typographic quotes is the user's own",
+			settings: `{"statusLine": {"type": "command", "command": "& ‘C:/x/other.exe’ --print"}}`,
+			shell:    install.ShellPowerShell,
+			want:     `& "` + goldenExe + `" tap --run-b64 '` + b64(`& ‘C:/x/other.exe’ --print`) + `'`,
+		},
+		{
+			name:     "so is one in typographic quotes the file writes as escapes",
+			settings: `{"statusLine": {"type": "command", "command": "& \u2018C:/x/other.exe\u2019 --print"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | ( ( & ‘C:/x/other.exe’ --print` + "\n) )",
+		},
+		{
+			name:     "another program in single quotes is the user's own",
+			settings: `{"statusLine": {"type": "command", "command": "'C:/x/other.exe' --flag"}}`,
+			shell:    install.ShellBash,
+			want:     `"` + goldenExe + `" tap | 'C:/x/other.exe' --flag`,
+		},
+		{
 			name:     "a plain command follows the pipe as it is",
 			settings: `{"statusLine": {"type": "command", "command": "FOO=bar npx -y ccstatusline@latest --theme \"dark mode\" ~/x,y:1+2%"}}`,
 			shell:    install.ShellBash,
@@ -622,6 +640,17 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 		`& ‘C:/x/loadline.exe’ tap --print`,
 		`& “C:/x/loadline.exe” tap --print`,
 		`& 'C:/Users/O''Brien/loadline.exe' tap --print`,
+		// A quote left open, closed elsewhere or around part of the path
+		// still leaves a command that bash or PowerShell can read as
+		// starting with Loadline.
+		`& ‘C:/x/loadline.exe tap --print`,
+		`'C:/x/loadline.exe tap | foo`,
+		`& 'C:/x/loadline.exe tap --run-b64 '` + b64("foo") + `'`,
+		`'C:/x'/loadline.exe tap | foo`,
+		`"C:/x"/loadline.exe tap | foo`,
+		`& "C:/x/loadline.exe” tap --print`,
+		`"C:/x/loadline.exe” tap | echo "hi"`,
+		`'C:/Users/Dan’s/loadline.exe' tap | foo`,
 	} {
 		t.Run(command, func(t *testing.T) {
 			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)

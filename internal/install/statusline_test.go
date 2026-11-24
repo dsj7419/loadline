@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/dsj7419/loadline/internal/install"
 )
@@ -151,23 +154,44 @@ func TestPlanAndRevert_LeaveLoadlineInAnyQuotes(t *testing.T) {
 	} {
 		command := "& " + launcher + " tap --print"
 		t.Run(command, func(t *testing.T) {
-			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
+			// The file may hold the quotes as they are or as escapes.
+			for _, literal := range []string{jsonQuote(t, command), asciiLiteral(t, command)} {
+				settings := []byte(`{"statusLine": {"type": "command", "command": ` + literal + `}}`)
 
-			for _, shell := range shells {
-				out, changes, warnings := plan(t, settings, options(shell))
+				for _, shell := range shells {
+					out, changes, warnings := plan(t, settings, options(shell))
 
-				if got := statusCommand(t, out); got != command ||
-					!hasChange(changes, "statusLine.command", install.ActionSkip) || len(warnings) != 1 {
-					t.Errorf("shell %d: install made it %q with changes %+v and warnings %q, want it left alone with a warning",
-						shell, got, changes, warnings)
+					if got := statusCommand(t, out); got != command ||
+						!hasChange(changes, "statusLine.command", install.ActionSkip) || len(warnings) != 1 {
+						t.Errorf("%s, shell %d: install made it %q with changes %+v and warnings %q, want it left alone with a warning",
+							literal, shell, got, changes, warnings)
+					}
 				}
-			}
-			reverted, changes := revert(t, settings, "")
-			if !bytes.Equal(reverted, settings) || !hasChange(changes, "statusLine.command", install.ActionSkip) {
-				t.Errorf("uninstall made it %s with changes %+v, want it left alone and reported", reverted, changes)
+				reverted, changes := revert(t, settings, "")
+				if !bytes.Equal(reverted, settings) || !hasChange(changes, "statusLine.command", install.ActionSkip) {
+					t.Errorf("%s: uninstall made it %s with changes %+v, want it left alone and reported", literal, reverted, changes)
+				}
 			}
 		})
 	}
+}
+
+// asciiLiteral encodes s as a JSON string literal that writes each character
+// outside ASCII as a \u escape, as some encoders do.
+func asciiLiteral(t *testing.T, s string) string {
+	t.Helper()
+
+	var b strings.Builder
+	for _, r := range jsonQuote(t, s) {
+		if r < utf8.RuneSelf {
+			b.WriteRune(r)
+			continue
+		}
+		for _, unit := range utf16.Encode([]rune{r}) {
+			fmt.Fprintf(&b, `\u%04x`, unit)
+		}
+	}
+	return b.String()
 }
 
 // TestBashForm_KeepsTheOriginalsMeaning runs each original and the command

@@ -194,11 +194,12 @@ func isPlainRune(r rune) bool {
 
 // parseTapCommand tells whether a status-line command, given as its JSON
 // string literal, is one install wrote, for any Loadline path or exe, and if
-// so recovers the user's own command. Neither whitespace nor PowerShell's
-// call operator, spaced or not, nor the quotes around the path hide a
-// Loadline command. Install writes only the operator and one space ahead of
-// the program, and ASCII double quotes around it, so a command with anything
-// else there counts as edited.
+// so recovers the user's own command. Install writes PowerShell's call
+// operator and one space, or nothing, ahead of the program, and its path in
+// ASCII double quotes. A command that starts with Loadline in any other way
+// counts as edited: behind whitespace or an operator spaced otherwise, or
+// with the path bare or in other quotes, wherever cutLauncher or
+// otherReadings finds it.
 func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 	chars := splitString(literal)
 	launcher := trimLeadingSpace(chars)
@@ -207,6 +208,9 @@ func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 	}
 	path, rest, quote := cutLauncher(launcher)
 	if !isLoadlinePath(text(path), exe) {
+		if slices.ContainsFunc(otherReadings(launcher), func(p []char) bool { return isLoadlinePath(text(p), exe) }) {
+			return tapCommand{}, edited
+		}
 		return tapCommand{}, foreign
 	}
 	lead := text(chars[:len(chars)-len(launcher)])
@@ -258,10 +262,11 @@ const (
 
 // cutLauncher splits off the program a command starts with: a quoted path,
 // or else its first word. A path in ASCII double quotes, as install writes
-// it, ends at the next one, as bash reads it. Of the shells, only PowerShell
-// gives other quotes a meaning, and a hand edit or a word processor can leave
-// them, so a path in one is read as PowerShell reads it. A path whose closing
-// quote is missing is no path at all.
+// it, ends at the next one, as bash reads it. A path in any other quote,
+// ASCII single or typographic, ends where PowerShell ends it: PowerShell is
+// the one shell that takes typographic quotes for quotes, and a hand edit or
+// a word processor can leave them. A path whose closing quote is missing is
+// no path at all.
 func cutLauncher(chars []char) (path, rest []char, quote quoteKind) {
 	if len(chars) == 0 {
 		return nil, nil, unquoted
@@ -269,11 +274,8 @@ func cutLauncher(chars []char) (path, rest []char, quote quoteKind) {
 	opening, after := chars[0].r, chars[1:]
 	switch {
 	case opening == '"':
-		end := slices.IndexFunc(after, func(c char) bool { return c.r == '"' })
-		if end < 0 {
-			return nil, nil, straightDouble
-		}
-		return after[:end], after[end+1:], straightDouble
+		path, rest = cutBashString(after, '"')
+		return path, rest, straightDouble
 	case isDoubleQuote(opening):
 		path, rest = cutPowerShellString(after, isDoubleQuote)
 		return path, rest, otherDouble
@@ -281,11 +283,53 @@ func cutLauncher(chars []char) (path, rest []char, quote quoteKind) {
 		path, rest = cutPowerShellString(after, isSingleQuote)
 		return path, rest, single
 	}
+	path, rest = cutWord(chars)
+	return path, rest, unquoted
+}
+
+// otherReadings returns the programs a command that starts with a quote
+// names in the readings cutLauncher does not take, each of which a hand edit
+// can leave: its first word, quotes and all, which still ends in the
+// program's name when the quotes cover only part of the path or one is left
+// open; bash's reading of a path in ASCII single quotes, which ends at the
+// next one; and PowerShell's of a path in ASCII double quotes, which ends at
+// the next double quote of any kind. None of them is a form install writes.
+func otherReadings(chars []char) [][]char {
+	if len(chars) == 0 || !isDoubleQuote(chars[0].r) && !isSingleQuote(chars[0].r) {
+		return nil
+	}
+	word, _ := cutWord(chars)
+	readings := [][]char{word}
+	switch opening, after := chars[0].r, chars[1:]; opening {
+	case '\'':
+		path, _ := cutBashString(after, '\'')
+		readings = append(readings, path)
+	case '"':
+		path, _ := cutPowerShellString(after, isDoubleQuote)
+		readings = append(readings, path)
+	}
+	return readings
+}
+
+// cutWord splits chars at the first blank.
+func cutWord(chars []char) (word, rest []char) {
 	end := slices.IndexFunc(chars, func(c char) bool { return c.r == ' ' || c.r == '\t' })
 	if end < 0 {
 		end = len(chars)
 	}
-	return chars[:end], chars[end:], unquoted
+	return chars[:end], chars[end:]
+}
+
+// cutBashString splits chars, which follow a string's opening quote, at the
+// next quote, as bash reads a string in single quotes, or one in double
+// quotes that holds no escape. It returns nothing when no quote closes the
+// string.
+func cutBashString(chars []char, quote rune) (content, rest []char) {
+	end := slices.IndexFunc(chars, func(c char) bool { return c.r == quote })
+	if end < 0 {
+		return nil, nil
+	}
+	return chars[:end], chars[end+1:]
 }
 
 // cutPowerShellString splits chars, which follow a string's opening quote,
