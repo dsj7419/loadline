@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -922,4 +923,224 @@ func TestDoctor_SymlinkedSettingsWarn(t *testing.T) {
 				"keep that file out of any repository you share",
 		},
 	})
+}
+
+// The folders above the config folder hold the settings file as much as the
+// config folder does, all but those straight under the root of the volume:
+// they are the system's own layout, such as macOS's /var or Fedora
+// Silverblue's /home, which are links.
+func TestAncestorsToCheck(t *testing.T) {
+	tests := []struct {
+		name string
+		// windows marks a Windows path, checked on Windows alone; the others
+		// are checked everywhere else.
+		windows  bool
+		settings string
+		want     []string
+	}{
+		{
+			name:     "a profile on a drive",
+			windows:  true,
+			settings: `C:\Users\x\.claude\settings.json`,
+			want:     []string{`C:\Users\x`},
+		},
+		{
+			name:     "a config folder deeper in a profile",
+			windows:  true,
+			settings: `C:\Users\x\dots\.claude\settings.json`,
+			want:     []string{`C:\Users\x\dots`, `C:\Users\x`},
+		},
+		{name: "a config folder in a folder at the root of a drive", windows: true, settings: `D:\dots\.claude\settings.json`},
+		{name: "a config folder at the root of a drive", windows: true, settings: `D:\.claude\settings.json`},
+		{name: "a settings file at the root of a drive", windows: true, settings: `D:\settings.json`},
+		{
+			name:     "a profile on a share",
+			windows:  true,
+			settings: `\\server\share\home\x\.claude\settings.json`,
+			want:     []string{`\\server\share\home\x`},
+		},
+		{name: "a config folder in a folder at the root of a share", windows: true, settings: `\\server\share\x\.claude\settings.json`},
+		{
+			name:     "a profile on a drive named in full",
+			windows:  true,
+			settings: `\\?\C:\Users\x\.claude\settings.json`,
+			want:     []string{`\\?\C:\Users\x`},
+		},
+		{name: "a home folder", settings: "/home/x/.claude/settings.json", want: []string{"/home/x"}},
+		{
+			name:     "a config folder deeper in a home folder",
+			settings: "/home/x/dots/.claude/settings.json",
+			want:     []string{"/home/x/dots", "/home/x"},
+		},
+		{
+			name:     "a temporary folder on macOS",
+			settings: "/var/folders/ab/T/.claude/settings.json",
+			want:     []string{"/var/folders/ab/T", "/var/folders/ab", "/var/folders"},
+		},
+		{name: "a config folder in a folder at the root", settings: "/home/.claude/settings.json"},
+		{name: "a config folder at the root", settings: "/.claude/settings.json"},
+		{name: "a settings file at the root", settings: "/settings.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.windows != (runtime.GOOS == "windows") {
+				t.Skip("a path of another system")
+			}
+			if got := doctor.AncestorsToCheck(tt.settings); !slices.Equal(got, tt.want) {
+				t.Errorf("AncestorsToCheck(%s) = %q, want %q", tt.settings, got, tt.want)
+			}
+		})
+	}
+}
+
+// A folder further above the settings file, such as a home folder linked
+// into a dotfiles repository, puts the file, and the token install writes
+// into it, wherever the link leads, just as a linked config folder does. The
+// doctor names the nearest such link.
+func TestSymlinked_WarnsOfALinkFurtherAboveTheSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		// links are made in order, each at its first path to the folder at
+		// its second.
+		links [][2]string
+		// settings is the settings file, and link, target and file are what
+		// the warning names: the link, where it leads, and so the file install
+		// writes the token into. Every path is below the test's own folder.
+		settings, link, target, file string
+	}{
+		{
+			name:     "the folder that holds the config folder",
+			links:    [][2]string{{"home", "dotfiles/home"}},
+			settings: "home/.claude/settings.json",
+			link:     "home",
+			target:   "dotfiles/home",
+			file:     "dotfiles/home/.claude/settings.json",
+		},
+		{
+			name:     "a folder two levels above the config folder",
+			links:    [][2]string{{"home", "dotfiles/home"}},
+			settings: "home/work/.claude/settings.json",
+			link:     "home",
+			target:   "dotfiles/home",
+			file:     "dotfiles/home/work/.claude/settings.json",
+		},
+		{
+			name:     "the nearer of two linked folders",
+			links:    [][2]string{{"home", "dotfiles/home"}, {"home/work", "projects/work"}},
+			settings: "home/work/.claude/settings.json",
+			link:     "home/work",
+			target:   "projects/work",
+			file:     "projects/work/.claude/settings.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			root := t.TempDir()
+			below := func(path string) string { return filepath.Join(root, filepath.FromSlash(path)) }
+			for _, l := range tt.links {
+				linkFolder(t, below(l[0]), below(l[1]))
+			}
+			settings := below(tt.settings)
+			w.install(settings, `{}`, install.ShellBash)
+			w.deps.SettingsFiles = []string{settings}
+
+			got := w.run()
+
+			assertChecks(t, settingsChecks(t, got), []doctor.Check{
+				{Name: "settings " + settings, Status: doctor.OK, Detail: "wired"},
+				{
+					Name:   "token in " + settings,
+					Status: doctor.Warn,
+					Detail: "the folder " + below(tt.link) + " above it is a link to " + below(tt.target) +
+						", so install writes the ingest token into " + below(tt.file) +
+						"; keep that folder out of any repository you share",
+				},
+			})
+		})
+	}
+}
+
+// A link at the settings file, or at the config folder that holds it, says
+// most closely where the token goes, so the doctor names that one, and not
+// a link further above.
+func TestSymlinked_StillWarnsFirstOfTheFileAndItsFolder(t *testing.T) {
+	t.Run("the file", func(t *testing.T) {
+		w := newWorld(t)
+		root := t.TempDir()
+		linkFolder(t, filepath.Join(root, "home"), filepath.Join(root, "dotfiles", "home"))
+		target := filepath.Join(root, "elsewhere", "settings.json")
+		w.install(target, `{}`, install.ShellBash)
+		settings := filepath.Join(root, "home", ".claude", "settings.json")
+		if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, settings); err != nil {
+			t.Skipf("cannot create symlinks here: %v", err)
+		}
+		w.deps.SettingsFiles = []string{settings}
+		resolved, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got := w.run()
+
+		assertChecks(t, settingsChecks(t, got), []doctor.Check{
+			{Name: "settings " + settings, Status: doctor.OK, Detail: "wired"},
+			{
+				Name:   "token in " + settings,
+				Status: doctor.Warn,
+				Detail: "the file is a symlink to " + resolved + ", so install writes the ingest token there; " +
+					"keep that file out of any repository you share",
+			},
+		})
+	})
+	t.Run("its folder", func(t *testing.T) {
+		w := newWorld(t)
+		root := t.TempDir()
+		linkFolder(t, filepath.Join(root, "home"), filepath.Join(root, "dotfiles", "home"))
+		configDir := filepath.Join(root, "home", ".claude")
+		claude := filepath.Join(root, "elsewhere", "claude")
+		linkFolder(t, configDir, claude)
+		settings := filepath.Join(configDir, "settings.json")
+		w.install(settings, `{}`, install.ShellBash)
+		w.deps.SettingsFiles = []string{settings}
+
+		got := w.run()
+
+		assertChecks(t, settingsChecks(t, got), []doctor.Check{
+			{Name: "settings " + settings, Status: doctor.OK, Detail: "wired"},
+			{
+				Name:   "token in " + settings,
+				Status: doctor.Warn,
+				Detail: "its folder " + configDir + " is a link to " + claude + ", so install writes the ingest token into " +
+					filepath.Join(claude, "settings.json") + "; keep that folder out of any repository you share",
+			},
+		})
+	})
+}
+
+// A settings file that is a link whose target has gone cannot be followed.
+// The warning still names where the link points, so that its owner can put
+// it right, and says why without naming the file again: the check's name
+// does. A junction stands in for the link on Windows, where a symbolic link
+// would take a privilege to make.
+func TestSymlinked_NamesWhereABrokenFileLinkPoints(t *testing.T) {
+	root := t.TempDir()
+	linkFolder(t, filepath.Join(root, "home"), filepath.Join(root, "dotfiles", "home"))
+	settings := filepath.Join(root, "home", ".claude", "settings.json")
+	missing := filepath.Join(root, "elsewhere", "settings")
+	linkFolder(t, settings, missing)
+	if err := os.Remove(missing); err != nil {
+		t.Fatal(err)
+	}
+
+	got := doctor.Symlinked(settings)
+
+	assertChecks(t, got, []doctor.Check{{
+		Name:   "token in " + settings,
+		Status: doctor.Warn,
+		Detail: "the file is a symlink to " + missing + ", which cannot be followed: " + syscall.ENOENT.Error(),
+	}})
 }

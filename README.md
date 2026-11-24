@@ -354,9 +354,10 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
   `CLAUDE_CODE_GIT_BASH_PATH` settles it. There is no such warning when that variable names a bash
   or sh that exists, or when Git is in `C:\Program Files\Git` or `C:\Program Files (x86)\Git`,
   where Claude Code looks before `PATH`.
-- **token in:** a warning when a settings file, or the config folder that holds it, is a link, so
-  that the token goes into the file it ends up in, and on macOS and Linux when its mode lets group or
-  others read the token, as a rewrite by Claude Code can leave it.
+- **token in:** a warning when a settings file, the config folder that holds it, or a folder above
+  that (short of the folders straight under the root) is a link, so that the token goes into the
+  file it ends up in, and on macOS and Linux when its mode lets group or others read the token, as a
+  rewrite by Claude Code can leave it.
 - **binary:** the installed binary exists.
 - **server:** a Loadline server answers on the configured port.
 - **feeds:** each of the four feeds has reached the server in the last 10 minutes while sessions

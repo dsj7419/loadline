@@ -236,6 +236,15 @@ func exists(path string) bool {
 	return err == nil
 }
 
+// FinalPath returns the path the system opens for path, which must exist:
+// every link on the way followed, on Windows each junction and subst drive
+// too, and each name in its long form. On Windows it comes without the \\?\
+// prefix, a path on a share as \\server\share\…, and on a volume that has no
+// drive letter, and so no such path, FinalPath fails with ErrNoDriveLetter.
+// filepath.EvalSymlinks cannot stand in for it on Windows: it fails at a
+// junction on the way, which it takes for neither a folder nor a link.
+func FinalPath(path string) (string, error) { return finalPath(path) }
+
 // resolved returns path with every link in it followed (finalPath), as far
 // as path exists, and the rest of it as written. The rest does not exist
 // yet, and Loadline creates it private.
