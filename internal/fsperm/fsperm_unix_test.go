@@ -249,3 +249,128 @@ func TestDirPrivate_TellsMode0700(t *testing.T) {
 		}
 	}
 }
+
+// folderOfMode makes a folder in a temporary folder and gives it mode, which
+// the test end puts back to 0700, so that the folder can be removed.
+func folderOfMode(t *testing.T, mode fs.FileMode) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	return dir
+}
+
+// Listing a folder takes reading it, and looking at what it holds, as the
+// walk does at each entry, takes searching it: a folder its owner may read but
+// not search keeps them out as much as one they may not read.
+func TestListable_TakesReadingAndSearching(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may list any folder, whatever its mode")
+	}
+	for mode, want := range map[fs.FileMode]bool{0o700: true, 0o500: true, 0o400: false, 0o600: false, 0o300: false, 0o000: false} {
+		dir := folderOfMode(t, mode)
+
+		if got, err := fsperm.Listable(dir); err != nil || got != want {
+			t.Errorf("Listable of a folder of mode %#o = %t, %v; want %t", mode, got, err, want)
+		}
+	}
+	if _, err := fsperm.Listable(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Listable of a missing folder = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// A folder whose mode keeps its owner from listing it gets every right for
+// its owner back, and keeps what it gives others: nobody else gains
+// anything. One its owner may list already is left as it is.
+func TestRegainList_GivesTheOwnerBackAFolderOfTheirs(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may list any folder, whatever its mode")
+	}
+	for _, tt := range []struct {
+		mode, want fs.FileMode
+		changed    bool
+	}{
+		{mode: 0o000, want: 0o700, changed: true},
+		{mode: 0o300, want: 0o700, changed: true},
+		{mode: 0o400, want: 0o700, changed: true},
+		{mode: 0o600, want: 0o700, changed: true},
+		{mode: 0o005, want: 0o705, changed: true},
+		{mode: 0o500, want: 0o500},
+	} {
+		dir := folderOfMode(t, tt.mode)
+
+		changed, err := fsperm.RegainList(dir)
+
+		if err != nil || changed != tt.changed {
+			t.Errorf("RegainList of a folder of mode %#o = %t, %v; want %t", tt.mode, changed, err, tt.changed)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != tt.want {
+			t.Errorf("after RegainList, the mode of a folder of mode %#o is %#o; want %#o", tt.mode, got, tt.want)
+		}
+		if listable, err := fsperm.Listable(dir); err != nil || !listable {
+			t.Errorf("after RegainList, Listable of a folder of mode %#o = %t, %v; want true", tt.mode, listable, err)
+		}
+	}
+}
+
+// Giving the owner every right lets them list a folder unless they have every
+// right already: then something besides the mode keeps them out, such as an
+// access control list that macOS keeps beside it, and RegainList cannot.
+func TestListableOnceRegained_TellsWhetherTheModeIsWhatKeepsTheOwnerOut(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may list any folder, whatever its mode")
+	}
+	for _, mode := range []fs.FileMode{0o000, 0o400, 0o700} {
+		dir := folderOfMode(t, mode)
+
+		if got, err := fsperm.ListableOnceRegained(dir); err != nil || !got {
+			t.Errorf("ListableOnceRegained of a folder of mode %#o = %t, %v; want true", mode, got, err)
+		}
+	}
+}
+
+// The advice gives a command to paste only for a path the shell reads as
+// itself inside single quotes, each single quote in it closing them, escaped
+// with a backslash, and opening them again. A path that holds what a shell,
+// or a shell of another system an administrator may paste it into, would
+// expand or end a line at gets the tool's name and what to change instead,
+// as does one that holds a backslash, which fish reads as an escape even
+// inside single quotes, or a format character, such as a bidirectional
+// override or a zero-width space, which shows the path otherwise than the
+// command acts on it. Either way the owner of the folder alone changes:
+// Loadline judges the owner of each of its files once it may list them.
+func TestResetAdvice_QuotesThePathOrNamesTheTool(t *testing.T) {
+	for dir, quoted := range map[string]string{
+		"/srv/loadline":              "'/srv/loadline'",
+		"/srv/shared tools/loadline": "'/srv/shared tools/loadline'",
+		"/srv/R&D/loadline":          "'/srv/R&D/loadline'",
+		"/srv/it's/loadline":         `'/srv/it'\''s/loadline'`,
+		"/srv/Zoë Ōta 山田/loadline":   "'/srv/Zoë Ōta 山田/loadline'",
+	} {
+		got := fsperm.ResetAdvice(dir)
+		user := strings.TrimSuffix(strings.TrimPrefix(got, "give it to you with sudo chown "), " "+quoted)
+		if !strings.HasPrefix(got, "give it to you with sudo chown ") || !strings.HasSuffix(got, " "+quoted) ||
+			user == "" || strings.HasPrefix(user, "-") || strings.ContainsAny(user, " '\"") {
+			t.Errorf("ResetAdvice(%q) = %q, want sudo chown, the user's name and %s", dir, got, quoted)
+		}
+	}
+	for _, dir := range []string{
+		`/srv/"quoted"/loadline`, "/srv/%HOME%/loadline", "/srv/$work/loadline", "/srv/$(id)/loadline", "/srv/wow!/loadline",
+		"/srv/`id`/loadline", "/srv/“left/loadline", "/srv/right”/loadline", "/srv/„low/loadline", "/srv/line\nbreak/loadline",
+		`/srv/back\slash/loadline`, `/srv/loadline\`, "/srv/right\u202eto left/loadline", "/srv/isolated\u2066part\u2069/loadline",
+		"/srv/zero\u200bwidth/loadline",
+	} {
+		if got, want := fsperm.ResetAdvice(dir), "give "+dir+" to you with chown"; got != want {
+			t.Errorf("ResetAdvice(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}

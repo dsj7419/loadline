@@ -51,6 +51,21 @@ func AccessList(tb testing.TB, path string) List {
 	return listOf(tb, sd)
 }
 
+// Descriptor returns the access list of path, with the control bits that say
+// whether it is protected and whether Windows worked out what it inherits,
+// as the bytes Windows keeps them in. Two lists that hold the same entries
+// can differ in those bytes, as in unused space after an entry's SID.
+func Descriptor(tb testing.TB, path string) []byte {
+	tb.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		tb.Fatalf("read the access list of %s: %v", path, err)
+	}
+	defer runtime.KeepAlive(sd)
+	//nolint:gosec // G103: a self-relative security descriptor is Length bytes long
+	return bytes.Clone(unsafe.Slice((*byte)(unsafe.Pointer(sd)), sd.Length()))
+}
+
 // ParseList returns the access list sddl, a security descriptor string such
 // as "D:P(A;OICI;FA;;;SY)", describes.
 func ParseList(tb testing.TB, sddl string) List {

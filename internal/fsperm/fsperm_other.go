@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -138,12 +140,146 @@ func ForeignOwner(path string) (Owner, error) {
 	if uid == 0 || int64(uid) == int64(os.Getuid()) {
 		return Owner{}, nil
 	}
-	id := strconv.FormatUint(uint64(uid), 10)
-	name := "the account with user ID " + id
-	if account, err := user.LookupId(id); err == nil {
-		name = account.Username
+	return Owner{Name: accountName(uid)}, nil
+}
+
+// OwnerName names the owner of path, whoever it is: unlike ForeignOwner, it
+// names the user and root too.
+func OwnerName(path string) (string, error) {
+	uid, err := ownerOf(path)
+	if err != nil {
+		return "", err
 	}
-	return Owner{Name: name}, nil
+	return accountName(uid), nil
+}
+
+// accountName names the account with user ID uid, or gives its number when
+// no account answers to it.
+func accountName(uid uint32) string {
+	id := strconv.FormatUint(uint64(uid), 10)
+	if account, err := user.LookupId(id); err == nil {
+		return account.Username
+	}
+	return "the account with user ID " + id
+}
+
+// CanChangeList reports whether this process may change the mode of dir: only
+// its owner and root may.
+func CanChangeList(dir string) (bool, error) {
+	uid, err := ownerOf(dir)
+	if err != nil {
+		return false, err
+	}
+	euid := os.Geteuid()
+	return euid == 0 || int64(uid) == int64(euid), nil
+}
+
+// RegainList lets this process list dir, a folder whose mode keeps its owner
+// out, by giving the owner every right on it (mode|0700), which widens
+// nobody else's access, and reports whether it changed the mode. A folder it
+// can list already is left as it is. When dir still cannot be listed then,
+// as when an access control list beside the mode denies it, RegainList puts
+// the mode back and returns ErrStillLocked, as it does for a folder whose mode
+// this process may not change (CanChangeList). Two processes that run it on
+// dir at once, and both find it still kept out, may leave the owner's
+// rights on it: the one that put back the mode it read after the other
+// changed it. That lets in nobody else.
+func RegainList(dir string) (bool, error) {
+	listable, err := canList(dir)
+	if err != nil || listable {
+		return false, err
+	}
+	changeable, err := CanChangeList(dir)
+	switch {
+	case err != nil:
+		return false, err
+	case !changeable:
+		return false, ErrStillLocked
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false, err
+	}
+	mode := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+	if err := chmod(dir, mode|privateDirMode); err != nil {
+		return false, fmt.Errorf("give the folder's owner every right on it: %w", err)
+	}
+	listable, err = canList(dir)
+	if err == nil && listable {
+		return true, nil
+	}
+	if restoreErr := chmod(dir, mode); restoreErr != nil {
+		const kept = "put back the mode of %s, which keeps every right for its owner, "
+		if err != nil {
+			return true, fmt.Errorf(kept+"after listing it failed (%w): %w", dir, err, restoreErr)
+		}
+		return true, fmt.Errorf(kept+"though you still cannot list it: %w", dir, restoreErr)
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, ErrStillLocked
+}
+
+// ListableOnceRegained reports, changing nothing, whether dir, a folder this
+// process cannot list, could be listed once RegainList gave its owner every
+// right on it. It could unless the owner has every right already: then
+// something besides the mode keeps them out, such as an access control list
+// that macOS keeps beside it, or a security module, which RegainList cannot
+// change.
+func ListableOnceRegained(dir string) (bool, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&privateDirMode != privateDirMode {
+		return true, nil
+	}
+	return Listable(dir)
+}
+
+// canList is Listable, which RegainList asks before and after it changes the
+// mode, and chmod is os.Chmod, with which it changes it. Tests replace them:
+// no folder at hand fails that second question with an error, or refuses
+// its owner the mode it had a moment before.
+var (
+	canList = Listable
+	chmod   = os.Chmod
+)
+
+// passable returns why this process may not pass through dir to what it
+// holds, which takes the right to search it, or nil when it may: resolving
+// "." in dir takes just that right.
+func passable(dir string) error {
+	_, err := os.Lstat(filepath.Clean(dir) + string(filepath.Separator) + ".")
+	return err
+}
+
+// plainName matches an account name a shell reads as itself, which no option
+// could be taken for.
+var plainName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+// ResetAdvice says what an administrator can do to dir, a folder that keeps
+// the user out and whose mode Loadline cannot change: give it to the user,
+// who may change its mode then. Only the folder itself changes owner:
+// Loadline judges the owner of each of its files once it may list them, and
+// another account's files are not the user's to take. It gives the command
+// to paste, the path in single quotes, each single quote in it closing them,
+// escaped with a backslash, and opening them again, unless the path holds
+// what a shell, or one of another system an administrator may paste it
+// into, reads as something else (PasteUnsafe), or a backslash, which fish
+// reads as an escape even inside single quotes: it names the tool and what
+// to change then. The user is named by account, or by number when the name
+// is not a plain one.
+func ResetAdvice(dir string) string {
+	if PasteUnsafe(dir) || strings.Contains(dir, `\`) {
+		return "give " + dir + " to you with chown"
+	}
+	id := strconv.Itoa(os.Geteuid())
+	if account, err := user.LookupId(id); err == nil && plainName.MatchString(account.Username) {
+		id = account.Username
+	}
+	return "give it to you with sudo chown " + id + " '" + strings.ReplaceAll(dir, "'", `'\''`) + "'"
 }
 
 // InProfile never says a path is in the user's profile here. It tells only

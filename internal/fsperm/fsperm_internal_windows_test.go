@@ -1,6 +1,7 @@
 package fsperm
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -316,6 +317,30 @@ func mustFinalPath(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return final
+}
+
+// OwnerName names the owners ForeignOwner leaves out too: a folder that keeps
+// its user out and belongs to Administrators, as one made in an elevated
+// shell does, is theirs to put right.
+func TestOwnerName_NamesTheOwnersLoadlineTrustsToo(t *testing.T) {
+	trustedInstaller, err := windows.StringToSid(trustedInstallerSID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, owner := range map[string]*windows.SID{
+		"SYSTEM":           wellKnown(t, windows.WinLocalSystemSid),
+		"Administrators":   wellKnown(t, windows.WinBuiltinAdministratorsSid),
+		"TrustedInstaller": trustedInstaller,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			ownedBySID(t, dir, owner)
+
+			if got, err := OwnerName(dir); err != nil || got != accountName(owner) {
+				t.Errorf("OwnerName = %q, %v; want %q", got, err, accountName(owner))
+			}
+		})
+	}
 }
 
 // The folder the walk is told to trust is not judged, its owner included.
@@ -722,4 +747,98 @@ func fileSystemOf(t *testing.T, path string) string {
 		t.Fatalf("read the file system of %s: %v", windows.UTF16ToString(volume[:]), err)
 	}
 	return windows.UTF16ToString(fileSystem[:])
+}
+
+// lockedHere makes a folder in a private temporary folder whose list gives
+// nothing to anyone. The private list is put back when the test ends, so
+// that the folder can be removed.
+func lockedHere(t *testing.T) string {
+	t.Helper()
+	top := t.TempDir()
+	if err := Private(top); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(top, "loadline")
+	if err := MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.SetAccessListAsIs(t, dir, "D:P")
+	t.Cleanup(func() { _ = PassDown(dir) })
+	return dir
+}
+
+// checkAfterAnswers makes the check RegainList makes once it has added its
+// entry answer listable and err, for the rest of the test. The check before
+// it is the real one.
+func checkAfterAnswers(t *testing.T, listable bool, err error) {
+	t.Helper()
+	previous := canList
+	asked := 0
+	canList = func(dir string) (bool, error) {
+		asked++
+		if asked == 1 {
+			return previous(dir)
+		}
+		return listable, err
+	}
+	t.Cleanup(func() { canList = previous })
+}
+
+// When the check after the entry fails, RegainList cannot tell whether the
+// entry helps, and puts the list back exactly as it was.
+func TestRegainList_PutsTheListBackWhenTheCheckAfterFails(t *testing.T) {
+	dir := lockedHere(t)
+	before := fspermtest.Descriptor(t, dir)
+	failed := errors.New("the check failed")
+	checkAfterAnswers(t, false, failed)
+
+	changed, err := RegainList(dir)
+
+	if changed || !errors.Is(err, failed) {
+		t.Errorf("RegainList = %t, %v; want false and %v", changed, err, failed)
+	}
+	if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+		t.Errorf("after RegainList, the list of %s is %s; want it as it was, D:P", dir, fspermtest.AccessList(t, dir))
+	}
+}
+
+// When the list cannot be put back, RegainList says so in one sentence that
+// names the folder and keeps every cause, and reports the list changed: it
+// still holds the entry for the user.
+func TestRegainList_SaysInOneSentenceWhenItCannotPutTheListBack(t *testing.T) {
+	user, err := currentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, checkErr := range map[string]error{"still not listable": nil, "the check failed": errors.New("the check failed")} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedHere(t)
+			checkAfterAnswers(t, false, checkErr)
+			refused := errors.New("the volume refused")
+			previous := setSecurity
+			stored := 0
+			setSecurity = func(handle windows.Handle, info windows.SECURITY_INFORMATION, sd *windows.SECURITY_DESCRIPTOR) error {
+				stored++
+				if stored == 2 {
+					return refused
+				}
+				return previous(handle, info, sd)
+			}
+			t.Cleanup(func() { setSecurity = previous })
+
+			changed, err := RegainList(dir)
+
+			if !changed || !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "put back the access list of "+dir) ||
+				strings.Contains(err.Error(), "\n") {
+				t.Errorf("RegainList = %t, %q; want true and one sentence that starts with putting back the list of %s, for %v",
+					changed, err, dir, refused)
+			}
+			if checkErr != nil && !errors.Is(err, checkErr) {
+				t.Errorf("RegainList = %v, want it to keep %v too", err, checkErr)
+			}
+			if after := fspermtest.AccessList(t, dir); len(after.Entries) != 1 || !after.Names(user) {
+				t.Errorf("after RegainList, %s holds %s; want the entry for the user it could not take off", dir, after)
+			}
+		})
+	}
 }
