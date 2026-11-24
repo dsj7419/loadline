@@ -397,7 +397,8 @@ type fileAttributeTagInfo struct {
 // reparseOf tells what kind of reparse point the file handle is open on is,
 // and its tag, from attributes, the file's attributes read on that handle.
 // The tag is read only from a reparse point: a file system that has none
-// need not answer for it.
+// need not answer for it. Deduplication makes files alone reparse points,
+// so a folder with its tag is of a kind Loadline does not know.
 func reparseOf(handle windows.Handle, attributes uint32) (ReparseKind, uint32, error) {
 	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
 		return NotReparse, 0, nil
@@ -407,7 +408,11 @@ func reparseOf(handle windows.Handle, attributes uint32) (ReparseKind, uint32, e
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		return NotReparse, 0, err
 	}
-	return reparseKind(info.ReparseTag), info.ReparseTag, nil
+	kind := reparseKind(info.ReparseTag)
+	if kind == Deduplicated && attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		kind = OtherReparse
+	}
+	return kind, info.ReparseTag, nil
 }
 
 // procCfGetSyncRootInfoByPath is the call of the Cloud Files API that tells
@@ -440,8 +445,9 @@ type syncRootProviderInfo struct {
 }
 
 // SyncRoot asks Windows whether path is in a folder that a cloud service,
-// such as OneDrive, keeps in sync, a sync root, and if so returns that
-// folder and the name of the service. It asks about path, or when path does
+// such as OneDrive, keeps in sync, a sync root, and if so returns the name of
+// the service and that folder, or "" for the folder when it cannot be found
+// among those that hold path. It asks about path, or when path does
 // not exist yet, about the nearest folder above it that does, in which it
 // would be made, and finds that folder without following a link. Windows
 // answers for where that folder really is, each link on the way followed,
@@ -490,24 +496,23 @@ func syncRootInfo[T syncRootProviderInfo | uint64](name *uint16, class uintptr, 
 // the folders that really hold existing, the one whose file ID is the
 // root's. NTFS, the only file system the cloud filter serves, keeps that
 // 64-bit ID in the low 64 bits of a file's full ID. Each folder is looked at
-// itself, a link not followed. When the root cannot be found, existing names
-// a folder the service keeps in sync too.
+// itself, a link not followed. It returns "" when the root cannot be found.
 func syncRootFolder(existing string, name *uint16) string {
 	// CF_SYNC_ROOT_BASIC_INFO, which holds the ID alone.
 	var rootID uint64
 	if syncRootInfo(name, syncRootInfoBasic, &rootID) != 0 {
-		return existing
+		return ""
 	}
 	held, err := finalPath(existing)
 	if err != nil {
-		return existing
+		return ""
 	}
 	for folder := held; ; folder = filepath.Dir(folder) {
 		if entry, err := Inspect(folder); err == nil && binary.LittleEndian.Uint64(entry.ID.id[:8]) == rootID {
 			return folder
 		}
 		if filepath.Dir(folder) == folder {
-			return existing
+			return ""
 		}
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
 
 // An access list can hold generic rights, which Windows turns into what they
@@ -439,6 +441,34 @@ func TestSyncRoot_AnswersNotUnderWithoutTheCloudFilesAPI(t *testing.T) {
 				t.Errorf("SyncRoot = %q, %q, %t, %v; want not under, for %v", root, provider, under, err, tt.want)
 			}
 		})
+	}
+}
+
+// Windows says a path is in a sync root, and names the service, but not the
+// root's path, which SyncRoot finds among the folders that really hold the
+// path. When it cannot find it, as when the path cannot be resolved, it
+// still answers under, and leaves the root unnamed rather than name a folder
+// that is not the root.
+func TestSyncRoot_LeavesTheRootUnnamedWhenItCannotFindIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Cloud")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.RegisterSyncRoot(t, root, "Example Drive")
+	dir := filepath.Join(root, "loadline")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previous := finalPath
+	finalPath = func(string) (string, error) { return "", errors.New("the file system cannot say") }
+	t.Cleanup(func() { finalPath = previous })
+
+	for _, path := range []string{root, dir, filepath.Join(dir, "not", "made", "yet")} {
+		got, provider, under, err := SyncRoot(path)
+
+		if err != nil || !under || provider != "Example Drive" || got != "" {
+			t.Errorf("SyncRoot(%s) = %q, %q, %t, %v; want under no named root, of Example Drive", path, got, provider, under, err)
+		}
 	}
 }
 

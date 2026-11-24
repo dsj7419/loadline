@@ -6,6 +6,7 @@ package datadir
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,24 +76,25 @@ func inspectAsReparsePoint(t *testing.T, path string, kind fsperm.ReparseKind, t
 }
 
 // reparsePointAt returns what makes path a file, or when folder is set, a
-// folder, that holds a reparse point of kind with tag.
+// folder, that holds a reparse point with tag, which Inspect reads as a
+// reparse point of the kind asFile, or for a folder, asFolder.
 //
 // That is a reparse point planted on it, which nothing on the volume
 // handles, unless opened is set: then the system must open the path through
 // the point, as it does through one its filter handles, which a planted
-// point does not let it. Deduplication makes files alone reparse points, and
-// a folder with a planted tag could not be listed. In either case path is an
-// ordinary private file or folder, read as such a reparse point through
-// inspect, which also shows the checks judge by Entry.Link, never by kind.
-func reparsePointAt(kind fsperm.ReparseKind, tag uint32) func(t *testing.T, top, path string, folder, opened bool) {
+// point does not let it. Then path is an ordinary private folder, read as
+// such a reparse point through inspect.
+func reparsePointAt(tag uint32, asFile, asFolder fsperm.ReparseKind) func(t *testing.T, top, path string, folder, opened bool) {
 	return func(t *testing.T, _, path string, folder, opened bool) {
 		t.Helper()
-		if !opened && (!folder || kind != fsperm.Deduplicated) {
+		if !opened {
 			entryAt(t, path, folder)
 			fspermtest.PlantReparsePoint(t, path, tag)
 			return
 		}
+		kind := asFile
 		if folder {
+			kind = asFolder
 			if err := fsperm.MkdirAll(path); err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +119,9 @@ func problemOf(dir, top string) error {
 // links of many kinds, each a reparse point, and reparse points of other
 // kinds besides, which Loadline cannot tell where they lead, or whether they
 // do. Each is refused, in a sentence that says what it is, except a
-// deduplicated file, which is the ordinary file it was.
+// deduplicated file, which is the ordinary file it was. Deduplication makes
+// files alone reparse points: a folder with its tag is refused as a reparse
+// point of a kind Loadline does not know.
 func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 	kinds := []struct {
 		name string
@@ -125,9 +129,10 @@ func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 		// kind, with whatever it leads to in top, which the system opens
 		// the path through when opened is set.
 		make func(t *testing.T, top, path string, folder, opened bool)
-		// refusal is how a check's report of path starts, path being the
-		// data directory when dataDir is set, or "" when the check takes it.
-		refusal func(path string, dataDir bool) string
+		// refusal is how a check's report of path, a folder when folder is
+		// set, starts, path being the data directory when dataDir is set, or
+		// "" when the check takes it.
+		refusal func(path string, dataDir, folder bool) string
 	}{
 		{
 			name: "a junction",
@@ -148,28 +153,27 @@ func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 			refusal: linkRefusal,
 		},
 		{
-			name: "a reparse point of another kind",
-			make: reparsePointAt(fsperm.OtherReparse, fspermtest.TagThirdParty),
-			refusal: func(path string, dataDir bool) string {
-				advice := "remove it, then run loadline install"
-				if dataDir {
-					advice = "set LOADLINE_HOME to a new folder"
-				}
-				return path + " is a reparse point of a kind Loadline does not know (tag 0x0000ABCD), which may lead somewhere else: " + advice
-			},
+			name:    "a reparse point of another kind",
+			make:    reparsePointAt(fspermtest.TagThirdParty, fsperm.OtherReparse, fsperm.OtherReparse),
+			refusal: unknownKindRefusal("0x0000ABCD"),
 		},
 		{
 			name: "a cloud file",
-			make: reparsePointAt(fsperm.CloudFile, fspermtest.TagOneDrive),
-			refusal: func(path string, _ bool) string {
+			make: reparsePointAt(fspermtest.TagOneDrive, fsperm.CloudFile, fsperm.CloudFile),
+			refusal: func(path string, _, _ bool) string {
 				return path + " is kept in sync with the cloud (tag 0x80000021), so the token and the binary every hook runs would be " +
 					`copied there: set LOADLINE_HOME to a folder no cloud service keeps in sync, such as the default %LOCALAPPDATA%\loadline`
 			},
 		},
 		{
-			name:    "a deduplicated file",
-			make:    reparsePointAt(fsperm.Deduplicated, fspermtest.TagDedup),
-			refusal: func(string, bool) string { return "" },
+			name: "the deduplication tag",
+			make: reparsePointAt(fspermtest.TagDedup, fsperm.Deduplicated, fsperm.OtherReparse),
+			refusal: func(path string, dataDir, folder bool) string {
+				if !folder {
+					return ""
+				}
+				return unknownKindRefusal("0x80000013")(path, dataDir, folder)
+			},
 		},
 	}
 	ways := []struct {
@@ -210,7 +214,7 @@ func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 					path = filepath.Join(dir, way.at)
 				}
 				kind.make(t, top, path, way.folder, way.opened)
-				want := kind.refusal(path, way.at == "")
+				want := kind.refusal(path, way.at == "", way.folder)
 
 				err := way.check(dir, top, path)
 
@@ -225,9 +229,45 @@ func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 	}
 }
 
+// unknownKindRefusal returns how a check's report of path, a reparse point
+// of a kind Loadline does not know whose tag reads as tag, starts.
+func unknownKindRefusal(tag string) func(path string, dataDir, folder bool) string {
+	return func(path string, dataDir, _ bool) string {
+		advice := "remove it, then run loadline install"
+		if dataDir {
+			advice = "set LOADLINE_HOME to a new folder"
+		}
+		return path + " is a reparse point of a kind Loadline does not know (tag " + tag + "), which may lead somewhere else: " + advice
+	}
+}
+
+// A data directory that is a reparse point nothing on the volume handles
+// cannot be opened through, so Verify and Check cannot find the folders
+// that really hold it. They refuse it for that before they judge what it
+// is, and take none, whatever they say.
+func TestVerify_RefusesADataDirectoryThatIsAReparsePointNothingHandles(t *testing.T) {
+	for _, tag := range []uint32{fspermtest.TagThirdParty, fspermtest.TagOneDrive, fspermtest.TagDedup} {
+		t.Run(fmt.Sprintf("tag 0x%08X", tag), func(t *testing.T) {
+			top := t.TempDir()
+			dir := filepath.Join(top, "loadline")
+			if err := fsperm.MkdirAll(dir); err != nil {
+				t.Fatal(err)
+			}
+			fspermtest.PlantReparsePoint(t, dir, tag)
+
+			if err := Verify(dir, top); err == nil {
+				t.Errorf("Verify took %s", dir)
+			}
+			if problem, err := Check(dir, top); problem == "" && err == nil {
+				t.Errorf("Check took %s", dir)
+			}
+		})
+	}
+}
+
 // linkRefusal is how a check's report of path, a link to another path,
 // starts: the data directory's says where it leads.
-func linkRefusal(path string, dataDir bool) string {
+func linkRefusal(path string, dataDir, _ bool) string {
 	if dataDir {
 		return path + " is a link to "
 	}

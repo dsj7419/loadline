@@ -316,8 +316,14 @@ func cloudProblem(dir string) string {
 	if !under {
 		return ""
 	}
-	return dir + " is in " + root + ", which " + provider + " keeps in sync with the cloud, so the token and the binary " +
-		`every hook runs would be copied there: set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
+	// Windows names the service, but not always a folder that can be found
+	// for the root.
+	synced := root + ", which " + provider
+	if root == "" {
+		synced = "a folder that " + provider
+	}
+	return dir + " is in " + synced + " keeps in sync with the cloud, so the token and the binary every hook runs " +
+		`would be copied there: set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
 }
 
 // dirLinkProblem reports dir as a link, in the words its kind calls for, or

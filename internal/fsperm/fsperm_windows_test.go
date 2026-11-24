@@ -866,7 +866,9 @@ func planted(tag uint32) maker {
 // Inspect reads what kind of reparse point a path is from its tag. Every
 // kind but a deduplicated file is a link, which Loadline refuses among its
 // own files; only one that stands for another name leads to a path doctor
-// can name. A deduplicated file is the ordinary file it was.
+// can name. A deduplicated file is the ordinary file it was. Deduplication
+// makes files alone reparse points, so a folder with its tag is of a kind
+// Loadline does not know.
 func TestInspect_SortsReparsePointsByKind(t *testing.T) {
 	targets := t.TempDir()
 	targetFile, targetFolder := filepath.Join(targets, "target.txt"), filepath.Join(targets, "target")
@@ -889,11 +891,11 @@ func TestInspect_SortsReparsePointsByKind(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name        string
-		make        maker
-		foldersOnly bool
-		reparse     fsperm.ReparseKind
-		tag         uint32
+		name                   string
+		make                   maker
+		filesOnly, foldersOnly bool
+		reparse                fsperm.ReparseKind
+		tag                    uint32
 	}{
 		{name: "an ordinary one", make: plainEntry, reparse: fsperm.NotReparse},
 		{name: "a junction", make: junctionTo, foldersOnly: true, reparse: fsperm.NameSurrogate, tag: windows.IO_REPARSE_TAG_MOUNT_POINT},
@@ -901,12 +903,13 @@ func TestInspect_SortsReparsePointsByKind(t *testing.T) {
 		{name: "a Linux symbolic link", make: planted(fspermtest.TagLXSymlink), reparse: fsperm.NameSurrogate, tag: fspermtest.TagLXSymlink},
 		{name: "a third party's link", make: planted(fspermtest.TagThirdPartySurrogate), reparse: fsperm.NameSurrogate, tag: fspermtest.TagThirdPartySurrogate},
 		{name: "a cloud file", make: planted(fspermtest.TagOneDrive), reparse: fsperm.CloudFile, tag: fspermtest.TagOneDrive},
-		{name: "a deduplicated file", make: planted(fspermtest.TagDedup), reparse: fsperm.Deduplicated, tag: fspermtest.TagDedup},
+		{name: "a deduplicated file", make: planted(fspermtest.TagDedup), filesOnly: true, reparse: fsperm.Deduplicated, tag: fspermtest.TagDedup},
+		{name: "a folder with the deduplication tag", make: planted(fspermtest.TagDedup), foldersOnly: true, reparse: fsperm.OtherReparse, tag: fspermtest.TagDedup},
 		{name: "an app execution alias", make: planted(fspermtest.TagAppExecLink), reparse: fsperm.OtherReparse, tag: fspermtest.TagAppExecLink},
 		{name: "a third party's reparse point", make: planted(fspermtest.TagThirdParty), reparse: fsperm.OtherReparse, tag: fspermtest.TagThirdParty},
 	} {
 		for _, folder := range []bool{false, true} {
-			if tt.foldersOnly && !folder {
+			if (tt.foldersOnly && !folder) || (tt.filesOnly && folder) {
 				continue
 			}
 			// No comma in the name: the junction's path, which holds it, is

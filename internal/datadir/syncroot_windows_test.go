@@ -188,3 +188,24 @@ func TestSecure_AcceptsADataDirectoryWhenTheSyncRootQuestionFails(t *testing.T) 
 		}
 	}
 }
+
+// Windows names the service that keeps a folder in sync, and SyncRoot finds
+// the sync root among the folders that hold it. When it cannot, the refusal
+// says the data directory is in a folder that service keeps in sync, rather
+// than name a folder that may not be the root.
+func TestSecure_NamesTheSyncRootOnlyWhenItIsFound(t *testing.T) {
+	top := t.TempDir()
+	dir := filepath.Join(top, "loadline")
+	const rest = " keeps in sync with the cloud, so the token and the binary every hook runs would be copied there: " +
+		`set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
+	for _, tt := range []struct{ root, want string }{
+		{root: top, want: dir + " is in " + top + ", which " + testProvider + rest},
+		{root: "", want: dir + " is in a folder that " + testProvider + rest},
+	} {
+		replaceSyncRoot(t, func(string) (string, string, bool, error) { return tt.root, testProvider, true, nil })
+
+		if err := Secure(dir, top); errorText(err) != tt.want {
+			t.Errorf("Secure, with the root named %q = %v; want %q", tt.root, err, tt.want)
+		}
+	}
+}

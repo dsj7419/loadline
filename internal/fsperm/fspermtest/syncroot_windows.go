@@ -86,16 +86,26 @@ func RegisterSyncRoot(tb testing.TB, dir, provider string) {
 	//nolint:gosec // G103: CfRegisterSyncRoot reads the path and the two structures it is given, laid out as cfapi.h declares them
 	hr, _, _ := procCfRegisterSyncRoot.Call(uintptr(unsafe.Pointer(root)), uintptr(unsafe.Pointer(&registration)),
 		uintptr(unsafe.Pointer(&policies)), 0)
-	if hr != 0 {
-		tb.Skipf("register %s as a sync root: HRESULT 0x%08X", dir, uint32(hr)) //nolint:gosec // G115: an HRESULT is 32 bits
-	}
-	tb.Logf("registered %s as a sync root of %s", dir, provider)
+	registered := hresult(hr) == 0
+	// Unregistered whatever the answer, before anything can end the test: a
+	// sync root left registered in the temporary folder outlasts the test.
+	// Only one that was registered must unregister.
 	tb.Cleanup(func() {
 		//nolint:gosec // G103: CfUnregisterSyncRoot reads the path it is given
-		if hr, _, _ := procCfUnregisterSyncRoot.Call(uintptr(unsafe.Pointer(root))); hr != 0 {
-			tb.Errorf("unregister the sync root %s: HRESULT 0x%08X", dir, uint32(hr)) //nolint:gosec // G115: an HRESULT is 32 bits
+		hr, _, _ := procCfUnregisterSyncRoot.Call(uintptr(unsafe.Pointer(root)))
+		if registered && hresult(hr) != 0 {
+			tb.Errorf("unregister the sync root %s: HRESULT 0x%08X", dir, hresult(hr))
 		}
 	})
+	if !registered {
+		tb.Skipf("register %s as a sync root: HRESULT 0x%08X", dir, hresult(hr))
+	}
+	tb.Logf("registered %s as a sync root of %s", dir, provider)
+}
+
+// hresult is the HRESULT a call returned in r, its low 32 bits.
+func hresult(r uintptr) uint32 {
+	return uint32(r) //nolint:gosec // G115: an HRESULT is 32 bits
 }
 
 func utf16(tb testing.TB, s string) *uint16 {
