@@ -93,9 +93,9 @@ Loadline works without a config file. To change a default, create one with just 
 | --- | --- | --- |
 | `port` | `8289` | Loopback port of the dashboard and the ingest endpoint, 1024 to 65535. Run `loadline install` again after changing it, so the settings send telemetry to the new port. |
 | `openOnStart` | `once_per_login` | When a starting server opens the dashboard: `once_per_login` (the first start after the computer boots), `always` or `never`. |
-| `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser. |
+| `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser, or of a batch file (`.cmd` or `.bat`) that starts one. A batch file, named with its extension or without, opens the dashboard in your normal profile, with `--app=<url>` alone: Windows runs it through cmd.exe, which would cut a profile path at an `&` or `^`. |
 | `appWindow` | `true` | Opens a Chromium-family browser as an app window, without tabs or an address bar. Firefox and the system default ignore it. |
-| `browserProfile` | `dedicated` | `dedicated` opens a Chromium app window in a profile of its own, `browser` in the data directory, with no extensions and nothing shared with your browsing (see [Privacy and security](#privacy-and-security)). `default` opens it in your normal profile. A tab, Firefox and the system default always use your normal profile. A snap or Flatpak browser given by its path cannot write under `~/.local/state`: set `default` for one. |
+| `browserProfile` | `dedicated` | `dedicated` opens a Chromium app window in a profile of its own, `browser` in the data directory, with no extensions and nothing shared with your browsing (see [Privacy and security](#privacy-and-security)). `default` opens it in your normal profile. A tab, Firefox, a batch file and the system default always use your normal profile. A snap or Flatpak browser given by its path cannot write under `~/.local/state`: set `default` for one. |
 | `idleExitMinutes` | `30` | How long the server keeps running with no live session. `0` keeps it running. |
 | `retentionDays` | `30` | How many days of history the server keeps. |
 | `claudePath` | `""` | The `claude` executable to run. Empty means the one on `PATH`. |
@@ -144,9 +144,18 @@ The settings edits:
   `CLAUDE_CODE_GIT_BASH_PATH` names if it is a bash or sh that exists, then `C:\Program Files\Git`
   and `C:\Program Files (x86)\Git`, then the `bin` folder beside the folder that holds the first
   `git.exe` in a `PATH` folder given in full (`C:\Tools\Git\bin` for `C:\Tools\Git\cmd\git.exe`).
-  Claude Code's own lookup can still differ in ways install cannot know: it searches each
-  session's working directory first, and through `PATHEXT` a `git.cmd` or `git.bat` earlier on
-  `PATH` can win.
+  Typed in Git Bash, or another MSYS shell, install and `loadline doctor` leave out the folders
+  that shell puts in front of `PATH` for itself, such as Git's own `mingw64\bin`, whose `git.exe`
+  has no `bash.exe` beside it; one whose `git.exe` has, as MSYS2's `usr\bin` with git from pacman,
+  stays. With `PATH` as Git's installer sets it, they then choose what they choose in PowerShell
+  or cmd: the shell of a Claude Code started from those. Inside MSYS2's own shell its git counts as
+  it did in 0.1.0, even when the Windows `PATH` does not hold it. A Claude Code started from Git
+  Bash sees those folders too, and with Git in neither `Program Files` folder it may use
+  PowerShell. If you start Claude Code from Git Bash, set `CLAUDE_CODE_GIT_BASH_PATH` to Git's
+  `bin\bash.exe` in your settings' `env`, and Claude Code and install then use Git Bash whichever
+  terminal starts them. Claude Code's own lookup can still differ in ways install cannot know: it
+  searches each session's working directory first, and through `PATHEXT` a `git.cmd` or `git.bat`
+  earlier on `PATH` can win.
 
   bash reads the whole wrapped command before it runs any of it. A command of several lines that
   turns on a parse-time option for its own later lines, such as `shopt -s extglob` or
@@ -217,14 +226,14 @@ place: once the server has stopped, which `loadline stop` does at once and the s
   outside the binary and runs under a strict content security policy.
 - **Stored history.** The server keeps accounts, sessions, state changes, rate-limit samples and
   per-minute token and cost totals in a SQLite database in the data directory, for `retentionDays`.
-- **The dashboard's browser profile.** A Chromium-family browser named in `browser` opens the
-  dashboard's app window in a profile of its own, `browser` in the data directory, unless
-  `browserProfile` is `default`. There the browser keeps the dashboard's sign-in cookie and
-  whatever else it stores, apart from your own browsing, and no extension you installed runs in
-  that profile. Loadline makes that folder private like the rest of the data directory before the
-  browser first starts in it, never reads or changes the files in it, and refuses a `browser`
-  folder that it did not make private. `loadline uninstall` leaves it in place, as it leaves the
-  rest of the data directory.
+- **The dashboard's browser profile.** A Chromium-family browser named in `browser`, by its name
+  or by the path of its executable, opens the dashboard's app window in a profile of its own,
+  `browser` in the data directory, unless `browserProfile` is `default`. There the browser keeps
+  the dashboard's sign-in cookie and whatever else it stores, apart from your own browsing, and no
+  extension you installed runs in that profile. Loadline makes that folder private like the rest
+  of the data directory before the browser first starts in it, never reads or changes the files in
+  it, and refuses a `browser` folder that it did not make private. `loadline uninstall` leaves it
+  in place, as it leaves the rest of the data directory.
   - The window is a second instance of the browser, beside any you have open, and takes about
     150 MB of memory of its own.
   - Like any new profile, it makes the browser's own background requests: component updates,
@@ -391,11 +400,12 @@ It exits 1 when any check fails. Common fixes:
   `loadline install` again.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
 - **A browser extension acts on the dashboard window, or opens more windows like it.** The
-  dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`, or
-  names a browser that is not installed, which gives way to the system default; `appWindow` is
-  `false`; or `browserProfile` is `default`. Name a Chromium-family browser that is installed
-  (`brave`, `chrome` or `edge`, or its path) and leave the other two at their defaults, and its
-  window opens in the dashboard's own profile, where no extension runs.
+  dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`,
+  names a batch file, or names a browser that is not installed, which gives way to the system
+  default; `appWindow` is `false`; or `browserProfile` is `default`. Name a Chromium-family browser
+  that is installed (`brave`, `chrome` or `edge`, or the path of its executable) and leave the
+  other two at their defaults, and its window opens in the dashboard's own profile, where no
+  extension runs.
 - **"opening the dashboard in the browser's default profile".** Loadline could not use the
   dashboard's own profile; the rest of the warning says why and what to do. The dashboard still
   opens, in your normal profile. The sign-in cookie set there, like one 0.1.0 set, stays valid in

@@ -228,9 +228,9 @@ func TestCommand_FirefoxAndTheDefaultBrowserIgnoreTheProfile(t *testing.T) {
 	}
 }
 
-// The profile folder reaches the browser as one argument, whatever its path
-// holds: a space, a quote and an ampersand, what cmd, PowerShell and sh
-// expand or escape (% $ ! ^ `), all of which a shell would act on, or
+// The profile folder reaches a browser executable as one argument, whatever
+// its path holds: a space, a quote and an ampersand, what cmd, PowerShell
+// and sh expand or escape (% $ ! ^ `), all of which a shell would act on, or
 // letters outside ASCII.
 func TestCommand_ProfileDirIsOneArgument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Chromium", "chrome.exe")
@@ -248,6 +248,24 @@ func TestCommand_ProfileDirIsOneArgument(t *testing.T) {
 	}
 }
 
+// Windows runs a batch file through cmd.exe, which reads its command line
+// again, so a batch file given as the browser gets the arguments it got
+// before the dashboard had a profile of its own, whatever the profile folder
+// is: a profile path may hold an & or ^ that cmd.exe would act on. Dots and
+// blanks after the name are dropped, as Windows drops them.
+func TestCommand_ABatchFileGetsNoProfile(t *testing.T) {
+	for _, name := range []string{"browser.cmd", "Browser.BAT", "launch.Cmd", "browser.cmd.", "browser.bat . "} {
+		path := filepath.Join(t.TempDir(), "launchers", name)
+		t.Run(name, func(t *testing.T) {
+			appWindow := commandFor(t, launch.Browser{Pref: path, AppWindow: true, ProfileDir: dashboardProfile}, nothingInstalled)
+			tab := commandFor(t, launch.Browser{Pref: path, ProfileDir: dashboardProfile}, nothingInstalled)
+
+			assertCommand(t, appWindow, command{name: path, args: []string{"--app=" + dashboardURL}})
+			assertCommand(t, tab, command{name: path, args: []string{dashboardURL}})
+		})
+	}
+}
+
 // TakesProfile answers for the browsers installed here, so only browsers
 // given by path, and the system default, give the same answer on every
 // machine; the named browsers are TestTakesProfile's, inside the package.
@@ -261,6 +279,7 @@ func TestTakesProfile_ByPath(t *testing.T) {
 	}{
 		{name: "a Chromium app window", browser: launch.Browser{Pref: chromium, AppWindow: true}, want: true},
 		{name: "a Chromium tab", browser: launch.Browser{Pref: chromium}},
+		{name: "a batch file's app window", browser: launch.Browser{Pref: filepath.Join(t.TempDir(), "browser.CMD"), AppWindow: true}},
 		{name: "firefox", browser: launch.Browser{Pref: firefox, AppWindow: true}},
 		{name: "auto", browser: launch.Browser{Pref: "auto", AppWindow: true}},
 		{name: "an unknown browser", browser: launch.Browser{Pref: "opera", AppWindow: true}},

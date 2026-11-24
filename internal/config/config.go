@@ -69,7 +69,7 @@ type Config struct {
 	// OpenOnStart says when the dashboard opens as the server starts.
 	OpenOnStart OpenMode `json:"openOnStart"`
 	// Browser is "auto" for the system default, a well-known browser name, or
-	// the path of a browser executable.
+	// the path of a browser executable or of a batch file that starts one.
 	Browser string `json:"browser"`
 	// AppWindow opens the dashboard in a Chromium app window, without tabs or
 	// an address bar.

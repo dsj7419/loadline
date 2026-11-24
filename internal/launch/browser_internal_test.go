@@ -23,6 +23,7 @@ var everyBrowserAt = map[string]string{
 func TestResolve(t *testing.T) {
 	chromiumPath := filepath.Join(t.TempDir(), "Chromium", "chrome.exe")
 	firefoxPath := filepath.Join(t.TempDir(), "Mozilla Firefox", "FireFox.EXE")
+	batchPath := filepath.Join(t.TempDir(), "launchers", "Brave.Cmd")
 	for _, tc := range []struct {
 		name, pref  string
 		installed   map[string]string
@@ -36,6 +37,19 @@ func TestResolve(t *testing.T) {
 		{name: "firefox", pref: "firefox", installed: everyBrowserAt, wantProgram: "/opt/firefox", wantKind: firefoxKind},
 		{name: "a Chromium path", pref: chromiumPath, wantProgram: chromiumPath, wantKind: chromiumKind},
 		{name: "a firefox path", pref: firefoxPath, wantProgram: firefoxPath, wantKind: firefoxKind},
+		{name: "a batch file's path", pref: batchPath, wantProgram: batchPath, wantKind: batchFileKind},
+		{name: "a batch file's path with a dot after it", pref: batchPath + ".", wantProgram: batchPath + ".", wantKind: batchFileKind},
+		{name: "a batch file's path with blanks and dots after it", pref: batchPath + " . ", wantProgram: batchPath + " . ", wantKind: batchFileKind},
+		{
+			name: "a Chromium browser installed as a batch file", pref: "brave",
+			installed: map[string]string{"brave": "/opt/brave.BAT"}, wantProgram: "/opt/brave.BAT", wantKind: batchFileKind,
+		},
+		{
+			// Firefox takes the URL alone, so a batch file has nothing to
+			// leave out for it.
+			name: "firefox installed as a batch file", pref: "firefox",
+			installed: map[string]string{"firefox": "/opt/firefox.cmd"}, wantProgram: "/opt/firefox.cmd", wantKind: firefoxKind,
+		},
 		{name: "auto", pref: "auto", installed: everyBrowserAt, wantKind: systemDefault},
 		{name: "a missing Chromium browser", pref: "brave", installed: map[string]string{"firefox": "/opt/firefox"}, wantKind: systemDefault},
 		{name: "a missing firefox", pref: "firefox", installed: map[string]string{"brave": "/opt/brave"}, wantKind: systemDefault},
@@ -60,6 +74,8 @@ func TestResolve(t *testing.T) {
 func TestTakesProfile(t *testing.T) {
 	chromiumPath := filepath.Join(t.TempDir(), "Chromium", "chrome.exe")
 	firefoxPath := filepath.Join(t.TempDir(), "Mozilla Firefox", "firefox.exe")
+	batchPath := filepath.Join(t.TempDir(), "launchers", "Brave.CMD")
+	batPath := filepath.Join(t.TempDir(), "launchers", "browser.bat")
 	for _, tc := range []struct {
 		name      string
 		browser   Browser
@@ -70,6 +86,13 @@ func TestTakesProfile(t *testing.T) {
 		{name: "a chrome app window", browser: Browser{Pref: "chrome", AppWindow: true}, installed: everyBrowserAt, want: true},
 		{name: "an edge app window", browser: Browser{Pref: "edge", AppWindow: true}, installed: everyBrowserAt, want: true},
 		{name: "an app window by path", browser: Browser{Pref: chromiumPath, AppWindow: true}, want: true},
+		{name: "a batch file's app window", browser: Browser{Pref: batchPath, AppWindow: true}},
+		{name: "a .bat file's app window", browser: Browser{Pref: batPath, AppWindow: true}},
+		{
+			name:      "an app window of a browser installed as a batch file",
+			browser:   Browser{Pref: "brave", AppWindow: true},
+			installed: map[string]string{"brave": "/opt/brave.cmd"},
+		},
 		{name: "a brave tab", browser: Browser{Pref: "brave"}, installed: everyBrowserAt},
 		{name: "a tab by path", browser: Browser{Pref: chromiumPath}},
 		{name: "firefox", browser: Browser{Pref: "firefox", AppWindow: true}, installed: everyBrowserAt},
@@ -94,11 +117,15 @@ func TestTakesProfile_AgreesWithCommand(t *testing.T) {
 		"auto", "brave", "Chrome", "edge", "firefox",
 		filepath.Join(t.TempDir(), "Chromium", "chrome.exe"),
 		filepath.Join(t.TempDir(), "Mozilla Firefox", "firefox.exe"),
+		filepath.Join(t.TempDir(), "launchers", "browser.cmd"),
+		filepath.Join(t.TempDir(), "launchers", "BROWSER.BAT"),
 	}
 	installs := map[string]map[string]string{
-		"everything installed": everyBrowserAt,
-		"nothing installed":    {},
-		"only edge":            {"edge": "/opt/edge"},
+		"everything installed":       everyBrowserAt,
+		"nothing installed":          {},
+		"only edge":                  {"edge": "/opt/edge"},
+		"brave installed as a .cmd":  {"brave": "/opt/brave.cmd", "edge": "/opt/edge"},
+		"chrome installed as a .bat": {"chrome": "/opt/Chrome.Bat"},
 	}
 	for setup, installed := range installs {
 		for _, pref := range prefs {

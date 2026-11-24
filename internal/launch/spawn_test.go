@@ -123,10 +123,10 @@ func TestOpen_StartsTheBrowserWithTheURLAsOneArgument(t *testing.T) {
 	}
 }
 
-// The profile folder, like the URL, reaches the browser's own argument list
-// as one argument, with no shell in between: a space, a quote and an
-// ampersand, what cmd, PowerShell and sh expand or escape (% $ ! ^ `), and
-// letters outside ASCII, arrive as they were.
+// The profile folder, like the URL, reaches a browser executable's own
+// argument list as one argument, with no shell in between: a space, a quote
+// and an ampersand, what cmd, PowerShell and sh expand or escape
+// (% $ ! ^ `), and letters outside ASCII, arrive as they were.
 func TestOpen_StartsTheBrowserWithTheProfileAsOneArgument(t *testing.T) {
 	for name, profile := range map[string]string{
 		"a space, a quote and an ampersand": filepath.Join(t.TempDir(), "John Smith", "O'Brien & Sons", "browser"),

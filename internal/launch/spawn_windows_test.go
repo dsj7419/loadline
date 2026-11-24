@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -119,5 +120,90 @@ func TestChildRead_WaitsOutTheRenameThatPublishedTheReport(t *testing.T) {
 
 	if report.PID != 4242 {
 		t.Errorf("read the report as %+v, want the one written", report)
+	}
+}
+
+// A browser given by path may be a batch file that starts the real browser
+// with flags of the user's own. Windows runs a batch file through cmd.exe,
+// which reads its command line again, and Go quotes an argument only when it
+// holds a blank: a profile path such as C:\Users\R&D\...\browser would end the
+// batch file's arguments at the & and start the rest as a command of its own.
+// So a batch file gets the one argument it got before the dashboard had a
+// profile of its own, --app=<url>, whole, which holds nothing cmd.exe acts on.
+// That holds however the config names it: by the file Windows runs, not by
+// how the name is written.
+func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *testing.T) {
+	const url = "http://127.0.0.1:8289/login?code=0123456789abcdef"
+	profile := filepath.Join(t.TempDir(), "R&D", "loadline", "browser")
+	for _, tc := range []struct {
+		name string
+		// file is the batch file's name on disk, and pref how the config
+		// names it.
+		file, pref string
+	}{
+		{name: "a .cmd file", file: "browser.cmd", pref: "browser.cmd"},
+		{name: "a .BAT file", file: "BROWSER.BAT", pref: "BROWSER.BAT"},
+		{name: "named without its extension, which PATHEXT adds", file: "browser.cmd", pref: "browser"},
+		{name: "named with a blank after it, which Windows drops", file: "browser.bat", pref: "browser.bat "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := expectChild(t, false)
+			// The batch file passes its arguments on to the program that
+			// reports them, as one that starts a browser passes them on.
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, tc.file), []byte("@\""+testBinary(t)+"\" %*\r\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := c.open(url, launch.Browser{Pref: filepath.Join(dir, tc.pref), AppWindow: true, ProfileDir: profile}); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+
+			report := c.read(t)
+			if want := []string{"--app=" + url}; !slices.Equal(report.Args, want) {
+				t.Errorf("the browser got arguments %q, want %q", report.Args, want)
+			}
+		})
+	}
+}
+
+// A batch file named with a dot after it is still started through cmd.exe,
+// which then cannot find it under that name, so it never runs. Whatever
+// followed an & cut from a profile path on its command line would run all
+// the same, from the home directory. Such a name gets no profile either, so
+// nothing runs.
+func TestOpen_ABatchFileNamedWithADotAfterItStartsNothingElse(t *testing.T) {
+	dir := t.TempDir()
+	batch := filepath.Join(dir, "browser.cmd")
+	if err := os.WriteFile(batch, []byte("@echo off\r\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The text after the & in the profile path below names D\loadline\browser,
+	// from the home directory the browser starts in: a stand-in there leaves
+	// a mark if cmd.exe runs it.
+	home, marker := filepath.Join(dir, "home"), filepath.Join(dir, "marker.txt")
+	standIn := filepath.Join(home, "D", "loadline")
+	if err := os.MkdirAll(standIn, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(standIn, "browser.cmd"), []byte("@>\""+marker+"\" echo ran\r\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("USERPROFILE", home)
+	profile := filepath.Join(dir, "R&D", "loadline", "browser")
+
+	reaped, err := launch.OpenBrowser("http://127.0.0.1:8289/login?code=0123456789abcdef",
+		launch.Browser{Pref: batch + ".", AppWindow: true, ProfileDir: profile})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	select {
+	case <-reaped:
+	case <-time.After(reapLimit()):
+		t.Fatalf("cmd.exe still ran %v after it was started", reapLimit())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("cmd.exe ran the text after the ampersand in the profile path as a command of its own")
 	}
 }

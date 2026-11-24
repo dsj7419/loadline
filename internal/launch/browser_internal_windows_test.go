@@ -74,3 +74,36 @@ func TestFirstInstalled_FindsTheInstalledCopy(t *testing.T) {
 		t.Errorf("firstInstalled found chrome at %q, which is not installed", got)
 	}
 }
+
+// A browser path named without its extension runs the file that PATHEXT
+// finds for it first, as exec.LookPath and Windows find it, so it is a batch
+// file only when that file is one.
+func TestResolve_KnowsABatchFileByTheFileWindowsRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  browserKind
+	}{
+		{name: "a .cmd beside the name", files: []string{"browser.cmd"}, want: batchFileKind},
+		{name: "a .BAT beside the name", files: []string{"browser.BAT"}, want: batchFileKind},
+		{name: "an .exe, which PATHEXT names before .cmd", files: []string{"browser.cmd", "browser.exe"}, want: chromiumKind},
+		{name: "nothing beside the name", want: chromiumKind},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+			dir := t.TempDir()
+			for _, file := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, file), nil, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pref := filepath.Join(dir, "browser")
+
+			program, kind := resolve(Browser{Pref: pref, AppWindow: true}, func(string) (string, bool) { return "", false })
+
+			if program != pref || kind != tc.want {
+				t.Errorf("resolve(%q) = %q, %v; want %q, %v", pref, program, kind, pref, tc.want)
+			}
+		})
+	}
+}

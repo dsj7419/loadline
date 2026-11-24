@@ -179,12 +179,13 @@ What it defends against:
   cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits in the
   profile that holds it. In the dashboard's own profile, which a Chromium app window opens in by
   default, that is only Loadline's own pages, unless you browse elsewhere in that window. In your
-  normal profile, with `browser: auto`, Firefox, a tab or `browserProfile: default`, it is every
-  local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or by an open
-  that fell back to it, stays valid there until it expires 30 days after it was set, or until the
-  token changes. It does not rotate: it is derived from the token and changes only with it. To
-  change both, stop the server (`loadline stop`, or let it exit `idleExitMinutes` after the last
-  session ends), delete the `token` file in the data directory and run `loadline install` again.
+  normal profile, with `browser: auto`, Firefox, a batch file, a tab or `browserProfile: default`,
+  it is every local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or
+  by an open that fell back to it, stays valid there until it expires 30 days after it was set, or
+  until the token changes. It does not rotate: it is derived from the token and changes only with
+  it. To change both, stop the server (`loadline stop`, or let it exit `idleExitMinutes` after the
+  last session ends), delete the `token` file in the data directory and run `loadline install`
+  again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
 - **A refused server.** A server that refuses its data directory writes no log there, since it
@@ -214,18 +215,31 @@ What it defends against:
   (those paths exactly, wherever `%ProgramFiles%` points), or the `bin` folder beside the folder
   that holds the first `git.exe` on `PATH`. Otherwise it quotes it for PowerShell. A per-user Git
   in `%LOCALAPPDATA%\Programs\Git` therefore counts only through its `git.exe` on `PATH`, as it
-  does for Claude Code. Claude Code resolves a `PATH` entry that is not absolute, such as `cmd` or
-  `\cmd`, against each session's own working directory, which install cannot know, so install
-  skips such entries, and `loadline doctor` warns when one of them leads to a `git` from the
-  folder it runs in ahead of the first absolute folder that holds `git.exe`. Claude Code's own
-  lookup can still differ in other ways install cannot know: it searches each session's working
-  directory first, and through `PATHEXT` a `git.cmd` or `git.bat` earlier on `PATH` can win. In
-  such a setup the status-line command can run under a shell it was not quoted for; setting
-  `CLAUDE_CODE_GIT_BASH_PATH` settles the shell for every session. Which PowerShell Claude Code uses
-  without Git Bash is not documented; when Loadline runs your status line for PowerShell, it uses
-  PowerShell 7 (`pwsh`) if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor`
-  warns when the status line uses the PowerShell form, but cannot tell which shell Claude Code will
-  actually use.
+  does for Claude Code. Inside Git Bash or another MSYS shell (where `MSYSTEM` is set), install
+  and `loadline doctor` leave out of `PATH` the folders that shell puts in front of it for itself:
+  `usr\bin`, `usr\local\bin` and its environment's `bin`, such as `mingw64\bin`, under the shell's
+  root, the folder above the first `usr\bin` on `PATH` that holds `msys-2.0.dll`. Git's
+  `mingw64\bin` holds a `git.exe` with no `bash.exe` beside it, and a Claude Code started from
+  PowerShell, cmd or the Start menu never sees it, so with `PATH` as Git's installer sets it,
+  install chooses the same shell whichever terminal it is typed in. One of those folders whose
+  `git.exe` has `bash.exe` beside it stays, as MSYS2's `usr\bin` with git from pacman does: on a
+  machine whose only Git is MSYS2's, with that folder on the Windows `PATH`, it is the bash Claude
+  Code uses. MSYS2's own shell does not show the Windows `PATH`, so there that git counts even when
+  the Windows `PATH` lacks it, as in 0.1.0. A Claude Code started from Git Bash does see those
+  folders, and with Git in neither `Program Files` folder it may then use PowerShell for a status
+  line install quoted for Git Bash; setting `CLAUDE_CODE_GIT_BASH_PATH` in the settings file's
+  `env` makes Claude Code and install use Git Bash whichever terminal starts them. Claude Code
+  resolves a `PATH` entry that is not absolute, such as `cmd` or `\cmd`, against each session's own
+  working directory, which install cannot know, so install skips such entries, and
+  `loadline doctor` warns when one of them leads to a `git` from the folder it runs in ahead of the
+  first absolute folder that holds `git.exe`. Claude Code's own lookup can still differ in other
+  ways install cannot know: it searches each session's working directory first, and through
+  `PATHEXT` a `git.cmd` or `git.bat` earlier on `PATH` can win. In such a setup the status-line
+  command can run under a shell it was not quoted for; setting `CLAUDE_CODE_GIT_BASH_PATH` settles
+  the shell for every session. Which PowerShell Claude Code uses without Git Bash is not
+  documented; when Loadline runs your status line for PowerShell, it uses PowerShell 7 (`pwsh`) if
+  it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` warns when the status line
+  uses the PowerShell form, but cannot tell which shell Claude Code will actually use.
 
 ## Known limitations
 
