@@ -75,15 +75,22 @@ variable names something it cannot use. CI runs them on every platform. To run t
   ```
 
   Name a local account other than your own. To make one for the purpose, which nobody can sign in
-  to, run `New-LocalUser -Name loadline-it -NoPassword -Disabled` first, and
-  `Remove-LocalUser -Name loadline-it` once you are done.
+  to, run `New-LocalUser -Name loadline-it -NoPassword -Disabled` in an elevated Windows
+  PowerShell first, and `Remove-LocalUser -Name loadline-it` there once you are done. Windows
+  PowerShell has these cmdlets built in; some builds of PowerShell 7 load them only after
+  `Import-Module Microsoft.PowerShell.LocalAccounts -UseWindowsPowerShell`.
 
-- **Linux and macOS:** name a folder that another account owns.
+- **Linux and macOS:** name a folder that another account owns. It must hold a `config.json` that
+  names a free port, so that doctor never asks a Loadline you may be running on the default one.
 
   ```sh
   sudo install -d -o nobody -m 0755 /tmp/loadline-it
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  printf '{"port":%s}\n' "$port" | sudo tee /tmp/loadline-it/config.json > /dev/null
+  sudo chown nobody /tmp/loadline-it/config.json
+  sudo chmod 0644 /tmp/loadline-it/config.json
   LOADLINE_IT_FOREIGN_DIR=/tmp/loadline-it go test -race -count=1 -v -run TestIntegration_ ./internal/cli/
-  sudo rmdir /tmp/loadline-it
+  sudo rm -r /tmp/loadline-it
   ```
 
 ## Dependencies

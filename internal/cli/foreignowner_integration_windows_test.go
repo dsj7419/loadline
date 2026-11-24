@@ -46,9 +46,12 @@ func TestIntegration_DoctorOffersToTakeBackAFolderAnOldAccountOwns(t *testing.T)
 
 	line := dataDirectoryLine(got.stdout)
 	refusal := "✖ data directory: " + home + " belongs to " + gone.String() + ", who can give themselves the right to delete or rename it"
-	if got.code != 1 || !strings.HasPrefix(line, refusal) || !strings.Contains(line, "takeown /f ") {
-		t.Errorf("doctor = %d, stdout:\n%s\nwant 1 and a line that starts %q and offers takeown /f, "+
-			"which needs the temporary folder in your user profile, as it is by default", got.code, got.stdout, refusal)
+	if got.code != 1 || !strings.HasPrefix(line, refusal) {
+		t.Fatalf("doctor = %d, stdout:\n%s\nwant 1 and a line that starts %q", got.code, got.stdout, refusal)
+	}
+	if !strings.Contains(line, "takeown /f ") {
+		t.Errorf("doctor's line %q offers no takeown /f, which it offers only for a folder in your user profile, "+
+			"where the temporary folder is by default", line)
 	}
 }
 
