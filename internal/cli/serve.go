@@ -45,6 +45,10 @@ const (
 	// close the history: that one's shutdown takes up to shutdownTimeout.
 	lockWait = shutdownTimeout + 5*time.Second
 
+	// shutdownTimedOutMessage is the message of the log record that says a
+	// graceful shutdown ran out of time.
+	shutdownTimedOutMessage = "graceful shutdown timed out"
+
 	logName = "loadline.log"
 	// logMaxBytes and logKeep bound the server's log: it rotates at 5 MB
 	// and keeps the two files before the current one.
@@ -599,7 +603,7 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdown); err != nil {
-		s.log.Warn("graceful shutdown timed out", "err", err)
+		s.log.Warn(shutdownTimedOutMessage, "err", err)
 		_ = httpServer.Close()
 	}
 	if serveErr == nil {

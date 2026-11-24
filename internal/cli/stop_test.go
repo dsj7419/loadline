@@ -300,7 +300,7 @@ func TestStopServer_Outcomes(t *testing.T) {
 // server is pending on clock, with all of it still to run.
 func waitPollArmed(t *testing.T, clock *clocktest.Clock) {
 	t.Helper()
-	waitFor(t, "the next check of the server", func() bool { return slices.Contains(clock.Pending(), cli.ServerPollEvery) })
+	waitFor(t, "the next check of the server", func() bool { return slices.Contains(clock.JustArmed(), cli.ServerPollEvery) })
 }
 
 func receiveWithin[T any](t *testing.T, ch <-chan T) T {

@@ -21,7 +21,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/accounts"
@@ -119,9 +121,26 @@ const (
 )
 
 // waitFor polls cond until it holds, failing the test after five seconds.
+// Each wait is for work already under way, which ends in milliseconds, so
+// the five seconds only stop a run that hung. A wait that spans a server's
+// start is waitServing's.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	waitWithin(t, 5*time.Second, what, cond)
+}
+
+// waitServing waits until the server client points at answers, allowing as
+// long as start allows Serve to listen.
+func waitServing(t *testing.T, what string, client forward.Client) {
+	t.Helper()
+	waitWithin(t, serveStartPatience, what, func() bool { return client.Healthy(t.Context()) })
+}
+
+// waitWithin polls cond until it holds, failing the test once patience has
+// passed without it.
+func waitWithin(t *testing.T, patience time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(patience)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -429,10 +448,12 @@ func (f *serveFixture) spool(env protocol.Envelope) {
 }
 
 // waitArmed waits until some code under test has just armed a timer for d:
-// one that has all of d still to run.
+// one that has all of d still to run. The server's timers share the clock,
+// so one armed earlier for longer, such as the 10 s drain, comes to have d
+// left; that one is not it.
 func (f *serveFixture) waitArmed(d time.Duration) {
 	f.t.Helper()
-	waitFor(f.t, fmt.Sprintf("a %v timer", d), func() bool { return slices.Contains(f.clock.Pending(), d) })
+	waitFor(f.t, fmt.Sprintf("a %v timer", d), func() bool { return slices.Contains(f.clock.JustArmed(), d) })
 }
 
 // passDebounce waits until the poller has scheduled the poll a hook asked
@@ -448,13 +469,16 @@ func (f *serveFixture) passDebounce() {
 // nextPollIn waits until the poller has scheduled its next round, which it
 // does once the round before has ended, and returns how far off that round
 // is: the fast interval while a session is live, the slow one while none is.
+// The poller's timer is the one just armed for either: the drain's and the
+// idle check's come to have 5 s left too, and a move of the clock to one of
+// those would leave the poller's short of its whole interval for good.
 func (f *serveFixture) nextPollIn() time.Duration {
 	f.t.Helper()
 	var next time.Duration
 	waitFor(f.t, "the poller to schedule its next round", func() bool {
-		pending := f.clock.Pending()
+		armed := f.clock.JustArmed()
 		for _, d := range []time.Duration{poll.DefaultFast, poll.DefaultSlow} {
-			if slices.Contains(pending, d) {
+			if slices.Contains(armed, d) {
 				next = d
 				return true
 			}
@@ -504,19 +528,28 @@ func accountByDir(v tracker.View, dir domain.ConfigDir) (tracker.AccountView, bo
 	return tracker.AccountView{}, false
 }
 
-// Two sessions that start together each start a server; the one that finds
-// the port taken by a running loadline must go quietly.
-func TestServe_SecondInstanceExitsQuietly(t *testing.T) {
+// serveHome gives RunServe a Loadline home and a user's home of the test's
+// own, with a config that names port and a claude that is not there: a
+// server must not reach the machine's real one.
+func serveHome(t *testing.T, port int) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("LOADLINE_HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOME", home)
+	writeConfigPort(t, home, port)
+}
+
+// Two sessions that start together each start a server; the one that finds
+// the port taken by a running loadline must go quietly, and at once: no
+// sleep, timer, retry or deadline on its way out. It runs in a synctest
+// bubble, whose clock moves only while all that runs in the bubble waits on
+// time, so any of those shows as time passed, however slow the machine. A
+// wait on the running server is no wait on time, and the bubble cannot show
+// it; TestServe_SecondInstanceAsksTheRunningServerOnlyWhoItIs rules that out.
+func TestServe_SecondInstanceExitsQuietly(t *testing.T) {
 	port := freePort(t)
-	// No claude to run: the servers must not reach the machine's real one.
-	contents := fmt.Sprintf(`{"port":%d,"claudePath":%q}`, port, filepath.Join(home, "no-claude"))
-	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(contents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	serveHome(t, port)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	firstDone := make(chan int, 1)
@@ -524,21 +557,46 @@ func TestServe_SecondInstanceExitsQuietly(t *testing.T) {
 	go func() {
 		firstDone <- cli.RunServe(ctx, []string{"--no-open"}, cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: &firstErr})
 	}()
-	client := forward.Client{BaseURL: forward.LoopbackURL(port)}
-	waitFor(t, "the first server to answer", func() bool { return client.Healthy(t.Context()) })
+	// Asked over a connection of the test's own: the second instance's
+	// health check must open its connection inside its bubble, not take up
+	// one opened outside it.
+	own := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	t.Cleanup(own.CloseIdleConnections)
+	waitServing(t, "the first server to answer", forward.Client{BaseURL: forward.LoopbackURL(port), HTTP: own})
+	// While the connection the health check left open stays open, the
+	// bubble's clock stands still, so a wait after the check would hang the
+	// run. Ending the first server once start's patience has run out closes
+	// that connection and lets such a wait show as time passed. A second
+	// instance still there by then was held by the first server, which is a
+	// failure of its own. On one that waits on nothing it decides nothing: that
+	// one is long gone by then.
+	var endedAtBound atomic.Bool
+	endFirst := time.AfterFunc(serveStartPatience, func() {
+		endedAtBound.Store(true)
+		cancel()
+	})
+	defer endFirst.Stop()
 
-	var stdout, stderr bytes.Buffer
-	started := time.Now()
-	code := cli.RunServe(t.Context(), nil, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
-	took := time.Since(started)
+	synctest.Test(t, func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		started := time.Now()
+		code := cli.RunServe(t.Context(), nil, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+		waited := time.Since(started)
 
-	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Errorf("second RunServe = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
-	}
-	if took > time.Second {
-		t.Errorf("second RunServe took %v, want under 1s", took)
-	}
-	cancel()
+		if endedAtBound.Load() {
+			t.Errorf("the second RunServe returned only once the first server was ended at the hang bound (%v), want it gone without waiting on that server",
+				serveStartPatience)
+		}
+		if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
+			t.Errorf("second RunServe = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
+		}
+		if waited != 0 {
+			t.Errorf("second RunServe waited %v before it returned, want it to wait on nothing", waited)
+		}
+		// The bubble ends once the connection its health check left open
+		// closes, which the first server's shutdown does.
+		cancel()
+	})
 	select {
 	case code := <-firstDone:
 		if code != 0 || firstErr.String() != "" {
@@ -547,6 +605,146 @@ func TestServe_SecondInstanceExitsQuietly(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the first server did not stop")
 	}
+}
+
+// The second instance asks the running loadline who it is and, once it has
+// the answer, goes: it opens nothing more on that server, neither a request
+// nor a connection, and so waits on nothing that server holds. The running
+// server here holds open everything beyond the health check, so a second
+// instance that waits on any of it is still there when the server sees it.
+// One that opens more without waiting on it shows once it has returned: the
+// server takes connections in the order they were opened, so once it has
+// taken one the test opens then, it has taken every one opened before.
+func TestServe_SecondInstanceAsksTheRunningServerOnlyWhoItIs(t *testing.T) {
+	first := newHoldingLoadline(t)
+	serveHome(t, first.port)
+	done := make(chan int, 1)
+	var stdout, stderr syncBuffer
+	go func() {
+		done <- cli.RunServe(t.Context(), nil, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+	}()
+
+	select {
+	case code := <-done:
+		if code != 0 || stdout.String() != "" || stderr.String() != "" {
+			t.Errorf("second RunServe = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
+		}
+		if opened := first.connectionsBefore(t); opened != 1 {
+			t.Errorf("the second instance opened %d connections to the running server, want one, for its health check", opened)
+		}
+	case <-first.holding:
+		t.Error("the second RunServe opened more than its health check on the running server before it returned, want it gone once that server had answered")
+		first.release()
+		receiveWithin(t, done)
+	case <-time.After(serveStartPatience):
+		t.Fatalf("the second RunServe did not return within %v", serveStartPatience)
+	}
+	if requests := first.requestsSeen(); !slices.Equal(requests, []string{"GET /healthz"}) {
+		t.Errorf("the running server saw requests %q from the second instance, want the health check alone", requests)
+	}
+}
+
+// holdingLoadline stands in for a running loadline that answers one health
+// check and holds open whatever else reaches it, a further request or a
+// further connection, until it is released or the test ends.
+type holdingLoadline struct {
+	port   int
+	server *http.Server
+	// holding is closed once the server holds something open.
+	holding     chan struct{}
+	holdingOnce sync.Once
+	released    chan struct{}
+	release     func()
+
+	mu sync.Mutex
+	// connections holds the address each connection came from, in the
+	// order the server took them.
+	connections []string
+	requests    []string
+}
+
+func newHoldingLoadline(t *testing.T) *holdingLoadline {
+	t.Helper()
+	f := &holdingLoadline{holding: make(chan struct{}), released: make(chan struct{})}
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	f.port = portOf(t, listener.Addr())
+	f.server = &http.Server{Handler: http.HandlerFunc(f.answer), ConnState: f.noteConnection, ReadHeaderTimeout: hangBound}
+	f.release = sync.OnceFunc(func() {
+		close(f.released)
+		_ = f.server.Close()
+	})
+	go func() { _ = f.server.Serve(listener) }()
+	t.Cleanup(f.release)
+	return f
+}
+
+// noteConnection notes each connection the server takes. The server holds
+// each beyond the first, waiting for a request on it.
+func (f *holdingLoadline) noteConnection(conn net.Conn, state http.ConnState) {
+	if state != http.StateNew {
+		return
+	}
+	f.mu.Lock()
+	f.connections = append(f.connections, conn.RemoteAddr().String())
+	further := len(f.connections) > 1
+	f.mu.Unlock()
+	if further {
+		f.hold()
+	}
+}
+
+// answer answers the first request, when it is the health check, as a
+// running loadline does, and holds every other.
+func (f *holdingLoadline) answer(w http.ResponseWriter, r *http.Request) {
+	request := r.Method + " " + r.URL.Path
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	healthCheck := len(f.requests) == 1 && request == "GET /healthz"
+	f.mu.Unlock()
+	if healthCheck {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"app":"loadline","version":"0.1.1"}`)
+		return
+	}
+	f.hold()
+	select {
+	case <-f.released:
+	case <-r.Context().Done():
+	}
+}
+
+func (f *holdingLoadline) hold() { f.holdingOnce.Do(func() { close(f.holding) }) }
+
+// connectionsBefore opens a connection of the test's own to the server,
+// waits until the server has taken it, and returns how many the server took
+// before it: every connection opened to the server before this call, since
+// the server takes them in the order they were opened.
+func (f *holdingLoadline) connectionsBefore(t *testing.T) int {
+	t.Helper()
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+	if err != nil {
+		t.Fatalf("connect to the running server: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	own := conn.LocalAddr().String()
+	before := -1
+	waitFor(t, "the running server to take the test's own connection", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		before = slices.Index(f.connections, own)
+		return before >= 0
+	})
+	return before
+}
+
+// requestsSeen returns the requests that reached the server, in order.
+func (f *holdingLoadline) requestsSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.requests)
 }
 
 func TestServe_PortHeldByOtherAppFails(t *testing.T) {
@@ -653,7 +851,8 @@ func TestServe_ServesTheEmbeddedDashboard(t *testing.T) {
 }
 
 // An open event stream ends with the server's shutdown instead of holding
-// it for its five seconds.
+// it for its five seconds: the shutdown finishes rather than times out, which
+// the server would log.
 func TestServe_ShutdownWithAnOpenEventStreamIsPrompt(t *testing.T) {
 	f := newServeFixture(t)
 	r := f.start()
@@ -664,11 +863,10 @@ func TestServe_ShutdownWithAnOpenEventStreamIsPrompt(t *testing.T) {
 		t.Fatalf("stream began %q, %v; want a view", line, err)
 	}
 
-	started := time.Now()
 	code := r.stop(t)
 
-	if took := time.Since(started); took > 2*time.Second {
-		t.Errorf("shutdown took %v with a stream open, want well under the 5 s timeout", took)
+	if log := f.logText(); strings.Contains(log, cli.ShutdownTimedOutMessage) {
+		t.Errorf("the shutdown waited out its timeout with a stream open, want the stream to end with it:\n%s", log)
 	}
 	if code != 0 {
 		t.Errorf("Serve = %d, want 0", code)
@@ -751,6 +949,8 @@ func advanceUntilExit(t *testing.T, clock *clocktest.Clock, r *running, limit ti
 // awaitIdleCheck waits until the server has scheduled its next check for
 // being idle, and reports true, or until Serve has returned, and reports
 // false. A move of the clock by the check's interval then runs that check.
+// The check's timer is the one just armed for that interval: the poller's
+// 30 s timer has as long left halfway through.
 func awaitIdleCheck(t *testing.T, clock *clocktest.Clock, r *running) bool {
 	t.Helper()
 	scheduled := false
@@ -758,7 +958,7 @@ func awaitIdleCheck(t *testing.T, clock *clocktest.Clock, r *running) bool {
 		if _, done := r.exited(); done {
 			return true
 		}
-		scheduled = slices.Contains(clock.Pending(), cli.IdleCheckEvery)
+		scheduled = slices.Contains(clock.JustArmed(), cli.IdleCheckEvery)
 		return scheduled
 	})
 	return scheduled
@@ -1120,7 +1320,7 @@ func TestRunServe_DemoAndPortFlags(t *testing.T) {
 			cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard})
 	}()
 	client := forward.Client{BaseURL: forward.LoopbackURL(port)}
-	waitFor(t, "the demo on the --port port", func() bool { return client.Healthy(t.Context()) })
+	waitServing(t, "the demo on the --port port", client)
 
 	token, err := config.ReadToken(filepath.Join(home, "token"))
 	if err != nil {
