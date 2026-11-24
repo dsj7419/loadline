@@ -676,7 +676,10 @@ func TestOldServerInstruction(t *testing.T) {
 	t.Run("unix", func(t *testing.T) {
 		text := cli.OldServerInstruction("linux", 8289)
 
-		for _, want := range []string{"port 8289", "this ends every loadline serve that runs as you", "Nothing was ended", "loadline open"} {
+		for _, want := range []string{
+			"port 8289", "this ends every loadline serve that runs as you",
+			"and may also end another process of yours whose command line names loadline serve", "Nothing was ended", "loadline open",
+		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("instruction %q lacks %q", text, want)
 			}
@@ -707,8 +710,8 @@ func TestOldServerInstruction(t *testing.T) {
 			}
 		}
 		// pkill -f matches the whole command line, so a program that names a
-		// loadline folder and serve among its arguments is no server, and
-		// must be left alone.
+		// loadline folder and serve among its arguments is no server, and is
+		// left alone when it was run from PATH.
 		for _, command := range []string{
 			"/home/u/bin/loadline install", "/home/u/bin/loadline servers", "/home/u/bin/myloadline serve",
 			"grep loadline serve", "make -C /home/u/src/loadline serve", "npm --prefix /home/u/src/loadline serve",
@@ -716,6 +719,14 @@ func TestOldServerInstruction(t *testing.T) {
 		} {
 			if pattern.MatchString(command) {
 				t.Errorf("pattern %q matches %s", m[1], command)
+			}
+		}
+		// pkill sees no boundary between arguments, so one run by an absolute
+		// path, as a script is through its shebang, that names .../loadline
+		// serve later on is ended too, as the line says it may be.
+		for _, command := range []string{"/usr/bin/vim notes/loadline serve", "/bin/sh /home/u/bin/start /home/u/bin/loadline serve"} {
+			if !pattern.MatchString(command) {
+				t.Errorf("pattern %q no longer matches %s: the line's warning needs another look", m[1], command)
 			}
 		}
 	})
