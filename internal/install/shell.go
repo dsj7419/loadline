@@ -107,8 +107,10 @@ var programFilesGitBash = [...]string{`C:\Program Files\Git\bin\bash.exe`, `C:\P
 // cmd, \cmd or C:cmd against each session's own working directory, so what
 // it leads to depends on where each session runs, which install cannot know.
 // loadline doctor warns of such an entry that leads to a git.
+//
+// PATH is read as searchedEntries returns it, the same from any terminal.
 func gitBashOnPath(getenv func(string) string, exists func(string) bool) bool {
-	for _, entry := range pathEntries(getenv("PATH")) {
+	for _, entry := range searchedEntries(getenv, exists) {
 		if !isWindowsAbs(entry) {
 			continue
 		}
@@ -124,16 +126,16 @@ func gitBashOnPath(getenv func(string) string, exists func(string) bool) bool {
 // reads which are not absolute, such as cmd, \cmd or D:cmd, and hold git.exe
 // when resolved against workDir, in PATH's order. The shell detection skips
 // them, since Claude Code resolves them against each session's own working
-// directory. The list ends at the first absolute entry that holds git.exe:
-// Claude Code stops at the first git it finds, so it never reaches the
-// entries after that one. It returns nil when workDir is not an absolute
-// Windows path.
+// directory. The list ends at the first absolute entry that holds git.exe
+// among those the shell detection searches: Claude Code stops at the first
+// git it finds, so it never reaches the entries after that one. It returns
+// nil when workDir is not an absolute Windows path.
 func RelativeGitEntries(getenv func(string) string, exists func(string) bool, workDir string) []string {
 	if !isWindowsAbs(workDir) {
 		return nil
 	}
 	var entries []string
-	for _, entry := range pathEntries(getenv("PATH")) {
+	for _, entry := range searchedEntries(getenv, exists) {
 		if isWindowsAbs(entry) {
 			if volume, rest := splitWindowsVolume(entry); holdsGit(exists, volume, rest) {
 				return entries
@@ -145,6 +147,70 @@ func RelativeGitEntries(getenv func(string) string, exists func(string) bool, wo
 		}
 	}
 	return entries
+}
+
+// searchedEntries returns the entries of the Windows PATH that getenv reads,
+// as the shell detection searches them. Inside an MSYS shell, such as Git
+// Bash, it leaves out the folders that shell puts in front of PATH for its
+// own use (msysFolders). Among them is Git's mingw64\bin, with a git.exe
+// that has no bin\bash.exe beside its folder, and a Claude Code started from
+// PowerShell, cmd or the Start menu sees none of them. Without them, install
+// and doctor answer for that Claude Code from whichever terminal they run
+// in, and a status line written from Git Bash keeps working there.
+func searchedEntries(getenv func(string) string, exists func(string) bool) []string {
+	entries := pathEntries(getenv("PATH"))
+	own := msysFolders(getenv("MSYSTEM"), entries, exists)
+	if len(own) == 0 {
+		return entries
+	}
+	return slices.DeleteFunc(entries, func(entry string) bool {
+		if !isWindowsAbs(entry) {
+			return false
+		}
+		folder := cleanWindows(entry)
+		return slices.ContainsFunc(own, func(o string) bool { return strings.EqualFold(folder, o) })
+	})
+}
+
+// msysRuntime is the MSYS runtime, which every MSYS shell, Git Bash's among
+// them, keeps in the usr\bin folder under its root.
+const msysRuntime = "msys-2.0.dll"
+
+// msysFolders returns the folders an MSYS shell puts in front of PATH for its
+// own use, as cleanWindows writes them: the bin folder of the environment
+// msystem names (mingw64\bin for MINGW64), usr\local\bin and usr\bin, under
+// the shell's root. msystem is MSYSTEM, which every MSYS shell sets, and
+// msysFolders returns nil when it is empty.
+//
+// The root is the folder above the first usr\bin among entries that holds
+// the MSYS runtime, since the shell puts its own usr\bin ahead of the PATH
+// it was started with. That finds it wherever Git for Windows is installed,
+// and for MSYS2 too, which does not set EXEPATH as Git's own launcher does.
+// It returns nil when no entry is such a folder.
+func msysFolders(msystem string, entries []string, exists func(string) bool) []string {
+	if msystem == "" {
+		return nil
+	}
+	for _, entry := range entries {
+		if !isWindowsAbs(entry) {
+			continue
+		}
+		usrBin := cleanWindows(entry)
+		root, ok := cutSuffixFold(usrBin, `\usr\bin`)
+		if ok && exists(usrBin+`\`+msysRuntime) {
+			return []string{root + `\` + msystem + `\bin`, root + `\usr\local\bin`, usrBin}
+		}
+	}
+	return nil
+}
+
+// cutSuffixFold returns s without suffix, matched without regard to case,
+// and whether s ends with it.
+func cutSuffixFold(s, suffix string) (before string, found bool) {
+	if len(s) < len(suffix) || !strings.EqualFold(s[len(s)-len(suffix):], suffix) {
+		return s, false
+	}
+	return s[:len(s)-len(suffix)], true
 }
 
 // holdsGit reports whether the folder rest on volume holds git.exe.

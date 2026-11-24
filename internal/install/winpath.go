@@ -69,6 +69,14 @@ func joinWindows(volume string, elems ...string) string {
 	return volume + strings.ReplaceAll(path.Join(slashed...), "/", `\`)
 }
 
+// cleanWindows returns the Windows path p as joinWindows writes it, from the
+// root of its volume, without . and .. elements or a trailing separator, and
+// with backslashes alone, in the volume too.
+func cleanWindows(p string) string {
+	volume, rest := splitWindowsVolume(p)
+	return joinWindows(strings.ReplaceAll(volume, "/", `\`), rest)
+}
+
 // nextSeparator returns the index of the first separator in p at or after
 // from, or len(p) when there is none.
 func nextSeparator(p string, from int) int {

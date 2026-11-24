@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -136,4 +137,39 @@ func settingsWithTag(t *testing.T, tag uint32, kind fsperm.ReparseKind) string {
 		t.Fatalf("Inspect(the planted file) = %+v, %v; want reparse kind %d, or the test proves nothing", entry, err, kind)
 	}
 	return settings
+}
+
+// A Git for Windows installed for one user, with its cmd folder on PATH, and
+// a status line that works, in the Git Bash form, under the Claude Code that
+// PowerShell, cmd or the Start menu starts. Run inside Git Bash, or through
+// Claude Code's own Bash tool, the doctor sees Git Bash's own folders at the
+// front of PATH, among them mingw64\bin with a git.exe and no bin\bash.exe
+// beside it. It must judge the settings as it does from any other terminal,
+// not call them unwired and send the user to an install that would rewrite
+// them for PowerShell.
+func TestDoctor_InGitBashLeavesAWorkingStatusLineAlone(t *testing.T) {
+	const git = `C:\Users\example\AppData\Local\Programs\Git`
+	files := []string{
+		git + `\cmd\git.exe`, git + `\bin\bash.exe`, git + `\mingw64\bin\git.exe`,
+		git + `\usr\bin\bash.exe`, git + `\usr\bin\msys-2.0.dll`,
+	}
+	env := map[string]string{
+		"MSYSTEM": "MINGW64",
+		"EXEPATH": git + `\bin`,
+		"PATH": `C:\Users\example\bin;` + git + `\mingw64\bin;` + git + `\usr\local\bin;` + git + `\usr\bin;` +
+			`C:\Windows\system32;C:\Windows;` + git + `\cmd`,
+	}
+	w := newWorld(t)
+	w.install(w.settings, `{"statusLine": {"type": "command", "command": "~/.claude/statusline.sh"}}`, install.ShellBash)
+	w.deps.Getenv = func(name string) string { return env[name] }
+	w.deps.IsFile = func(path string) bool { return slices.Contains(files, path) }
+	w.deps.WorkDir = `C:\Users\example`
+	// As the doctor command wires it: the shell install would choose here.
+	w.deps.Shell = func(settings []byte) install.Shell {
+		return install.DetectShell(install.SettingsEnv(settings, w.deps.Getenv), w.deps.IsFile)
+	}
+
+	got := w.run()
+
+	assertChecks(t, settingsChecks(t, got), []doctor.Check{{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"}})
 }

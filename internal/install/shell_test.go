@@ -3,6 +3,7 @@ package install_test
 import (
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/install"
@@ -218,6 +219,18 @@ func TestDetectShell(t *testing.T) {
 			files: []string{`C:\msys64\usr\bin\bash.exe`},
 			want:  install.ShellPowerShell,
 		},
+		{
+			// Outside an MSYS shell, Git's own folders on PATH are where
+			// the user put them, and the first git counts as it is.
+			name: "windows outside an MSYS shell, with Git's mingw64 folder first on PATH",
+			goos: "windows",
+			env:  map[string]string{"PATH": `D:\Git\mingw64\bin;D:\Git\usr\bin;D:\Git\cmd`},
+			files: []string{
+				`D:\Git\mingw64\bin\git.exe`, `D:\Git\usr\bin\msys-2.0.dll`,
+				`D:\Git\cmd\git.exe`, `D:\Git\bin\bash.exe`,
+			},
+			want: install.ShellPowerShell,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -235,6 +248,182 @@ func TestDetectShell(t *testing.T) {
 				t.Errorf("detectShell = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// userGit is where Git for Windows installs without administrator rights.
+const userGit = `C:\Users\example\AppData\Local\Programs\Git`
+
+// gitForWindows are the files of a Git for Windows at root that the shell
+// detection may look for: its git.exe in cmd, bin and mingw64\bin, its
+// bash.exe in bin and usr\bin, and the MSYS runtime beside the latter.
+func gitForWindows(root string) []string {
+	return []string{
+		root + `\cmd\git.exe`,
+		root + `\bin\git.exe`, root + `\bin\bash.exe`,
+		root + `\mingw64\bin\git.exe`,
+		root + `\usr\bin\bash.exe`, root + `\usr\bin\msys-2.0.dll`,
+	}
+}
+
+// inGitBash is the environment a program started from Git Bash, which runs
+// from the Git for Windows at root, sees when every other terminal starts it
+// with windowsPath: the folders Git Bash puts in front of PATH, and behind
+// it, written as Windows paths, and the variables Git Bash sets.
+func inGitBash(root, windowsPath string) map[string]string {
+	return map[string]string{
+		"MSYSTEM": "MINGW64",
+		"EXEPATH": root + `\bin`,
+		"PATH": `C:\Users\example\bin;` + root + `\mingw64\bin;` + root + `\usr\local\bin;` + root + `\usr\bin;` +
+			windowsPath + `;` + root + `\usr\bin\vendor_perl;` + root + `\usr\bin\core_perl`,
+	}
+}
+
+// onWindowsDisk reports whether one of files exists, matching names without
+// regard to case, as Windows does.
+func onWindowsDisk(files []string) func(string) bool {
+	return func(path string) bool {
+		return slices.ContainsFunc(files, func(file string) bool { return strings.EqualFold(file, path) })
+	}
+}
+
+// Git Bash, and any other MSYS shell, puts folders of its own in front of
+// PATH, among them one with a git.exe and no bin\bash.exe beside it. Install
+// and doctor, typed there or run through Claude Code's own Bash tool, must
+// choose the shell that every other terminal, and 0.1.0, chooses on the same
+// machine: a status line quoted for one shell is a syntax error under the
+// other.
+func TestDetectShell_TheTerminalInstallRunsInDoesNotChangeTheShell(t *testing.T) {
+	const windowsPath = `C:\Windows\system32;C:\Windows`
+	userGitPath := windowsPath + `;` + userGit + `\cmd`
+	withoutExePath := inGitBash(userGit, userGitPath)
+	delete(withoutExePath, "EXEPATH")
+	gitBashInGitBash := inGitBash(userGit, inGitBash(userGit, userGitPath)["PATH"])
+	spelledOtherwise := inGitBash(userGit, userGitPath)
+	spelledOtherwise["PATH"] = `c:/users/example/appdata/local/programs/git/MINGW64/BIN/;` +
+		`C:/Users/Example/AppData/Local/Programs/Git/usr/local/bin/;C:\USERS\EXAMPLE\APPDATA\LOCAL\PROGRAMS\GIT\USR\BIN\\;` + userGitPath
+	msys2 := []string{`C:\msys64\usr\bin\bash.exe`, `C:\msys64\usr\bin\msys-2.0.dll`}
+	inMSYS2 := func(windowsPath string) map[string]string {
+		return map[string]string{
+			"MSYSTEM": "UCRT64",
+			"PATH":    `C:\msys64\ucrt64\bin;C:\msys64\usr\local\bin;C:\msys64\usr\bin;` + windowsPath,
+		}
+	}
+	tests := []struct {
+		name  string
+		files []string
+		// windowsPath is PATH as PowerShell, cmd and the Start menu start
+		// a program with, and msys the environment of the same program
+		// started from an MSYS shell.
+		windowsPath string
+		msys        map[string]string
+		want        install.Shell
+	}{
+		{
+			name:        "Git installed for the user, with its cmd folder later on PATH",
+			files:       gitForWindows(userGit),
+			windowsPath: userGitPath,
+			msys:        inGitBash(userGit, userGitPath),
+			want:        install.ShellBash,
+		},
+		{
+			name:        "Git installed for the user, with its Unix tools on PATH as well",
+			files:       gitForWindows(userGit),
+			windowsPath: userGitPath + `;` + userGit + `\mingw64\bin;` + userGit + `\usr\bin`,
+			msys:        inGitBash(userGit, userGitPath+`;`+userGit+`\mingw64\bin;`+userGit+`\usr\bin`),
+			want:        install.ShellBash,
+		},
+		{
+			name:        "a portable Git on another drive, with its bin folder on PATH",
+			files:       gitForWindows(`D:\PortableGit`),
+			windowsPath: windowsPath + `;D:\PortableGit\bin`,
+			msys:        inGitBash(`D:\PortableGit`, windowsPath+`;D:\PortableGit\bin`),
+			want:        install.ShellBash,
+		},
+		{
+			name:        "Git installed for the user, not on PATH",
+			files:       gitForWindows(userGit),
+			windowsPath: windowsPath,
+			msys:        inGitBash(userGit, windowsPath),
+			want:        install.ShellPowerShell,
+		},
+		{
+			name:        "Git Bash without EXEPATH",
+			files:       gitForWindows(userGit),
+			windowsPath: userGitPath,
+			msys:        withoutExePath,
+			want:        install.ShellBash,
+		},
+		{
+			name:        "Git Bash started from Git Bash",
+			files:       gitForWindows(userGit),
+			windowsPath: userGitPath,
+			msys:        gitBashInGitBash,
+			want:        install.ShellBash,
+		},
+		{
+			name:        "Git Bash's folders written with other slashes, case and trailing separators",
+			files:       gitForWindows(userGit),
+			windowsPath: userGitPath,
+			msys:        spelledOtherwise,
+			want:        install.ShellBash,
+		},
+		{
+			// MSYS2's own git, in usr\bin, has bash.exe in the folder that
+			// the bin beside it names.
+			name:        "MSYS2 with its own git, without Git for Windows",
+			files:       append([]string{`C:\msys64\usr\bin\git.exe`}, msys2...),
+			windowsPath: windowsPath,
+			msys:        inMSYS2(windowsPath),
+			want:        install.ShellPowerShell,
+		},
+		{
+			name:        "MSYS2 with its MinGW git, beside a Git for Windows installed for the user",
+			files:       append(append([]string{`C:\msys64\ucrt64\bin\git.exe`}, msys2...), gitForWindows(userGit)...),
+			windowsPath: userGitPath,
+			msys:        inMSYS2(userGitPath),
+			want:        install.ShellBash,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exists := onWindowsDisk(tt.files)
+
+			fromWindows := install.DetectShellOn("windows", func(name string) string {
+				if name == "PATH" {
+					return tt.windowsPath
+				}
+				return ""
+			}, exists)
+			fromMSYS := install.DetectShellOn("windows", func(name string) string { return tt.msys[name] }, exists)
+
+			if fromWindows != tt.want {
+				t.Errorf("typed in PowerShell, install chose shell %d, want %d", fromWindows, tt.want)
+			}
+			if fromMSYS != fromWindows {
+				t.Errorf("typed in an MSYS shell, install chose shell %d, and typed in PowerShell shell %d, on one machine",
+					fromMSYS, fromWindows)
+			}
+		})
+	}
+}
+
+// 0.1.0 wrote the Git Bash form of the status line, which a Claude Code
+// started outside Git Bash runs with Git Bash. An upgrade typed in Git Bash,
+// or run through Claude Code's own Bash tool, must leave it as it is, not
+// rewrite it into the PowerShell form that Git Bash refuses.
+func TestPlan_AnUpgradeTypedInGitBashKeepsTheWorkingStatusLine(t *testing.T) {
+	env := inGitBash(userGit, `C:\Windows\system32;C:\Windows;`+userGit+`\cmd`)
+	const exe = "C:/Users/example/AppData/Local/loadline/bin/loadline.exe"
+	working := `"` + exe + `" tap | ~/.claude/statusline.sh`
+	settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, working) + `}}`)
+	shell := install.DetectShellOn("windows", install.SettingsEnv(settings, func(name string) string { return env[name] }),
+		onWindowsDisk(gitForWindows(userGit)))
+
+	out, _, _ := plan(t, settings, install.Options{Exe: exe, Port: 8289, Token: "token", Shell: shell})
+
+	if got := statusCommand(t, out); got != working {
+		t.Errorf("install made the status line %q, want it left as %q", got, working)
 	}
 }
 
@@ -293,6 +482,8 @@ func TestRelativeGitEntries(t *testing.T) {
 		name    string
 		workDir string
 		path    string
+		// msystem is MSYSTEM, which an MSYS shell such as Git Bash sets.
+		msystem string
 		files   []string
 		want    []string
 	}{
@@ -368,14 +559,24 @@ func TestRelativeGitEntries(t *testing.T) {
 			path:    `tools;\cmd`,
 			files:   []string{`work\project\tools\git.exe`, `tools\git.exe`, `\cmd\git.exe`},
 		},
+		{
+			// The shell detection passes over the folders an MSYS shell puts
+			// in front of PATH for itself, so the list does not end there.
+			name:    "relative entries past the folders Git Bash puts in front of PATH",
+			workDir: workDir,
+			path:    `C:\Git\mingw64\bin;C:\Git\usr\bin;tools;C:\Git\cmd;bin`,
+			msystem: "MINGW64",
+			files: []string{
+				`C:\Git\mingw64\bin\git.exe`, `C:\Git\usr\bin\msys-2.0.dll`,
+				`D:\work\project\tools\git.exe`, `C:\Git\cmd\git.exe`, `D:\work\project\bin\git.exe`,
+			},
+			want: []string{`tools`},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			getenv := func(key string) string {
-				if key == "PATH" {
-					return tt.path
-				}
-				return ""
+				return map[string]string{"PATH": tt.path, "MSYSTEM": tt.msystem}[key]
 			}
 			exists := func(path string) bool { return slices.Contains(tt.files, path) }
 
