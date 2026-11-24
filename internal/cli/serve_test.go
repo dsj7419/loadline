@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1383,5 +1384,133 @@ func TestServe_LogNeverHoldsALoginCode(t *testing.T) {
 	// the log.
 	if secret := regexp.MustCompile(`[0-9a-f]{32}`).FindString(log); secret != "" {
 		t.Errorf("the log holds %s, which looks like a login code or the token:\n%s", secret, log)
+	}
+}
+
+const (
+	// removedMessage and unremovedMessage are what the server logs of the
+	// binaries earlier upgrades moved aside.
+	removedMessage   = "removed a binary an earlier upgrade replaced"
+	unremovedMessage = "could not remove the binaries earlier upgrades replaced"
+)
+
+// plantAside puts the installed binary in the fixture's data directory, and
+// two that earlier upgrades moved aside, and returns their paths.
+func (f *serveFixture) plantAside() (installed string, aside []string) {
+	f.t.Helper()
+	installed = filepath.FromSlash(installedExe(f.paths.DataDir))
+	aside = []string{installed + ".old", installed + ".old-1"}
+	if err := os.MkdirAll(filepath.Dir(installed), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	for _, path := range append([]string{installed}, aside...) {
+		if err := os.WriteFile(path, []byte("a loadline binary"), 0o600); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	return installed, aside
+}
+
+// loggedPath reports whether log holds a line with msg that ends with the
+// attribute path=path, written as slog writes it.
+func loggedPath(log, msg, path string) bool {
+	for line := range strings.SplitSeq(log, "\n") {
+		if strings.Contains(line, `msg="`+msg+`"`) &&
+			(strings.HasSuffix(line, " path="+path) || strings.HasSuffix(line, " path="+strconv.Quote(path))) {
+			return true
+		}
+	}
+	return false
+}
+
+// An upgrade on Windows moves the running binary aside. The next server to
+// start, once nothing runs that binary, removes it and logs so.
+func TestServe_RemovesBinariesAnUpgradeMovedAside(t *testing.T) {
+	f := newServeFixture(t)
+	installed, aside := f.plantAside()
+
+	f.start().stop(t)
+
+	log := f.logText()
+	for _, path := range aside {
+		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s is still there (%v)", path, err)
+		}
+		if !loggedPath(log, removedMessage, path) {
+			t.Errorf("log does not say it removed %s:\n%s", path, log)
+		}
+	}
+	if _, err := os.Lstat(installed); err != nil {
+		t.Errorf("the server removed the installed binary: %v", err)
+	}
+	if strings.Contains(log, "level=WARN") {
+		t.Errorf("log warns:\n%s", log)
+	}
+}
+
+// Only a server that serves this machine tidies its data directory. A demo
+// serves a made-up one, and a server that finds the port taken by another
+// leaves at once, to that one.
+func TestServe_RemovesNothingInADemoOrAfterLosingThePortRace(t *testing.T) {
+	check := func(t *testing.T, aside []string) {
+		t.Helper()
+		for _, path := range aside {
+			if _, err := os.Lstat(path); err != nil {
+				t.Errorf("%s was removed: %v", path, err)
+			}
+		}
+	}
+
+	t.Run("demo", func(t *testing.T) {
+		f := newServeFixture(t)
+		_, aside := f.plantAside()
+
+		f.start(func(o *cli.ServeOptions) { o.Demo = true }).stop(t)
+
+		check(t, aside)
+	})
+
+	t.Run("lost the port race", func(t *testing.T) {
+		f := newServeFixture(t)
+		f.start()
+		_, aside := f.plantAside()
+
+		var stdout, stderr bytes.Buffer
+		code := cli.Serve(t.Context(), f.options(), cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+
+		if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
+			t.Errorf("second Serve = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
+		}
+		check(t, aside)
+	})
+}
+
+// Housekeeping never keeps the server from starting: what it cannot do is
+// a warning in the log.
+func TestServe_WarnsOfWhatItCannotRemoveAndServesAnyway(t *testing.T) {
+	f := newServeFixture(t)
+	_, aside := f.plantAside()
+	failure := errors.New("the disk is failing")
+	cli.FailAsideHousekeeping(t, failure)
+
+	r := f.start()
+	f.snapshot()
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Serve = %d, want 0", code)
+	}
+
+	log := f.logText()
+	warned := false
+	for line := range strings.SplitSeq(log, "\n") {
+		warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, `msg="`+unremovedMessage+`"`) &&
+			strings.Contains(line, failure.Error())
+	}
+	if !warned {
+		t.Errorf("log does not warn of the failure:\n%s", log)
+	}
+	for _, path := range aside {
+		if !loggedPath(log, removedMessage, path) {
+			t.Errorf("log does not say it removed %s, as it did:\n%s", path, log)
+		}
 	}
 }

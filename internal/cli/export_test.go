@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -44,4 +45,22 @@ func TrustFoldersFrom(dir string) (restore func()) {
 	previous := trustFrom
 	trustFrom = dir
 	return func() { trustFrom = previous }
+}
+
+// FailAsideHousekeeping makes finding and removing the binaries earlier
+// upgrades moved aside fail with err, besides doing their work, for the rest
+// of the test.
+func FailAsideHousekeeping(t *testing.T, err error) {
+	t.Helper()
+
+	find, remove := asideBinaries, removeAside
+	asideBinaries = func(dataDir string) ([]string, error) {
+		found, findErr := find(dataDir)
+		return found, errors.Join(findErr, err)
+	}
+	removeAside = func(dataDir string) ([]string, error) {
+		removed, removeErr := remove(dataDir)
+		return removed, errors.Join(removeErr, err)
+	}
+	t.Cleanup(func() { asideBinaries, removeAside = find, remove })
 }

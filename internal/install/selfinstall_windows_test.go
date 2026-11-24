@@ -2,11 +2,10 @@ package install_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -25,27 +25,7 @@ import (
 func runningCopy(t *testing.T, path string) []byte {
 	t.Helper()
 
-	testBinary, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := readFile(t, testBinary)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, binary)
-
-	ready := filepath.Join(t.TempDir(), "ready")
-	process := exec.CommandContext(context.Background(), path, "-test.run=^$")
-	process.Env = append(os.Environ(), helperEnv+"=sleep", helperReadyEnv+"="+ready)
-	if err := process.Start(); err != nil {
-		t.Fatalf("start %s: %v", path, err)
-	}
-	t.Cleanup(func() {
-		_ = process.Process.Kill()
-		_ = process.Wait()
-	})
-	waitForFile(t, ready)
+	binary := exetest.Run(t, path)
 	if err := os.Rename(writeBinary(t, "probe"), path); err == nil {
 		t.Skip("this system lets a running executable be replaced, so there is nothing to rename aside")
 	}
@@ -100,18 +80,6 @@ func TestSelfInstall_FindsAnotherNameWhenTheOldBinaryRunsToo(t *testing.T) {
 	if taken := readFile(t, target+".old-1"); string(taken) != "taken" {
 		t.Error("SelfInstall replaced a name that was already taken")
 	}
-}
-
-// waitForFile waits until the file at path exists.
-func waitForFile(t *testing.T, path string) {
-	t.Helper()
-
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-	}
-	t.Fatalf("the helper never created %s", path)
 }
 
 // heldFiles simulates a running binary at target that another process also
@@ -463,5 +431,53 @@ func TestSelfInstall_SaysWhereThePreviousBinaryIsWhenPuttingItBackFails(t *testi
 	}
 	if content := readFile(t, aside); string(content) != "loadline v1" {
 		t.Errorf("%s holds %q, want the previous binary", aside, content)
+	}
+}
+
+// A long-lived server can outlive the upgrade that moved its binary aside.
+// Windows refuses to delete a binary while it runs, so RemoveAside leaves it
+// for a later run, and says nothing of it.
+func TestRemoveAside_KeepsABinaryThatIsRunning(t *testing.T) {
+	dataDir := t.TempDir()
+	target := filepath.Join(dataDir, "bin", "loadline.exe")
+	running := runningCopy(t, target+".old")
+	writeFile(t, target+".old-1", []byte("a binary nothing runs"))
+
+	removed, err := install.RemoveAside(dataDir)
+
+	if err != nil || !slices.Equal(removed, []string{target + ".old-1"}) {
+		t.Errorf("RemoveAside = %q, %v; want only %s.old-1 and no error for the binary that runs", removed, err, target)
+	}
+	if aside := readFile(t, target+".old"); !bytes.Equal(aside, running) {
+		t.Errorf("%s.old holds %d bytes, want the running binary kept", target, len(aside))
+	}
+}
+
+// An antivirus scan or a starting process holds a binary for a moment, as
+// a running one holds it for good; RemoveAside leaves it for a later run
+// all the same.
+func TestRemoveAside_LeavesAHeldBinaryForLater(t *testing.T) {
+	for name, errno := range map[string]syscall.Errno{
+		"access denied":     windows.ERROR_ACCESS_DENIED,
+		"sharing violation": windows.ERROR_SHARING_VIOLATION,
+		"lock violation":    windows.ERROR_LOCK_VIOLATION,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			target := filepath.Join(dataDir, "bin", "loadline.exe")
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, target+".old", []byte("a held binary"))
+			install.SetRemove(t, func(path string) error {
+				return &fs.PathError{Op: "remove", Path: path, Err: errno}
+			})
+
+			removed, err := install.RemoveAside(dataDir)
+
+			if err != nil || len(removed) != 0 {
+				t.Errorf("RemoveAside = %q, %v; want nothing removed and no error", removed, err)
+			}
+		})
 	}
 }
