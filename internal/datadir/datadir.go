@@ -11,6 +11,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"unicode"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
@@ -447,6 +450,11 @@ func contentProblem(dir string) (string, error) {
 // not serve, such as exFAT or a network share, where no service it serves
 // keeps anything in sync, so that it could not answer is no reason to
 // refuse dir, and what kept it from answering is left out.
+//
+// The service's name is whatever registered the root chose, and whoever may
+// write to a folder may register it, so the sentence shows it escaped. The
+// root is the folder found among those that hold dir, not a name the
+// registration gives.
 func cloudProblem(dir string) string {
 	root, provider, under, _ := syncRoot(dir)
 	if !under {
@@ -454,12 +462,32 @@ func cloudProblem(dir string) string {
 	}
 	// Windows names the service, but not always a folder that can be found
 	// for the root.
-	synced := root + ", which " + provider
+	synced := root + ", which " + escaped(provider)
 	if root == "" {
-		synced = "a folder that " + provider
+		synced = "a folder that " + escaped(provider)
 	}
 	return dir + " is in " + synced + " keeps in sync with the cloud, so the token and the binary every hook runs " +
 		`would be copied there: set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
+}
+
+// escaped returns text with each character that would act on the terminal
+// it is printed on, or change how the line around it reads, written as Go
+// escapes it in a string literal (\x1b, \r, \u202e): a control character, a
+// format character, such as a right-to-left override or a zero-width space,
+// and a line or a paragraph separator. Install and the server print a
+// refusal as it is, and doctor's own rule for what it prints finds nothing
+// left to change, so every command shows the same sentence.
+func escaped(text string) string {
+	var shown strings.Builder
+	for _, r := range text {
+		if !unicode.IsControl(r) && !unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			shown.WriteRune(r)
+			continue
+		}
+		quoted := strconv.QuoteRune(r)
+		shown.WriteString(quoted[1 : len(quoted)-1])
+	}
+	return shown.String()
 }
 
 // dirLinkProblem reports dir as a link, in the words its kind calls for, or
