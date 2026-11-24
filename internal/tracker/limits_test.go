@@ -281,10 +281,10 @@ func shownWeekly(h *harness, st domain.Status) float64 {
 	return pctOf(h.account(dirA).SevenDay)
 }
 
-// The supervisor's log of one account's weekly window over half an hour, its
-// readings taken in turn from the status lines of a working session and an
-// idle one, all with the same reset: 74, 75, 72, 72, 78, 72, 80. The window
-// shown never falls below the freshest reading.
+// One account's weekly window as its status lines reported it over half an
+// hour, the readings taken in turn from a working session and an idle one,
+// all with the same reset: 74, 75, 72, 72, 78, 72, 80. The window shown never
+// falls below the freshest reading.
 func TestTracker_AlternatingSessionsShowTheFreshestReading(t *testing.T) {
 	h := newHarness(t, tracker.Config{})
 	working, idle := s1, s2

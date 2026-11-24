@@ -135,10 +135,14 @@ func (l *Lock) write(record []byte) error {
 	return nil
 }
 
-// ReadHolder returns what the server that holds the lock on the file at
-// path recorded of itself, or false when the file holds no whole record:
-// no server holds the lock, or the one that does has yet to write it, or
-// came before servers recorded themselves.
+// ReadHolder returns the record the file at path holds, or false when it
+// holds no whole one: the server that holds the lock has yet to write it,
+// or came before servers recorded themselves, or the last holder cleared it
+// with Release. A record can outlive its holder: one that ends without
+// Release, as a server that crashes or is ended does, leaves its record
+// behind once the system has let go of its lock. So the record names the
+// server that holds the lock only while the lock is held, and a caller
+// checks that it is before it reads.
 func ReadHolder(path string) (Holder, bool) {
 	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
