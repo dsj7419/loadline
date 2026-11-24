@@ -603,3 +603,25 @@ func TestTakeBackAdvice_QuotesThePathOrNamesTheTool(t *testing.T) {
 		}
 	}
 }
+
+// The data directory is placed before it is walked: outside the profile
+// nothing is offered for it, or for anything in it, so the walk that tells
+// whether takeown /r would reach nothing else is not made at all.
+func TestTakeBackDataDir_DoesNotWalkADataDirectoryOutsideTheProfile(t *testing.T) {
+	dir := home(t)
+	inProfileAnswers(t, func(string) (bool, error) { return false, nil })
+	previous := inspect
+	looked := 0
+	inspect = func(path string) (fsperm.Entry, error) {
+		looked++
+		return previous(path)
+	}
+	t.Cleanup(func() { inspect = previous })
+
+	if got := takeBackDataDir(gone, dir, filepath.Join(dir, "token")); got != "" {
+		t.Errorf("takeBackDataDir = %q, want nothing offered outside the profile", got)
+	}
+	if looked != 0 {
+		t.Errorf("takeBackDataDir looked at %d paths in %s, which is outside the profile; want none", looked, dir)
+	}
+}

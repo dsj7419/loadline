@@ -47,8 +47,24 @@ What it defends against:
   TrustedInstaller, since its owner may always change who can use it. The temporary name the token
   was written under, left beside it in its folder when the process that made it was ended or a
   scanner held the file, is no other name: install and the server remove it as far as they can,
-  and go on. The data directory, and each folder of Loadline's that keeps you out, is made private
-  without passing that on. Each file is put back as soon as it is judged, each folder once
+  and go on. A data directory whose own permissions keep you from listing it, or on macOS and
+  Linux from passing through it, is first let back into, where that widens nobody else's access:
+  on Windows, install, the server and the creation of the token add one entry to its list, for you
+  alone and for that folder alone, that lets you list it, after every entry it was given
+  explicitly, so after each denial given to it, and before what it inherits, so that, as any entry
+  given explicitly does, it outweighs for you a denial it inherits; on macOS and Linux they give
+  you every right on it again. It keeps that until it is made private, also when something in it
+  is refused then. Two of them doing so at once may leave that entry there twice, which lets in
+  nobody else either. When you still cannot list it, as when a denial given to it keeps you out,
+  which taking off would let in whoever else it keeps out, or when you may not change its
+  permissions, they put them back exactly as they were and refuse it, naming its owner and what an
+  administrator can do; `loadline doctor` says beforehand, changing nothing, which it will be.
+  When two of them both find you still kept out, the one that puts back what it read after the
+  other's change can leave that entry there, or on macOS and Linux your rights on it: that too
+  lets in you alone, after every denial given to it, and you still cannot list it. One you may
+  list but whose permissions you may not change cannot be made private, and is refused saying so.
+  The data directory, and each folder of Loadline's that keeps you out, is made private without
+  passing that on. Each file is put back as soon as it is judged, each folder once
   everything it holds has been, even when something later is refused, and the data directory
   passes its list down only when nothing is, so that nothing reaches a file elsewhere through a
   hard link before it is refused. The files another Loadline process is still writing there under
@@ -203,17 +219,35 @@ or is narrow.
   - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default. Otherwise delete
     the file and run `loadline install`.
 - **A data directory that keeps you out.**
-  - *What it takes:* a `LOADLINE_HOME` folder whose own access list does not let you list it, such
-    as one copied or restored with another account's permissions.
-  - *Impact:* install, the server and `loadline doctor` fail instead of putting it right. The
-    message depends on what the list leaves you:
-    - when it gives you nothing at all, the folder cannot even be opened to find the folders that
-      hold it: "find the folders that hold <folder>: open <folder>: Access is denied.; set
-      LOADLINE_HOME to a folder in your user profile";
-    - when it lets you open the folder but not list it: "read the data directory: open <folder>:
-      Access is denied."
-  - *Mitigation:* use the default. Otherwise reset the folder's permissions (for example
-    `icacls <folder> /reset`) and run `loadline install`.
+  - *What it takes:* a `LOADLINE_HOME` folder whose own permissions keep you out in a way Loadline
+    cannot undo without letting anyone else in: they deny you the right to list it, or they do not
+    let you change them, as on a folder that Administrators own and Loadline now runs without
+    elevation for, one that belongs to another account, or one whose OWNER RIGHTS entry withholds
+    that from its owner. Permissions that only leave out your right to list it, on a folder you may
+    change, no longer count: install and the server let you back in.
+  - *Impact:* install, the server and `loadline doctor` refuse it, and leave its permissions exactly
+    as they were, but for the entry, or your rights, that two runs at once may leave, as described
+    above, which let in you alone.
+    - One that keeps you from listing it: "<folder> keeps you out, and Loadline cannot let you
+      back in without widening who else may use it; it belongs to <owner>: an administrator can
+      reset it with icacls "<folder>" /reset, then run loadline install".
+    - One you may list but not change, as with that OWNER RIGHTS entry: "<folder> cannot be made
+      private, since you may not change who may use it; it belongs to <owner>: set LOADLINE_HOME
+      to a folder of your own, or have an administrator reset it with icacls "<folder>" /reset,
+      then run loadline install".
+    - When its owner cannot be read either, as on a folder that gives you nothing, the sentence
+      says "its owner cannot be read" in its place.
+    - A path that holds `"`, `%`, `$`, `!`, a backtick, a typographic double quote, a control
+      character or a line or paragraph separator, which a shell would read as another path, or a
+      format character, such as a bidirectional override or a zero-width space, which shows another
+      path than the command acts on, gets no command to paste: the sentence names the tool and the
+      folder instead, by the same rule as the take-back below. On macOS and Linux a backslash does
+      too, which fish reads as an escape even in single quotes.
+    - On macOS and Linux the command gives the folder alone to you, with
+      `sudo chown <you> '<folder>'`. Install then judges the owner of each of Loadline's files in it.
+  - *Mitigation:* use the default. Otherwise have an administrator do what the message says, then
+    run `loadline install`. A folder that belongs to another account is refused then for its owner,
+    as above: set `LOADLINE_HOME` to a folder of your own instead.
 - **Cloud and deduplicated files.**
   - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, where
     Loadline's own files can be reparse points.
@@ -263,8 +297,8 @@ or is narrow.
       "<file>" and then loadline install". A folder above the data directory never gets `/r`.
     - A path that holds `"`, `%`, `$`, `!`, a backtick or a typographic double quote, which
       Command Prompt or PowerShell would not take as written, or a control or format character
-      (such as a zero-width space or a right-to-left override), which a terminal would not show as
-      it is, gets the tool's name instead of a command to paste.
+      (such as a zero-width space or a right-to-left override) or a line or paragraph separator,
+      which a terminal would not show as it is, gets the tool's name instead of a command to paste.
     - An account counts as gone only when Windows is sure: it reports the account deleted, or it
       names no account for a SID of this computer's own accounts. A SID of another domain that it
       cannot name, as when no domain controller answers, may be an account that still exists: the
@@ -273,6 +307,6 @@ or is narrow.
     - Nothing is offered for a folder outside your profile either. Loadline places each folder
       where it really is, every link followed and every short 8.3 name in full, so neither can make
       a folder outside the profile pass for one in it.
-  - *Mitigation:* use the default on a standard profile. Otherwise, if the folder is yours, run the
-    command the message offers, or take ownership of the folder it names yourself (for example
-    `takeown /f <folder>`), and run `loadline install`.
+  - *Mitigation:* use the default on a standard profile. Otherwise, if the folder or file is yours,
+    run the command the message offers, or take ownership of the folder or file it names yourself
+    (for example `takeown /f <folder>`), and run `loadline install`.

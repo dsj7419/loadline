@@ -68,6 +68,17 @@ func SetAccessListAsIs(tb testing.TB, path, sddl string) {
 	if err != nil {
 		tb.Fatalf("parse %s: %v", sddl, err)
 	}
+	control, _, err := sd.Control()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	// Windows keeps the mark that it worked out what a list inherits ("AI")
+	// only when asked to work it out, which leaves a list given whole as it is.
+	if control&windows.SE_DACL_AUTO_INHERITED != 0 {
+		if err := sd.SetControl(windows.SE_DACL_AUTO_INHERIT_REQ, windows.SE_DACL_AUTO_INHERIT_REQ); err != nil {
+			tb.Fatal(err)
+		}
+	}
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		tb.Fatal(err)

@@ -1,12 +1,14 @@
 package fsperm_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1126,5 +1128,333 @@ func TestPassDown_PassesTheListDownEvenWhenTheFolderHasItAlready(t *testing.T) {
 	}
 	if private, err := fsperm.DirPrivate(root); err != nil || !private {
 		t.Errorf("DirPrivate = %t, %v; want true", private, err)
+	}
+}
+
+// lockedFolder makes a folder in a private temporary folder and stores the
+// access list sddl on it exactly as written. The private list is put back
+// when the test ends, where the list lets it be, so that the folder can be
+// removed.
+func lockedFolder(t *testing.T, sddl string) string {
+	t.Helper()
+	dir := filepath.Join(privateTop(t), "loadline")
+	if err := fsperm.MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.SetAccessListAsIs(t, dir, sddl)
+	t.Cleanup(func() { _ = fsperm.PassDown(dir) })
+	return dir
+}
+
+// openOnly lets its trustee open a folder and read its attributes and its
+// access list, but not list what it holds.
+const openOnly = "0x120080"
+
+// denyListing is an access list that gives the user full control of a
+// folder, as Private does, but denies everyone the right to list it, which
+// no allow entry overrides.
+func denyListing(t *testing.T) string {
+	t.Helper()
+	user := fspermtest.UserSID(t)
+	return "D:P(D;;CC;;;WD)(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+}
+
+// listEntry is the entry RegainList adds: one for the user alone, on the
+// folder itself and passed on to nothing, that lets them open the folder as
+// a listing does, list what it holds and pass through it.
+func listEntry(t *testing.T) fspermtest.ACE {
+	t.Helper()
+	user, err := windows.StringToSid(fspermtest.UserSID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fspermtest.ACE{
+		Type: windows.ACCESS_ALLOWED_ACE_TYPE,
+		Mask: windows.FILE_LIST_DIRECTORY | windows.FILE_READ_EA | windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES |
+			windows.SYNCHRONIZE | windows.READ_CONTROL,
+		SID: user,
+	}
+}
+
+func TestListable_TellsWhetherTheUserMayListAFolder(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for name, tt := range map[string]struct {
+		list string
+		want bool
+	}{
+		"private":                    {list: "D:P(A;OICI;FA;;;" + user + ")", want: true},
+		"read and list only":         {list: "D:P(A;;0x1200a9;;;" + user + ")", want: true},
+		"a list that gives nothing":  {list: "D:P"},
+		"open but not list":          {list: "D:P(A;;" + openOnly + ";;;" + user + ")"},
+		"listing denied to everyone": {list: denyListing(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, tt.list)
+
+			if got, err := fsperm.Listable(dir); err != nil || got != tt.want {
+				t.Errorf("Listable(%s), whose list is %s = %t, %v; want %t", dir, tt.list, got, err, tt.want)
+			}
+		})
+	}
+	if _, err := fsperm.Listable(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Listable of a missing folder = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// Its owner may always read and change a folder's list, whatever the list
+// says, unless an OWNER RIGHTS entry says what the owner may do instead. An
+// elevated process may as Administrators, which own what it creates.
+func TestCanChangeList_TellsWhetherTheUserMayChangeAFoldersList(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for name, tt := range map[string]struct {
+		list string
+		want bool
+	}{
+		"a list that gives nothing":                 {list: "D:P", want: true},
+		"open but not list":                         {list: "D:P(A;;" + openOnly + ";;;" + user + ")", want: true},
+		"listing denied to everyone":                {list: denyListing(t), want: true},
+		"owner rights withheld, reading left to it": {list: "D:P(A;;0x1200a9;;;OW)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, tt.list)
+
+			if got, err := fsperm.CanChangeList(dir); err != nil || got != tt.want {
+				t.Errorf("CanChangeList(%s), whose list is %s = %t, %v; want %t", dir, tt.list, got, err, tt.want)
+			}
+		})
+	}
+	if _, err := fsperm.CanChangeList(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("CanChangeList of a missing folder = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// A folder whose list keeps its owner from listing it gets one entry more,
+// for the user alone, and they may list it then. Nobody else gains anything.
+func TestRegainList_LetsTheUserListAFolderThatKeepsThemOut(t *testing.T) {
+	for name, list := range map[string]string{
+		"a list that gives nothing": "D:P",
+		"open but not list":         "D:P(A;;" + openOnly + ";;;" + fspermtest.UserSID(t) + ")",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, list)
+			before := fspermtest.AccessList(t, dir)
+
+			changed, err := fsperm.RegainList(dir)
+
+			if err != nil || !changed {
+				t.Fatalf("RegainList(%s), whose list is %s = %t, %v; want it changed", dir, list, changed, err)
+			}
+			if listable, err := fsperm.Listable(dir); err != nil || !listable {
+				t.Errorf("after RegainList, Listable = %t, %v; want true", listable, err)
+			}
+			after := fspermtest.AccessList(t, dir)
+			want := append(slices.Clone(before.Entries), listEntry(t))
+			if !slices.EqualFunc(after.Entries, want, fspermtest.ACE.Equal) || after.Protected != before.Protected {
+				t.Errorf("after RegainList, %s holds %s; want %s and the entry for the user", dir, after, before)
+			}
+			if others := fspermtest.Others(t, dir, fspermtest.Any); len(others) > 0 {
+				t.Errorf("after RegainList, %s admits %v too", dir, others)
+			}
+		})
+	}
+}
+
+// The entry goes after every entry given to the folder explicitly, and so
+// after each denial among them, which it cannot override then, and before
+// what the folder inherits. Whether the list is protected, and whether
+// Windows worked out what it inherits, stays as it was.
+func TestRegainList_KeepsEntryOrderAndControlBits(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	mine := "(A;;" + openOnly + ";;;" + user + ")"
+	for name, tt := range map[string]struct {
+		list string
+		at   int
+	}{
+		"protected and worked out":   {list: "D:PAI(D;;FA;;;BG)" + mine + "(A;;FA;;;SY)", at: 3},
+		"inheriting and worked out":  {list: "D:AI(D;;FA;;;BG)" + mine + "(A;;FA;;;SY)(A;ID;FA;;;SY)(A;OICIID;FR;;;BG)", at: 3},
+		"inheriting, not worked out": {list: "D:" + mine + "(A;ID;FA;;;SY)", at: 1},
+		"a denial after an inherited entry": {
+			list: "D:AI" + mine + "(A;ID;FA;;;SY)(D;;FA;;;BG)", at: 3,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, tt.list)
+			before := fspermtest.AccessList(t, dir)
+			if !before.Equal(fspermtest.ParseList(t, tt.list)) {
+				t.Fatalf("%s holds %s, not %s as written, so the test proves nothing", dir, before, tt.list)
+			}
+
+			if changed, err := fsperm.RegainList(dir); err != nil || !changed {
+				t.Fatalf("RegainList = %t, %v; want it changed", changed, err)
+			}
+
+			after := fspermtest.AccessList(t, dir)
+			want := slices.Concat(before.Entries[:tt.at], []fspermtest.ACE{listEntry(t)}, before.Entries[tt.at:])
+			if !slices.EqualFunc(after.Entries, want, fspermtest.ACE.Equal) {
+				t.Errorf("after RegainList, %s holds %s; want the entry for the user at %d in %s", dir, after, tt.at, before)
+			}
+			if after.Protected != before.Protected || after.AutoInherited != before.AutoInherited {
+				t.Errorf("after RegainList, %s is protected %t, worked out %t; want %t and %t as before",
+					dir, after.Protected, after.AutoInherited, before.Protected, before.AutoInherited)
+			}
+		})
+	}
+}
+
+// An allow entry cannot override a denial before it, so the entry does not
+// let the user list a folder whose list denies them that. The list is put
+// back exactly as it was, byte for byte: removing the denial would let in
+// everyone else it keeps out.
+func TestRegainList_PutsBackTheListWhenADenialKeepsTheUserOut(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for name, store := range map[string]func(t *testing.T, dir string){
+		"as Windows writes it": func(t *testing.T, dir string) {
+			t.Helper()
+			fspermtest.SetAccessListAsIs(t, dir, denyListing(t))
+		},
+		"inheriting and worked out": func(t *testing.T, dir string) {
+			t.Helper()
+			fspermtest.SetAccessListAsIs(t, dir, "D:AI(D;;CC;;;WD)(A;;FA;;;"+user+")(A;ID;FA;;;SY)")
+		},
+		"with unused bytes after a SID": func(t *testing.T, dir string) {
+			t.Helper()
+			deny := fspermtest.AllowEntry(t, "S-1-1-0", 0, windows.FILE_LIST_DIRECTORY, 0)
+			deny[0] = windows.ACCESS_DENIED_ACE_TYPE
+			full := fspermtest.AllowEntry(t, user, windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE, fspermtest.FullControl, 8)
+			fspermtest.SetEntriesAsIs(t, dir, true, deny, full)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, "D:P(A;OICI;FA;;;"+user+")")
+			store(t, dir)
+			before := fspermtest.Descriptor(t, dir)
+
+			changed, err := fsperm.RegainList(dir)
+
+			if changed || !errors.Is(err, fsperm.ErrStillLocked) {
+				t.Errorf("RegainList(%s), whose list is %s = %t, %v; want %v", dir, fspermtest.AccessList(t, dir), changed, err, fsperm.ErrStillLocked)
+			}
+			if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+				t.Errorf("after RegainList, the list of %s is %x; want it as it was, %x", dir, after, before)
+			}
+		})
+	}
+}
+
+// A folder whose list the user may not change cannot be taken back, and is
+// left as it is.
+func TestRegainList_LeavesAFolderTheUserMayNotChange(t *testing.T) {
+	dir := lockedFolder(t, "D:P(A;;"+openOnly+";;;OW)")
+	before := fspermtest.Descriptor(t, dir)
+
+	changed, err := fsperm.RegainList(dir)
+
+	if changed || !errors.Is(err, fsperm.ErrStillLocked) {
+		t.Errorf("RegainList = %t, %v; want %v", changed, err, fsperm.ErrStillLocked)
+	}
+	if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+		t.Errorf("after RegainList, the list of %s is %x; want it as it was, %x", dir, after, before)
+	}
+}
+
+func TestRegainList_ChangesNothingInAFolderTheUserMayList(t *testing.T) {
+	dir := filepath.Join(privateTop(t), "loadline")
+	if err := fsperm.MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	before := fspermtest.Descriptor(t, dir)
+
+	if changed, err := fsperm.RegainList(dir); changed || err != nil {
+		t.Errorf("RegainList = %t, %v; want false, nil", changed, err)
+	}
+	if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+		t.Errorf("after RegainList, the list of %s is %x; want it as it was, %x", dir, after, before)
+	}
+}
+
+// Doctor tells beforehand, changing nothing, whether the entry RegainList
+// adds would let the user list the folder: a denial before it keeps it from
+// that when it applies to the user, and only then.
+func TestListableOnceRegained_TellsWhetherTheEntryWouldLetTheUserIn(t *testing.T) {
+	for name, tt := range map[string]struct {
+		list string
+		want bool
+	}{
+		"a list that gives nothing":        {list: "D:P", want: true},
+		"open but not list":                {list: "D:P(A;;" + openOnly + ";;;" + fspermtest.UserSID(t) + ")", want: true},
+		"a denial for guests":              {list: "D:P(D;;FA;;;BG)", want: true},
+		"listing denied to everyone":       {list: denyListing(t)},
+		"listing denied, then inherited":   {list: "D:AI(D;;CC;;;WD)(A;ID;FA;;;SY)"},
+		"a denial for everyone, inherited": {list: "D:AI(A;ID;FA;;;SY)(D;ID;CC;;;WD)", want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := lockedFolder(t, tt.list)
+			before := fspermtest.Descriptor(t, dir)
+
+			got, err := fsperm.ListableOnceRegained(dir)
+
+			if err != nil || got != tt.want {
+				t.Errorf("ListableOnceRegained(%s), whose list is %s = %t, %v; want %t", dir, tt.list, got, err, tt.want)
+			}
+			if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+				t.Errorf("ListableOnceRegained changed the list of %s to %x from %x", dir, after, before)
+			}
+		})
+	}
+}
+
+// OwnerName names whoever owns a folder: a folder the test makes belongs to
+// its account, or to Administrators when it runs elevated.
+func TestOwnerName_NamesTheOwnerOfAFolder(t *testing.T) {
+	dir := lockedFolder(t, "D:P")
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owners []string
+	for _, sid := range []*windows.SID{user.User.Sid, admins} {
+		account, domain, _, err := sid.LookupAccount("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners = append(owners, domain+`\`+account)
+	}
+
+	if got, err := fsperm.OwnerName(dir); err != nil || !slices.Contains(owners, got) {
+		t.Errorf("OwnerName(%s) = %q, %v; want one of %q", dir, got, err, owners)
+	}
+	if _, err := fsperm.OwnerName(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("OwnerName of a missing folder = %v, want an error that matches fs.ErrNotExist", err)
+	}
+}
+
+// The advice gives a command to paste only for a path no shell an
+// administrator may paste it into reads as another: cmd expands %VAR% and,
+// with delayed expansion, !VAR!, PowerShell expands $name and `-escapes
+// inside double quotes and takes typographic double quotes for quotes, and a
+// control character ends or changes the line. A format character, such as a
+// bidirectional override or a zero-width space, shows the path otherwise
+// than the command acts on it. A path holding any of those gets the tool's
+// name and what to reset instead.
+func TestResetAdvice_QuotesThePathOrNamesTheTool(t *testing.T) {
+	for _, dir := range []string{
+		`D:\tools\loadline`, `D:\shared tools\loadline`, `D:\R&D\loadline`, `D:\it's\loadline`, `D:\Zoë Ōta 山田\loadline`,
+	} {
+		if got, want := fsperm.ResetAdvice(dir), `reset it with icacls "`+dir+`" /reset`; got != want {
+			t.Errorf("ResetAdvice(%q) = %q, want %q", dir, got, want)
+		}
+	}
+	for _, dir := range []string{
+		`D:\"quoted"\loadline`, `D:\%USERPROFILE%\loadline`, `D:\$work\loadline`, `D:\wow!\loadline`, "D:\\`tick\\loadline",
+		`D:\“left\loadline`, `D:\right”\loadline`, `D:\„low\loadline`, "D:\\bell\a\\loadline", "D:\\line\nbreak\\loadline",
+		"D:\\right\u202eto left\\loadline", "D:\\isolated\u2066part\u2069\\loadline", "D:\\zero\u200bwidth\\loadline",
+	} {
+		if got, want := fsperm.ResetAdvice(dir), "reset the permissions of "+dir+" with icacls"; got != want {
+			t.Errorf("ResetAdvice(%q) = %q, want %q", dir, got, want)
+		}
 	}
 }

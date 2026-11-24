@@ -215,8 +215,11 @@ func TestMake_RefusesABrowserProfileThatIsNotAFolder(t *testing.T) {
 // The browser writes in the profile Loadline made private, as the user, and
 // leaves there what the walk refuses anywhere else in the data directory:
 // access lists of its own on Windows, symbolic links on Linux and macOS.
-// Nothing that prepares or checks the data directory looks below the
-// profile, so none of them refuses, reports or changes any of it.
+// The checks of Loadline's own files do not go below the profile, so nothing
+// that prepares or checks the data directory refuses, reports or changes any
+// of it. Only the offer to take the data directory back with all it holds
+// looks below it, at attributes alone, to tell whether takeown /r would
+// reach beyond the data directory, and it changes nothing there either.
 func TestMake_LeavesWhatTheBrowserProfileHoldsAlone(t *testing.T) {
 	home, top := securedHome(t)
 	profile := filepath.Join(home, "browser")

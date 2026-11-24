@@ -595,6 +595,19 @@ func PrivateHere(dir string) error {
 	return nil
 }
 
+// OwnerName names the owner of path, whoever it is: unlike ForeignOwner, it
+// names those Loadline trusts too, such as Administrators. Reading the owner
+// takes the right to read path's permissions, which its owner always has,
+// and which a folder that gives this process nothing withholds from anyone
+// else.
+func OwnerName(path string) (string, error) {
+	owner, err := ownerOf(path)
+	if err != nil {
+		return "", err
+	}
+	return accountName(owner), nil
+}
+
 // openItself opens path itself, a link not followed, asking for access and
 // nothing else. CreateFile asks for SYNCHRONIZE besides, which only a
 // file's own list can grant.

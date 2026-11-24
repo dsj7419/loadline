@@ -11,8 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
-	"unicode"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
@@ -37,13 +35,18 @@ const movableAdvice = ", and with it replace the binary every hook runs; " +
 	"set LOADLINE_HOME to a folder in your user profile, or take that right away"
 
 // Secure prepares dir to hold Loadline's files, as install and the server
-// do each time they run. It refuses what Verify refuses, and then does what
+// do each time they run. It first lets the user back into a dir whose own
+// permissions keep them from listing it, where that widens nobody else's
+// access, as Make does, then refuses what Verify refuses, and then does what
 // Make does.
 //
 // The check of the folders above dir goes up to the volume root, or when top
 // is set, stops below top, which it trusts with every folder above it.
 func Secure(dir, top string) error {
 	dir = filepath.Clean(dir)
+	if err := letBackIn(dir); err != nil {
+		return err
+	}
 	if err := Verify(dir, top); err != nil {
 		return err
 	}
@@ -59,16 +62,24 @@ func Secure(dir, top string) error {
 // to, a link among Loadline's own files, and a browser profile that is no
 // folder, or not private as Loadline makes it (PrepareBrowserProfile). On
 // Windows a link is any reparse point but a deduplicated file, which is the
-// file it was. It then creates dir, and each missing folder above it,
-// private to the user, or makes the existing dir private: it judges each of
-// Loadline's own files and folders, refusing a link, a file with another
-// name and one that belongs to someone else, and takes off each that it
-// found none of that in whatever its access list holds of its own, which
-// making the dir private leaves (fsperm.EntryPrivate), even when it goes on
-// to refuse another. Only when it refuses none, and has judged the names of
-// every file still being written there, does it have the dir pass its list
-// down. The browser profile it judges by itself alone, and changes nothing
-// there (browserProfile).
+// file it was.
+//
+// Before it judges any of that, it lets the user back into a dir whose own
+// permissions keep them from listing it (fsperm.RegainList), which widens
+// nobody else's access, and the dir keeps that until it is made private. It
+// refuses a dir it cannot let them back into that way, as when a denial
+// keeps them out, which only taking it off would undo, or when they may not
+// change its permissions, which making it private takes too. It then
+// creates dir, and each missing folder above it, private to the user, or
+// makes the existing dir private: it judges each of Loadline's own files and
+// folders, refusing a link, a file with another name and one that belongs
+// to someone else, and takes off each that it found none of that in
+// whatever its access list holds of its own, which making the dir private
+// leaves (fsperm.EntryPrivate), even when it goes on to refuse another. Only
+// when it refuses none, and has judged the names of every file still being
+// written there, does it have the dir pass its list down. The browser
+// profile it judges by itself alone, and changes nothing there
+// (browserProfile).
 //
 // Several Loadline processes may run it at once, and write files in dir
 // meanwhile (Temporary), which it refuses only for a name elsewhere, and
@@ -77,6 +88,9 @@ func Secure(dir, top string) error {
 // those files among them.
 func Make(dir string) error {
 	dir = filepath.Clean(dir)
+	if err := letBackIn(dir); err != nil {
+		return err
+	}
 	problem, err := contentProblem(dir)
 	if err != nil {
 		return err
@@ -199,10 +213,16 @@ func clearOwnEntries(path string) error {
 // could move aside, by deleting or renaming one of the folders above it that
 // already exist, and then put a folder of their own, and a binary of their
 // own, at the path the hooks run. It refuses what Make refuses. It changes
-// nothing.
+// nothing. A dir whose own permissions keep the user from listing it, which
+// Secure lets them back into first, it refuses when Secure could not, and
+// otherwise judges no further: neither what it holds nor where it really is
+// can be seen until then, and Secure judges both once it has.
 func Verify(dir, top string) error {
 	dir = filepath.Clean(dir)
-	problem, err := refusal(dir, top)
+	problem, regainable, err := lockout(dir)
+	if err == nil && problem == "" && !regainable {
+		problem, err = refusal(dir, top)
+	}
 	if err != nil {
 		return err
 	}
@@ -215,13 +235,22 @@ func Verify(dir, top string) error {
 // Check reports, in a sentence that says what to do, the first thing that
 // keeps dir from being the user's alone: what Verify refuses, or access that
 // others have to dir or to one of Loadline's files in it. It returns "" when
-// there is none. A dir that does not exist yet is reported with what install
-// would refuse to make it for, judged from the folders above it that exist,
-// or, when install would make it, is an error that matches fs.ErrNotExist.
+// there is none. A dir whose own permissions keep the user from listing it is
+// reported first, saying whether install can let them back in. A dir that
+// does not exist yet is reported with what install would refuse to make it
+// for, judged from the folders above it that exist, or, when install would
+// make it, is an error that matches fs.ErrNotExist. It changes nothing.
 func Check(dir, top string) (string, error) {
 	dir = filepath.Clean(dir)
 	if _, err := os.Lstat(dir); err != nil {
 		return notMadeYet(dir, top, err)
+	}
+	problem, regainable, err := lockout(dir)
+	switch {
+	case err != nil || problem != "":
+		return problem, err
+	case regainable:
+		return dir + letBackInAdvice, nil
 	}
 	if problem, err := refusal(dir, top); err != nil || problem != "" {
 		return problem, err
@@ -319,21 +348,20 @@ func contentProblem(dir string) (string, error) {
 			return problem, err
 		}
 	}
-	if found.profile == "" {
-		return "", nil
+	if found.profile != "" {
+		// The user removes a refused profile, as the refusal says, and may do so
+		// while a hook secures the data directory. One that is being deleted is
+		// waited for (settle), and once gone, has no problem.
+		var problem string
+		err = settle(func() (err error) {
+			problem, err = profileProblem(found.profile)
+			return err
+		})
+		if !errors.Is(err, fs.ErrNotExist) && (err != nil || problem != "") {
+			return problem, err
+		}
 	}
-	// The user removes a refused profile, as the refusal says, and may do so
-	// while a hook secures the data directory. One that is being deleted is
-	// waited for (settle), and once gone, has no problem.
-	var problem string
-	err = settle(func() (err error) {
-		problem, err = profileProblem(found.profile)
-		return err
-	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
-	}
-	return problem, err
+	return unchangeable(dir)
 }
 
 // cloudProblem reports dir as in a folder that a cloud service keeps in
@@ -439,17 +467,22 @@ func movable(dir, top string) (string, error) {
 // takeBackDataDir offers to take back dir, the data directory, with all it
 // holds, which takes back each of Loadline's files and folders at once, when
 // owner, who owns dir or something in it, is an account this computer no
-// longer has, and takeown /r would reach nothing but what dir holds
-// (holdsOnlyLoadlines). Otherwise it offers reported alone, what the report
+// longer has, dir is in the user's profile, and takeown /r would reach
+// nothing but what dir holds (holdsOnlyLoadlines), which it walks dir to
+// tell only then. Otherwise it offers reported alone, what the report
 // names: dir itself, or the file or folder in it that owner owns, which is
 // what taking back changes.
 func takeBackDataDir(owner fsperm.Owner, dir, reported string) string {
-	// No walk of the data directory for an owner that is offered nothing.
+	// No walk of the data directory for an owner that is offered nothing,
+	// or for a data directory outside the profile, which takeBack would
+	// offer nothing for with all it holds.
 	if !owner.Gone {
 		return ""
 	}
-	if holdsOnlyLoadlines(dir) {
-		return takeBack(owner, dir, true)
+	if held, err := fsperm.Resolved(dir); err == nil {
+		if in, err := inProfile(held); err == nil && in && holdsOnlyLoadlines(dir) {
+			return takeBack(owner, dir, true)
+		}
 	}
 	return takeBack(owner, reported, false)
 }
@@ -571,21 +604,22 @@ func (n fileNames) walk(folder string) bool {
 // takeBackAdvice ends the report of path, a folder that an account this
 // computer no longer has owns, or whose files it owns, or such a file
 // itself, with what takes back what, which the offer names a folder or a
-// file as it is: the command to paste into Command Prompt or PowerShell.
-// Each takes a path in double quotes as it is written, but for a few
-// characters: a double quote ends it, Command Prompt expands % and, with
-// delayed expansion, !, and PowerShell expands $, reads a backtick as an
-// escape, and reads a typographic double quote as a plain one. A path can
-// also hold characters a terminal does not show as they are (hidden). A
-// path that holds any of them is given the tool's name instead, and no
-// command that would act on something other than what it seems to name.
+// file as it is: the command to paste into Command Prompt or PowerShell,
+// with the path in double quotes. A path that either would read as another
+// there, or a terminal would show otherwise than it is (fsperm.PasteUnsafe),
+// is given the tool's name instead, and no command that would act on
+// something other than what it seems to name. Only Windows tells that an
+// account is gone, so the offer is made on Windows alone; a shell of macOS
+// or Linux would need a backslash kept out of the command too, as the
+// advice for a folder Loadline cannot let its user back into does there
+// (fsperm.ResetAdvice).
 func takeBackAdvice(path string, what taken) string {
 	noun := "folder"
 	if what == aFile {
 		noun = "file"
 	}
 	lead := "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the " + noun + " is yours, "
-	if strings.ContainsAny(path, "\"%$!`\u201c\u201d\u201e") || strings.ContainsFunc(path, hidden) {
+	if fsperm.PasteUnsafe(path) {
 		which := path
 		if what == aFolderAndAllItHolds {
 			which += " and all it holds"
@@ -597,11 +631,4 @@ func takeBackAdvice(path string, what taken) string {
 		command += " /r"
 	}
 	return lead + "run " + command + " and then loadline install"
-}
-
-// hidden reports whether r is a character a terminal does not show as it
-// is: a control character, or a format character, such as a zero-width
-// space, or one that reverses or isolates the text around it.
-func hidden(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }

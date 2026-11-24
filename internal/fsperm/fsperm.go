@@ -8,15 +8,66 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // ErrNoDriveLetter is why the folders that really hold a path cannot be found
 // on a volume that Windows gives no drive letter to: it names them on such a
 // volume only by the volume's GUID name, which Loadline judges no folder by.
 var ErrNoDriveLetter = errors.New("the volume has no drive letter")
+
+// ErrStillLocked is RegainList's answer for a folder it cannot let the user
+// list without widening anyone else's access: one whose permissions deny the
+// user that, which nothing RegainList adds overrides, or one whose
+// permissions the user may not change. The folder is then as it was.
+var ErrStillLocked = errors.New("the folder still keeps you from listing it")
+
+// Listable reports whether this process can open dir, list what it holds and
+// pass through it to look at each of those, as Loadline's walk of the data
+// directory does. Any other failure is an error that names dir, one that
+// matches fs.ErrNotExist for a dir that is not there.
+func Listable(dir string) (bool, error) {
+	folder, err := os.Open(filepath.Clean(dir))
+	if err == nil {
+		_, err = folder.Readdirnames(1)
+		_ = folder.Close()
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+	}
+	if err == nil {
+		err = passable(dir)
+	}
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrPermission):
+		return false, nil
+	}
+	return false, err
+}
+
+// PasteUnsafe reports whether path holds what a shell an administrator may
+// paste a command into reads as something other than itself, even inside
+// quotes, or what a terminal shows otherwise than it is: a double quote, the
+// typographic ones too, which PowerShell takes for one; cmd's %name% and,
+// with delayed expansion, !name!; a shell's $name and its backtick; a control
+// character, a line separator or a paragraph separator, which ends or
+// changes the line; and a format character, such as a bidirectional override
+// or a zero-width space. A command with such a path in it could act on
+// another path than the one it shows, so whatever offers one names the tool
+// instead. A caller adds what its own shells read besides.
+func PasteUnsafe(path string) bool {
+	return strings.ContainsFunc(path, func(r rune) bool {
+		return strings.ContainsRune("\"%$!`\u201c\u201d\u201e", r) || unicode.IsControl(r) ||
+			unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+	})
+}
 
 // Entry is what Inspect tells of a path itself.
 type Entry struct {

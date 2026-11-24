@@ -167,3 +167,47 @@ func TestSecure_RefusesAFileOfLoadlinesWithAnotherName(t *testing.T) {
 		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 	}
 }
+
+// A data directory whose mode keeps its owner out is taken back: doctor says
+// install can let the user back in, install's first check leaves it to
+// Secure, and Secure gives the owner every right on it again, judges it and
+// makes it private.
+func TestSecure_TakesBackADataDirectoryWithNoOwnerPermissions(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may list any folder, whatever its mode")
+	}
+	home := filepath.Join(t.TempDir(), "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(home, "token")
+	if err := os.WriteFile(token, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+
+	want := home + " keeps you out, though you can let yourself back in; run loadline install, which does that and makes it private"
+	if got, err := datadir.Check(home, filepath.Dir(home)); err != nil || got != want {
+		t.Errorf("Check = %q, %v; want %q", got, err, want)
+	}
+	if err := datadir.Verify(home, filepath.Dir(home)); err != nil {
+		t.Errorf("Verify = %v, want nil: Secure lets the user back in before it judges the folder", err)
+	}
+	if err := datadir.Secure(home, filepath.Dir(home)); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("after Secure, the mode is %#o; want 0700", got)
+	}
+	if _, err := os.ReadFile(token); err != nil {
+		t.Errorf("after Secure, the user cannot read the token: %v", err)
+	}
+}
