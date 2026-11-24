@@ -29,6 +29,7 @@ func TestDefaultPaths_Windows(t *testing.T) {
 		SpoolDir:          filepath.Join(dataDir, "spool"),
 		DBFile:            filepath.Join(dataDir, "loadline.db"),
 		BrowserProfileDir: filepath.Join(dataDir, "browser"),
+		ServerLock:        filepath.Join(dataDir, "server.lock"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)

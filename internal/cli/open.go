@@ -78,8 +78,9 @@ func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
 	}
 	client := forward.Client{BaseURL: forward.LoopbackURL(cfg.Port)}
 	if !client.Healthy(ctx) {
-		if err := startServer(ctx, client, o, cfg.Port); err != nil {
-			return fail(stdio, err)
+		start := serverStart{exe: o.Exe, spawn: o.Spawn, after: o.After, wait: serverStartWait}
+		if err := startServer(ctx, client, cfg.Port, start); err != nil {
+			return fail(stdio, fmt.Errorf("%w; run loadline serve to see why", err))
 		}
 	}
 	if client.Token, err = config.EnsureToken(o.Paths.TokenFile); err != nil {
@@ -101,29 +102,42 @@ func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
 	return exitOK
 }
 
-// startServer starts the server and waits until client finds it answering,
-// for up to serverStartWait.
-func startServer(ctx context.Context, client forward.Client, o OpenOptions, port int) error {
-	spawn := o.Spawn
+// serverStart is what starting a server takes.
+type serverStart struct {
+	// exe is the binary the server runs.
+	exe string
+	// spawn starts it. Nil means launch.SpawnDetached.
+	spawn func(exe string, args ...string) error
+	// after schedules the wait for it to answer. Nil means wall-clock timers.
+	after timer.AfterFunc
+	// wait bounds that wait.
+	wait time.Duration
+}
+
+// startServer starts the server, with --no-open so that it does not open a
+// window of its own, and waits until client finds it answering on port, for
+// up to start.wait. What to run when it fails is the caller's to say.
+func startServer(ctx context.Context, client forward.Client, port int, start serverStart) error {
+	spawn := start.spawn
 	if spawn == nil {
 		spawn = launch.SpawnDetached
 	}
-	if err := spawn(o.Exe, "serve", "--no-open"); err != nil {
+	if err := spawn(start.exe, "serve", "--no-open"); err != nil {
 		return fmt.Errorf("start the server: %w", err)
 	}
 
 	wait, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stop := o.After.Start(serverStartWait, cancel)
+	stop := start.after.Start(start.wait, cancel)
 	defer stop()
 	for !client.Healthy(wait) {
-		if o.After.Sleep(wait, serverPollEvery) {
+		if start.after.Sleep(wait, serverPollEvery) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("wait for the server: %w", err)
 		}
-		return fmt.Errorf("the server started on port %d did not answer within %v; run loadline serve to see why", port, serverStartWait)
+		return fmt.Errorf("the server started on port %d did not answer within %v", port, start.wait)
 	}
 	return nil
 }

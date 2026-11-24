@@ -17,6 +17,7 @@ func wantUnixPaths(dataDir, configDir string) config.Paths {
 		SpoolDir:          filepath.Join(dataDir, "spool"),
 		DBFile:            filepath.Join(dataDir, "loadline.db"),
 		BrowserProfileDir: filepath.Join(dataDir, "browser"),
+		ServerLock:        filepath.Join(dataDir, "server.lock"),
 	}
 }
 

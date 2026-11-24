@@ -54,6 +54,10 @@ type Deps struct {
 	// and must not block. Nil means nothing is called.
 	Kick  func()
 	OnDir func(domain.ConfigDir)
+	// Stop is called for each accepted request to stop the server, on the
+	// request's goroutine, and must not block. Nil leaves the route out: a
+	// stop request is then refused as by a server from before it.
+	Stop func()
 	// Token is the ingest token. The UI cookie is derived from it. An empty
 	// token admits nobody to any authenticated route.
 	Token []byte
@@ -86,6 +90,7 @@ type Server struct {
 	state   StateSink
 	kick    func()
 	onDir   func(domain.ConfigDir)
+	stop    func()
 	token   []byte
 	version string
 	clock   func() time.Time
@@ -116,6 +121,7 @@ func New(d Deps) *Server {
 		state:   d.State,
 		kick:    d.Kick,
 		onDir:   d.OnDir,
+		stop:    d.Stop,
 		token:   d.Token,
 		version: d.Version,
 		demo:    d.Demo,
@@ -179,6 +185,20 @@ func (s *Server) routes(static http.Handler) http.Handler {
 	mux.Handle("GET /api/snapshot", s.requireUI(http.HandlerFunc(s.handleSnapshot)))
 	mux.Handle("GET /api/diag", s.requireToken(http.HandlerFunc(s.handleDiag)))
 	mux.Handle("POST /api/login-code", s.requireToken(http.HandlerFunc(s.handleLoginCode)))
+	// The one method each of these routes takes, which a 405 for any other
+	// lists alone in Allow.
+	onlyMethod := map[string]string{}
+	if s.stop != nil {
+		// The token alone, never the cookie: a browser sends the cookie to
+		// every port on 127.0.0.1, while a page of another origin cannot
+		// send the token's header without a preflight the server never
+		// grants.
+		mux.Handle("POST /api/stop", s.requireToken(http.HandlerFunc(s.handleStop)))
+		// Otherwise the UI's files would answer a GET or HEAD of the path,
+		// with "not found".
+		mux.Handle("GET /api/stop", s.refuseAllBut(http.MethodPost))
+		onlyMethod["/api/stop"] = http.MethodPost
+	}
 	// These routes take GET alone. The mux routes HEAD to a GET route too,
 	// but a HEAD from a link checker or a preview must not spend a login
 	// code, and a HEAD must not hold an event stream whose output is thrown
@@ -189,9 +209,20 @@ func (s *Server) routes(static http.Handler) http.Handler {
 	}
 	for path, h := range getOnly {
 		mux.Handle("GET "+path, s.refuseHead(h))
+		onlyMethod[path] = http.MethodGet
 	}
 	mux.Handle("GET /", static)
-	return secureHeaders(s.checkHost(s.checkOrigin(s.refuseUnroutedMethods(mux, getOnly))))
+	return secureHeaders(s.checkHost(s.checkOrigin(s.refuseUnroutedMethods(mux, onlyMethod))))
+}
+
+// refuseAllBut answers every request with the 405 that refuseUnroutedMethods
+// gives a method the route does not take, for a route that takes method
+// alone.
+func (s *Server) refuseAllBut(method string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", method)
+		s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")
+	})
 }
 
 // refuseHead answers HEAD with the 405 that refuseUnroutedMethods gives any
@@ -212,9 +243,9 @@ func (s *Server) refuseHead(next http.Handler) http.Handler {
 // text. Since GET / takes every path, such a request has the wrong method,
 // or a path the mux redirects to its canonical form, which it is left to do.
 // The methods to list in Allow come from the handler the mux reserves for
-// that case, run against a writer that keeps only headers; a GET-only route
-// lists GET alone.
-func (s *Server) refuseUnroutedMethods(mux *http.ServeMux, getOnly map[string]http.Handler) http.Handler {
+// that case, run against a writer that keeps only headers; a route that takes
+// one method alone (onlyMethod, by path) lists that method alone.
+func (s *Server) refuseUnroutedMethods(mux *http.ServeMux, onlyMethod map[string]string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, pattern := mux.Handler(r)
 		if pattern != "" {
@@ -228,8 +259,8 @@ func (s *Server) refuseUnroutedMethods(mux *http.ServeMux, getOnly map[string]ht
 			mux.ServeHTTP(w, r)
 			return
 		}
-		if _, ok := getOnly[r.URL.Path]; ok {
-			allow = http.MethodGet
+		if method, ok := onlyMethod[r.URL.Path]; ok {
+			allow = method
 		}
 		w.Header().Set("Allow", allow)
 		s.reject(w, r, http.StatusMethodNotAllowed, "method not allowed")

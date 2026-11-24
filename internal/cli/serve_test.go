@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"github.com/dsj7419/loadline/internal/launch"
 	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
+	"github.com/dsj7419/loadline/internal/serverlock"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
 
@@ -172,6 +174,7 @@ func newServeFixture(t *testing.T) *serveFixture {
 			TokenFile:  filepath.Join(data, "token"),
 			SpoolDir:   filepath.Join(data, "spool"),
 			DBFile:     filepath.Join(data, "loadline.db"),
+			ServerLock: filepath.Join(data, "server.lock"),
 		},
 		port:   freePort(t),
 		claude: newFakeClaude(),
@@ -252,6 +255,7 @@ func (f *serveFixture) options() cli.ServeOptions {
 type running struct {
 	cancel context.CancelFunc
 	done   chan int
+	ready  chan string
 	stdout *syncBuffer
 	stderr *syncBuffer
 	// addr is the address Serve said it listens on.
@@ -262,26 +266,49 @@ type running struct {
 // waits until it listens. The test's end stops it and waits for it.
 func (f *serveFixture) start(edit ...func(*cli.ServeOptions)) *running {
 	f.t.Helper()
+	r := f.launch(edit...)
+	r.awaitReady(f.t)
+	return r
+}
+
+// launch runs Serve as start does, and returns at once.
+func (f *serveFixture) launch(edit ...func(*cli.ServeOptions)) *running {
+	f.t.Helper()
 	o := f.options()
 	for _, e := range edit {
 		e(&o)
 	}
-	ready := make(chan string, 1)
-	o.Ready = func(addr string) { ready <- addr }
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &running{cancel: cancel, done: make(chan int, 1), stdout: &syncBuffer{}, stderr: &syncBuffer{}}
+	r := &running{cancel: cancel, done: make(chan int, 1), ready: make(chan string, 1), stdout: &syncBuffer{}, stderr: &syncBuffer{}}
+	o.Ready = func(addr string) { r.ready <- addr }
 	go func() { r.done <- cli.Serve(ctx, o, cli.IO{In: strings.NewReader(""), Out: r.stdout, Err: r.stderr}) }()
 	f.t.Cleanup(func() { r.stop(f.t) })
+	return r
+}
 
+// awaitReady waits until Serve listens.
+func (r *running) awaitReady(t *testing.T) {
+	t.Helper()
 	select {
-	case r.addr = <-ready:
+	case r.addr = <-r.ready:
+		r.ready <- r.addr
 	case code := <-r.done:
 		r.done <- code
-		f.t.Fatalf("Serve returned %d before it listened; stderr %q", code, r.stderr.String())
+		t.Fatalf("Serve returned %d before it listened; stderr %q", code, r.stderr.String())
 	case <-time.After(serveStartPatience):
-		f.t.Fatalf("Serve did not listen within %v", serveStartPatience)
+		t.Fatalf("Serve did not listen within %v", serveStartPatience)
 	}
-	return r
+}
+
+// listening reports whether Serve has said it listens.
+func (r *running) listening() bool {
+	select {
+	case addr := <-r.ready:
+		r.ready <- addr
+		return true
+	default:
+		return false
+	}
 }
 
 // serveStartPatience is how long start waits for Serve to listen. How soon
@@ -293,12 +320,18 @@ const serveStartPatience = 30 * time.Second
 func (r *running) stop(t *testing.T) int {
 	t.Helper()
 	r.cancel()
+	return r.returned(t)
+}
+
+// returned waits for Serve to return, and returns its exit code.
+func (r *running) returned(t *testing.T) int {
+	t.Helper()
 	select {
 	case code := <-r.done:
 		r.done <- code
 		return code
 	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return after its context ended")
+		t.Fatal("Serve did not return")
 		return -1
 	}
 }
@@ -1512,5 +1545,294 @@ func TestServe_WarnsOfWhatItCannotRemoveAndServesAnyway(t *testing.T) {
 		if !loggedPath(log, removedMessage, path) {
 			t.Errorf("log does not say it removed %s, as it did:\n%s", path, log)
 		}
+	}
+}
+
+// post posts to path with the ingest token and no body.
+func (f *serveFixture) post(path string) *http.Response {
+	f.t.Helper()
+	req, err := http.NewRequestWithContext(f.t.Context(), http.MethodPost, f.url(path), http.NoBody)
+	if err != nil {
+		f.t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Loadline-Token", string(f.token()))
+	resp, err := f.http.Do(req)
+	if err != nil {
+		f.t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+// subagentStart sends the hook of a subagent agent starting in session.
+func (f *serveFixture) subagentStart(dir domain.ConfigDir, session, agent string) {
+	f.t.Helper()
+	payload := fmt.Sprintf(`{"session_id":%q,"hook_event_name":"SubagentStart","agent_id":%q,"agent_type":"general-purpose"}`, session, agent)
+	f.send(forward.HookPath, f.envelope(protocol.KindHook, dir, f.clock.Now(), payload))
+}
+
+// subagentsOf returns how many subagents the server counts in session.
+func (f *serveFixture) subagentsOf(session domain.SessionID) int {
+	f.t.Helper()
+	s, ok := sessionByID(f.snapshot(), session)
+	if !ok {
+		f.t.Fatalf("the server shows no session %s", session)
+	}
+	return s.Subagents
+}
+
+// assertHistoryClosed fails unless the history database can be opened with
+// SQLite's exclusive locking, which no other connection may have open: a
+// connection in write-ahead logging mode holds a shared lock on the file for
+// as long as it is open.
+func assertHistoryClosed(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_pragma=locking_mode(EXCLUSIVE)")
+	if err != nil {
+		t.Fatalf("open the history: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var objects int
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema").Scan(&objects); err != nil {
+		t.Errorf("the history cannot be opened exclusively, so something still has it open: %v", err)
+	}
+}
+
+// A stop request takes the path of any other stop: everything shuts down
+// gracefully, and the history is written and closed, before Serve returns.
+func TestServe_StopsWhenAsked(t *testing.T) {
+	f := newServeFixture(t)
+	r := f.start()
+	f.hook(f.defaultDir(), "s1", "SessionStart")
+
+	resp := f.post("/api/stop")
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if want := fmt.Sprintf(`{"stopping":true,"pid":%d}`, os.Getpid()); err != nil || resp.StatusCode != http.StatusOK || string(body) != want {
+		t.Errorf("POST /api/stop = %d %q (%v), want 200 %s", resp.StatusCode, body, err, want)
+	}
+	if code := r.returned(t); code != 0 {
+		t.Errorf("Serve = %d, want 0", code)
+	}
+	if log := f.logText(); !strings.Contains(log, `msg="loadline stopping" reason="asked to stop"`) || !strings.Contains(log, `msg="loadline stopped"`) {
+		t.Errorf("the log does not say the server stopped because it was asked to:\n%s", log)
+	}
+	assertHistoryClosed(t, f.paths.DBFile)
+}
+
+// holdHistoryClose returns a BeforeHistoryClose that says it has been
+// reached, by closing reached, and holds the close until release is closed.
+func holdHistoryClose(reached, release chan struct{}) func(*cli.ServeOptions) {
+	return func(o *cli.ServeOptions) {
+		o.BeforeHistoryClose = func() {
+			close(reached)
+			<-release
+		}
+	}
+}
+
+// onClock runs a server on a clock of its own.
+func onClock(clock *clocktest.Clock) func(*cli.ServeOptions) {
+	return func(o *cli.ServeOptions) {
+		o.Clock = clock.Now
+		o.Ticker = clock
+	}
+}
+
+// awaitClosed waits until ch is closed.
+func awaitClosed(t *testing.T, what string, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(serveStartPatience):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// A server stops answering well before it exits: it closes its listener
+// first, and writes and closes the history last. A server that starts in
+// between, as one a hook starts does, takes the port at once, but must not
+// read the history until the old one has closed it, or it misses what the
+// old one wrote last.
+func TestServe_ANewServerWaitsForTheOldOneToCloseItsHistory(t *testing.T) {
+	// begin runs a first server whose history close is held, has it apply
+	// a subagent's start as the last event before it is asked to stop, and
+	// asks it. It returns once the first server's listener has closed and
+	// its history is about to close, with two binaries an upgrade moved
+	// aside planted, and a second server started on the same paths, on a
+	// clock of its own, and waiting.
+	begin := func(t *testing.T) (f *serveFixture, first, second *running, clock *clocktest.Clock, release chan struct{}, aside []string) {
+		t.Helper()
+		f = newServeFixture(t)
+		reached, release := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		})
+		first = f.start(holdHistoryClose(reached, release))
+		f.hook(f.defaultDir(), "s1", "SessionStart")
+		f.subagentStart(f.defaultDir(), "s1", "agent-1")
+		if n := f.subagentsOf("s1"); n != 1 {
+			t.Fatalf("the first server counts %d subagents, want 1", n)
+		}
+
+		first.cancel()
+		awaitClosed(t, "the first server's history close", reached)
+		_, aside = f.plantAside()
+		clock = clocktest.New(t0)
+		second = f.launch(onClock(clock))
+		clock.WaitForTimers(t, 2)
+		return f, first, second, clock, release, aside
+	}
+
+	t.Run("the old one closes it within the wait", func(t *testing.T) {
+		f, first, second, clock, release, _ := begin(t)
+		for range 3 {
+			clock.Advance(clock.Pending()[0])
+			clock.WaitForTimers(t, 2)
+			if second.listening() {
+				t.Fatal("the second server listens while the first still holds the history")
+			}
+		}
+
+		close(release)
+		if code := first.returned(t); code != 0 {
+			t.Errorf("the first Serve = %d, want 0", code)
+		}
+		clock.Advance(clock.Pending()[0])
+		second.awaitReady(t)
+
+		log := f.logText()
+		stopped := strings.Index(log, `msg="loadline stopped"`)
+		restarted := strings.LastIndex(log, `msg="loadline started"`)
+		restored := strings.LastIndex(log, `msg="history restored"`)
+		if stopped < 0 || restarted < stopped || restored < restarted {
+			t.Errorf("the log does not show the second server starting, and restoring, only after the first closed the history:\n%s", log)
+		}
+		if n := f.subagentsOf("s1"); n != 1 {
+			t.Errorf("the second server counts %d subagents in s1, want the 1 the first applied last", n)
+		}
+	})
+
+	t.Run("the old one holds it past the wait", func(t *testing.T) {
+		f, first, second, clock, release, aside := begin(t)
+
+		clock.Advance(cli.LockWait)
+
+		if code := second.returned(t); code != 1 || second.stderr.String() != "loadline: another server still holds the data directory\n" {
+			t.Errorf("the second Serve = %d, stderr %q; want 1 and the data directory named as held", code, second.stderr.String())
+		}
+		close(release)
+		if code := first.returned(t); code != 0 {
+			t.Errorf("the first Serve = %d, want 0", code)
+		}
+		log := f.logText()
+		if n := strings.Count(log, `msg="loadline started"`); n != 1 {
+			t.Errorf("the log shows %d servers starting, want the first alone:\n%s", n, log)
+		}
+		if n := strings.Count(log, `msg="history restored"`); n != 1 {
+			t.Errorf("the log shows the history restored %d times, want by the first alone:\n%s", n, log)
+		}
+		if !strings.Contains(log, `msg="loadline could not start" err="another server still holds the data directory"`) {
+			t.Errorf("the log does not say why the second server did not start:\n%s", log)
+		}
+		// Tidying the data directory is for a server that starts, as it is
+		// for one that wins the port.
+		for _, path := range aside {
+			if _, err := os.Lstat(path); err != nil {
+				t.Errorf("%s was removed by a server that did not start: %v", path, err)
+			}
+		}
+	})
+
+	// A server stopped as it waits, as by Ctrl+C, leaves once the lock is
+	// its own, opening nothing.
+	t.Run("the new one is stopped while it waits", func(t *testing.T) {
+		f, first, second, clock, release, _ := begin(t)
+
+		second.cancel()
+		close(release)
+		if code := first.returned(t); code != 0 {
+			t.Errorf("the first Serve = %d, want 0", code)
+		}
+		clock.Advance(clock.Pending()[0])
+
+		if code := second.returned(t); code != 0 || second.stderr.String() != "" {
+			t.Errorf("the second Serve = %d, stderr %q; want 0 and nothing", code, second.stderr.String())
+		}
+		if n := strings.Count(f.logText(), `msg="loadline started"`); n != 1 {
+			t.Errorf("the log shows %d servers starting, want the first alone:\n%s", n, f.logText())
+		}
+	})
+
+	// Stopped, it has nothing to report when the lock stays held past the
+	// wait: it was not going to start.
+	t.Run("the new one is stopped while the old one holds on", func(t *testing.T) {
+		f, first, second, clock, release, _ := begin(t)
+
+		second.cancel()
+		clock.Advance(cli.LockWait)
+
+		if code := second.returned(t); code != 0 || second.stderr.String() != "" {
+			t.Errorf("the second Serve = %d, stderr %q; want 0 and nothing", code, second.stderr.String())
+		}
+		close(release)
+		if code := first.returned(t); code != 0 {
+			t.Errorf("the first Serve = %d, want 0", code)
+		}
+		if log := f.logText(); strings.Contains(log, "could not start") {
+			t.Errorf("the log says the stopped server could not start:\n%s", log)
+		}
+	})
+}
+
+// A spare server, as a hook starts one, that finds the port taken by a
+// server still starting or stopping, which answers nothing yet or any more,
+// leaves quietly, as it does when that server answers: that server holds the
+// history's lock.
+func TestServe_LeavesQuietlyWhileAnotherServerStartsOrStops(t *testing.T) {
+	f := newServeFixture(t)
+	lock, err := serverlock.Acquire(f.paths.ServerLock, 0, nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+	silent, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = silent.Close() })
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Serve(t.Context(), f.options(), cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &stderr})
+
+	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("Serve = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
+	}
+}
+
+// A data directory on a file system that takes no lock, as some network
+// shares do, served before servers took one there: the server still starts,
+// and says in its log that servers are not kept from the history there.
+func TestServe_RunsWithoutTheLockWhereTheFileSystemTakesNone(t *testing.T) {
+	f := newServeFixture(t)
+	cli.LocksUnsupported(t)
+
+	r := f.start()
+	f.hook(f.defaultDir(), "s1", "SessionStart")
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Serve = %d, want 0", code)
+	}
+
+	log := f.logText()
+	warned := false
+	for line := range strings.SplitSeq(log, "\n") {
+		warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, "takes no lock")
+	}
+	if !warned || !strings.Contains(log, `msg="history restored"`) {
+		t.Errorf("the log does not warn of the missing lock, or the server kept no history:\n%s", log)
 	}
 }

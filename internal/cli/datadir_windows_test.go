@@ -34,11 +34,16 @@ func driveRoot(t *testing.T) string {
 }
 
 // sharedHome points LOADLINE_HOME at a directory directly in a driveRoot,
-// and returns it. The directory itself does not exist yet.
+// and returns it. The directory holds only a config, which names a free
+// port and a claude that is not there, and passes on what the drive root
+// passes down to it.
 func sharedHome(t *testing.T) string {
 	t.Helper()
 	home := filepath.Join(driveRoot(t), "loadline")
 	t.Setenv("LOADLINE_HOME", home)
+	writeAll(t, map[string]string{
+		filepath.Join(home, "config.json"): fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude")),
+	})
 	return home
 }
 
@@ -140,6 +145,7 @@ func TestServe_MakesTheDataDirPrivate(t *testing.T) {
 		TokenFile:  filepath.Join(data, "token"),
 		SpoolDir:   filepath.Join(data, "spool"),
 		DBFile:     filepath.Join(data, "loadline.db"),
+		ServerLock: filepath.Join(data, "server.lock"),
 	}
 	// The token is there already, so it is the server that makes the
 	// directory private, not the token's creation.
@@ -152,9 +158,6 @@ func TestServe_MakesTheDataDirPrivate(t *testing.T) {
 
 func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 	home := sharedHome(t)
-	writeAll(t, map[string]string{
-		filepath.Join(home, "config.json"): fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude")),
-	})
 
 	got := run(t, "doctor", "--config-dir", t.TempDir())
 
@@ -177,9 +180,6 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 // it for one of Loadline's files that others can get into.
 func TestDoctor_PassesOverAFileAnotherProcessIsWritingInTheDataDir(t *testing.T) {
 	home := sharedHome(t)
-	writeAll(t, map[string]string{
-		filepath.Join(home, "config.json"): fmt.Sprintf(`{"port":%d,"claudePath":%q}`, freePort(t), filepath.Join(home, "no-claude")),
-	})
 	dir := t.TempDir()
 	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
 		t.Fatalf("install = %d, stderr %q", got.code, got.stderr)
@@ -242,6 +242,7 @@ func TestServe_RefusesADataDirOthersCanMoveAside(t *testing.T) {
 		TokenFile:  filepath.Join(data, "token"),
 		SpoolDir:   filepath.Join(data, "spool"),
 		DBFile:     filepath.Join(data, "loadline.db"),
+		ServerLock: filepath.Join(data, "server.lock"),
 	}
 	var stderr strings.Builder
 	// Bounded, so that a server that wrongly starts gives way to the check.
@@ -347,6 +348,7 @@ func TestServe_DemoRefusesADataDirThatIsALink(t *testing.T) {
 		TokenFile:  filepath.Join(data, "token"),
 		SpoolDir:   filepath.Join(data, "spool"),
 		DBFile:     filepath.Join(data, "loadline.db"),
+		ServerLock: filepath.Join(data, "server.lock"),
 	}
 	o := f.options()
 	o.Demo = true

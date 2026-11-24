@@ -136,8 +136,8 @@ What it defends against:
 - **The dashboard cookie's scope.** Browsers do not separate cookies by port, so the `loadline_ui`
   cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits. It does
   not rotate: it is derived from the token and changes only with it. To change both, stop the
-  server (it exits `idleExitMinutes` after the last session ends, or end the `loadline serve`
-  process), delete the `token` file in the data directory and run `loadline install` again.
+  server (`loadline stop`, or let it exit `idleExitMinutes` after the last session ends), delete
+  the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
 - **A refused server.** A server that refuses its data directory writes no log there, since it
@@ -153,6 +153,11 @@ What it defends against:
 - **Claude Code's own writes.** Claude Code rewrites `settings.json` when you change a setting, with
   permissions of its own choosing, which can let group or others read the token again. On macOS and
   Linux `loadline doctor` reports a settings file whose mode lets them in.
+- **Stopping the server.** Whoever can read the token can also stop the server, with `loadline
+  stop` or the request it sends, which takes the token and never the dashboard cookie. On macOS and
+  Linux the token is in `settings.json`, which Claude Code may leave readable by others, as the
+  item above says. The cost is availability alone: while no server runs, the hooks spool their
+  events, and a session's next hook or status line starts the server again.
 - **Backups of the settings.** Each backup holds the token the file held. Install and uninstall
   keep the newest three backups they made of each file and remove the older ones; they touch no
   other file.

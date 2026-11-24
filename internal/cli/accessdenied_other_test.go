@@ -29,7 +29,7 @@ func TestListenRefusal_AccessDeniedNamesThePortAndSuggestsAnother(t *testing.T) 
 		t.Run(fmt.Sprintf("demo %v", demoMode), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 
-			refusal := listenRefusal(t.Context(), port, demoMode, accessDeniedListenError(port))
+			refusal := listenRefusal(t.Context(), port, ServeOptions{Demo: demoMode}, accessDeniedListenError(port))
 			if refusal == nil {
 				t.Fatal("listenRefusal = nil, want the port refused")
 			}

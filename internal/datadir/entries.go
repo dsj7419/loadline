@@ -16,12 +16,13 @@ import (
 // ownNames are the entries Loadline makes in the data directory: the token,
 // the installed binary's folder, the spool, the server's log, the history
 // and the files SQLite keeps beside it, the stamps the server and the status
-// line leave, under LOADLINE_HOME the config file, and the dashboard's
-// browser profile.
+// line leave, the file a server holds locked while it holds the history,
+// under LOADLINE_HOME the config file, and the dashboard's browser
+// profile.
 var ownNames = []string{
 	"token", "bin", "spool", "loadline.log",
 	"loadline.db", "loadline.db-wal", "loadline.db-shm", "loadline.db-journal",
-	"ensure.stamp", "opened.stamp", "config.json", browserProfile,
+	"ensure.stamp", "opened.stamp", "server.lock", "config.json", browserProfile,
 }
 
 const (

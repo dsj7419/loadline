@@ -40,6 +40,7 @@ func TestInstall_TakesGroupAndOthersOffTheDataDir(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "loadline")
 	openDir(t, home)
 	t.Setenv("LOADLINE_HOME", home)
+	writeConfigPort(t, home, freePort(t))
 
 	if got := run(t, "install", "--config-dir", t.TempDir(), "--yes"); got.code != 0 {
 		t.Fatalf("install = %d, stderr %q", got.code, got.stderr)

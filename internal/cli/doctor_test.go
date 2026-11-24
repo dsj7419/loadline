@@ -44,11 +44,13 @@ func TestDoctor_PassesEveryCheckOnceInstalled(t *testing.T) {
 	// Behind by an hour, the server's clock makes what it hears as it starts
 	// too old to count, so that no feed's age depends on the real time.
 	f.clock = clocktest.New(time.Now().Add(-time.Hour))
-	f.start()
 	dir := t.TempDir()
+	// Installed before the server starts: install hands a server it finds
+	// over to the binary it puts in place.
 	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
 		t.Fatalf("install = %d, stderr %q", got.code, got.stderr)
 	}
+	f.start()
 
 	got := run(t, "doctor", "--config-dir", dir)
 

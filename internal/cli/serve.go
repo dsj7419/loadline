@@ -27,6 +27,7 @@ import (
 	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/server"
+	"github.com/dsj7419/loadline/internal/serverlock"
 	"github.com/dsj7419/loadline/internal/timer"
 	"github.com/dsj7419/loadline/internal/tracker"
 	"github.com/dsj7419/loadline/internal/web"
@@ -40,6 +41,9 @@ const (
 	// idleCheckEvery spaces the checks for a live session that decide when
 	// the server has been idle long enough to exit.
 	idleCheckEvery = 15 * time.Second
+	// lockWait bounds a starting server's wait for the server before it to
+	// close the history: that one's shutdown takes up to shutdownTimeout.
+	lockWait = shutdownTimeout + 5*time.Second
 
 	logName = "loadline.log"
 	// logMaxBytes and logKeep bound the server's log: it rotates at 5 MB
@@ -87,6 +91,9 @@ type ServeOptions struct {
 	// it to the temporary folder they work in, whose permissions they do not
 	// choose. Empty means the check goes up to the volume root.
 	TrustFrom string
+	// BeforeHistoryClose, when set, is called as the server shuts down,
+	// just before it writes what the history still holds and closes it.
+	BeforeHistoryClose func()
 }
 
 // RunServe runs the server for this machine until ctx ends or no session
@@ -118,14 +125,21 @@ func RunServe(ctx context.Context, args []string, stdio IO) int {
 	return Serve(ctx, ServeOptions{Paths: paths, Home: home, Port: *port, NoOpen: *noOpen, Demo: *demoMode}, stdio)
 }
 
-// Serve runs the server until ctx ends or no session has been live for the
-// configured idle time, then shuts it down gracefully and returns 0. It
-// returns 1 when it cannot start, and 0 without a word when another
-// loadline already serves the port: binding the port is what keeps to one
-// server per machine. It makes the data directory private to the user each
-// time it starts. Why it could not start goes to stderr and to its log file
-// in the data directory; what the running server has to say goes to the log
-// alone, never to stdout or stderr.
+// errHistoryHeld is why a server gives up starting when the one before it
+// still has the history open once lockWait has passed.
+var errHistoryHeld = errors.New("another server still holds the data directory")
+
+// Serve runs the server until ctx ends, it is asked to stop or no session
+// has been live for the configured idle time, then shuts it down gracefully
+// and returns 0. It returns 1 when it cannot start, and 0 without a word
+// when another loadline already serves the port: binding the port is what
+// keeps to one server per machine. A server that has stopped answering may
+// still be writing the history, so once it has the port, a server waits
+// for that one to close it, up to lockWait, before it opens the history
+// itself. It makes the data directory private to the user each time it
+// starts. Why it could not start goes to stderr and to its log file in the
+// data directory; what the running server has to say goes to the log alone,
+// never to stdout or stderr.
 func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	trust := cmp.Or(o.TrustFrom, trustFrom)
 	failToStart := func(err error) int { return startFailed(stdio, o.Paths.DataDir, trust, err) }
@@ -153,13 +167,37 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddress(port))
 	if err != nil {
-		if refusal := listenRefusal(ctx, port, o.Demo, err); refusal != nil {
+		if refusal := listenRefusal(ctx, port, o, err); refusal != nil {
 			return failToStart(refusal)
 		}
 		return exitOK
 	}
-	// Opened only once the port is ours, so that one server at a time
-	// writes the log.
+	// lockless is why the history goes without its lock, on a file system
+	// that takes none.
+	var lockless error
+	if !o.Demo {
+		// A demo holds no history. Released last, once the log has closed
+		// too, so that the next server opens neither while this one has it.
+		lock, err := lockHistory(o)
+		if lock != nil {
+			defer func() { _ = lock.Release() }()
+		}
+		switch {
+		case ctx.Err() != nil:
+			// Stopped while it waited: the history is the next server's,
+			// whether this one got the lock or not.
+			_ = listener.Close()
+			return exitOK
+		case errors.Is(err, serverlock.ErrUnsupported):
+			// Servers ran there before they took the lock.
+			lockless = err
+		case err != nil:
+			_ = listener.Close()
+			return failToStart(err)
+		}
+	}
+	// Opened only once the port and the history are ours, so that one
+	// server at a time writes the log.
 	logs, err := logfile.Open(filepath.Join(o.Paths.DataDir, logName), logMaxBytes, logKeep)
 	if err != nil {
 		_ = listener.Close()
@@ -171,6 +209,10 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	if relaxed != nil {
 		log.Warn("data directory check relaxed for the demo", "problem", relaxed)
 	}
+	if lockless != nil {
+		log.Warn("the data directory's file system takes no lock: a server that starts as another stops "+
+			"may read the history before that one has written all of it", "err", lockless)
+	}
 	if !o.Demo {
 		// A demo serves a made-up machine and leaves the real one's files
 		// alone.
@@ -178,6 +220,24 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	}
 	s := newInstance(ctx, o, cfg, port, token, log)
 	return s.run(ctx, listener)
+}
+
+// acquireLock is serverlock.Acquire. Tests replace it: no file system at hand
+// refuses locks.
+var acquireLock = serverlock.Acquire
+
+// lockHistory takes the lock that keeps the history to one server, waiting
+// up to lockWait for the server before to let go of it, on o's timers.
+func lockHistory(o ServeOptions) (*serverlock.Lock, error) {
+	var after timer.AfterFunc
+	if o.Ticker != nil {
+		after = o.Ticker.AfterFunc
+	}
+	lock, err := acquireLock(o.Paths.ServerLock, lockWait, after)
+	if errors.Is(err, serverlock.ErrHeld) {
+		return nil, errHistoryHeld
+	}
+	return lock, err
 }
 
 // removeAsideAndLog removes the binaries earlier upgrades moved aside in
@@ -220,20 +280,33 @@ func listenAddress(port int) string {
 // listenRefusal explains a listen that failed, or returns nil for a port
 // that a loadline already serves, which is no failure: two sessions that
 // start together each start a server, and the one that loses the race
-// leaves quietly. A demo is not one of them, and says why it cannot start.
-func listenRefusal(ctx context.Context, port int, demoMode bool, err error) error {
+// leaves quietly. So does one that finds a server that holds the port and
+// the history's lock, but answers nothing, as it starts or stops. A demo is
+// not one of them, and says why it cannot start.
+func listenRefusal(ctx context.Context, port int, o ServeOptions, err error) error {
 	switch {
 	case isAccessDenied(err):
 		return fmt.Errorf("port %d %s; pass --port to use another", port, accessDeniedReason)
 	case !isAddrInUse(err):
 		return fmt.Errorf("listen on port %d: %w", port, err)
-	case demoMode:
+	case o.Demo:
 		return fmt.Errorf("port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere", port)
-	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx):
+	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx), historyHeld(o.Paths.ServerLock):
 		return nil
 	default:
 		return fmt.Errorf("port %d is in use by another program", port)
 	}
+}
+
+// historyHeld reports whether another server holds the history's lock at
+// lockPath. Taken, the lock is let go of at once.
+func historyHeld(lockPath string) bool {
+	lock, err := acquireLock(lockPath, 0, nil)
+	if err != nil {
+		return errors.Is(err, serverlock.ErrHeld)
+	}
+	_ = lock.Release()
+	return false
 }
 
 // instance is one running server and the work it runs beside its routes.
@@ -246,6 +319,8 @@ type instance struct {
 	log       *slog.Logger
 	failures  *failureLog
 	opener    dashboardOpener
+	// stopAsked is closed once a request has asked the server to stop.
+	stopAsked chan struct{}
 
 	tracker *tracker.Tracker
 	srv     *server.Server
@@ -278,6 +353,7 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 		log:       log,
 		failures:  newFailureLog(log, clock),
 		opener:    newDashboardOpener(o, cfg),
+		stopAsked: make(chan struct{}),
 		spool:     forward.Spool{Dir: o.Paths.SpoolDir, MaxFiles: forward.DefaultMaxFiles},
 	}
 
@@ -290,7 +366,11 @@ func newInstance(ctx context.Context, o ServeOptions, cfg config.Config, port in
 		Ticker: o.Ticker,
 		Log:    log,
 	}
-	deps := server.Deps{Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo}
+	deps := server.Deps{
+		Token: token, Port: port, Static: web.FS(), Version: Version, Clock: clock, Log: log, Demo: o.Demo,
+		// A request repeated while the server stops changes nothing.
+		Stop: sync.OnceFunc(func() { close(s.stopAsked) }),
+	}
 	if o.Demo {
 		trackerCfg.Plans, trackerCfg.Budgets, trackerCfg.Credits = demo.Plans(), demo.Budgets(), demo.Credits(clock())
 		s.tracker = tracker.New(clock, trackerCfg, tracker.NopRecorder{})
@@ -446,8 +526,9 @@ func (s *instance) probeAccount(client claudecli.Client) func(context.Context, d
 }
 
 // run serves on listener and runs the poller, prober, spool drain and idle
-// watch beside it, until ctx ends, the server has been idle long enough or
-// the listener fails. Then it shuts everything down and waits for it.
+// watch beside it, until ctx ends, a request asks it to stop, the server has
+// been idle long enough or the listener fails. Then it shuts everything
+// down and waits for it.
 func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	s.log.Info("loadline started", "version", Version, "port", s.port, "dataDir", s.opts.Paths.DataDir, "demo", s.opts.Demo)
 
@@ -503,6 +584,10 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	select {
 	case <-ctx.Done():
 		s.log.Info("loadline stopping", "reason", "stop requested")
+	case <-s.stopAsked:
+		// The graceful shutdown below waits for the stop request's own
+		// answer before the tracker and the history close.
+		s.log.Info("loadline stopping", "reason", "asked to stop")
 	case <-idle:
 		s.log.Info("loadline stopping", "reason", "idle", "idleFor", s.idleAfter)
 	case serveErr = <-served:
@@ -524,6 +609,9 @@ func (s *instance) run(ctx context.Context, listener net.Listener) int {
 	}
 	workers.Wait()
 	s.tracker.Close()
+	if s.opts.BeforeHistoryClose != nil {
+		s.opts.BeforeHistoryClose()
+	}
 	s.history.close(shutdown)
 	s.log.Info("loadline stopped")
 	return code

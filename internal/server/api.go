@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -100,4 +101,19 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 			Poll:   tracker.Timestamp(last[feedPoll]),
 		},
 	})
+}
+
+// stopAnswer is the answer to a stop request. The server stops answering
+// well before it exits, as it writes what it holds first, so it names the
+// process to wait for.
+type stopAnswer struct {
+	Stopping bool `json:"stopping"`
+	PID      int  `json:"pid"`
+}
+
+// handleStop asks the server to stop. A request repeated while it stops is
+// answered alike, and changes nothing.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	s.stop()
+	s.writeJSON(w, r, http.StatusOK, stopAnswer{Stopping: true, PID: os.Getpid()})
 }

@@ -27,6 +27,7 @@ func TestDefaultPaths_Darwin(t *testing.T) {
 		SpoolDir:          filepath.Join(dir, "spool"),
 		DBFile:            filepath.Join(dir, "loadline.db"),
 		BrowserProfileDir: filepath.Join(dir, "browser"),
+		ServerLock:        filepath.Join(dir, "server.lock"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)
