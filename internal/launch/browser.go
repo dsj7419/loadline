@@ -135,8 +135,9 @@ func fileRun(program string) string {
 
 // asWindowsReads returns path as Windows reads it before it opens a file:
 // with its "." and ".." folders resolved and the dots and blanks at its end
-// dropped. Each can leave another to take, as browser.cmd\. leaves a
-// separator and browser.cmd \. a blank, so it takes them until none is left.
+// dropped. Dropping them can leave a separator at the end, as it does of
+// browser.cmd\... and of browser.cmd\. with a blank after it, which only a
+// second pass takes off, so it repeats both until nothing changes.
 // Where Windows would stop sooner, the name it reads ends in a separator and
 // is no file it can run; taking more there can only find a batch file where
 // Windows runs none, which then gets no profile it would not have used.
