@@ -114,20 +114,44 @@ func foreignProblem(dir, name string) string {
 // among them, wherever it points.
 func CheckLink(path string) error {
 	path = filepath.Clean(path)
-	link, err := fsperm.IsLink(path)
+	entry, err := inspect(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
 		return err
-	case link:
-		return errors.New(linkProblem(path))
+	case entry.Link:
+		return errors.New(linkProblem(path, entry))
 	}
 	return nil
 }
 
-func linkProblem(path string) string {
-	return path + " is a link, which Loadline's own files must never be: remove it, then run loadline install"
+// linkProblem reports path, one of Loadline's own files or folders, which
+// Inspect read as entry, a link, in the words its kind calls for.
+func linkProblem(path string, entry fsperm.Entry) string {
+	const advice = "remove it, then run loadline install"
+	switch entry.Reparse {
+	case fsperm.CloudFile:
+		return cloudFileProblem(path, entry.Tag)
+	case fsperm.OtherReparse:
+		return unknownReparseProblem(path, entry.Tag) + advice
+	default:
+		return path + " is a link, which Loadline's own files must never be: " + advice
+	}
+}
+
+// unknownReparseProblem starts the report of path, a reparse point with tag
+// of a kind Loadline does not know, whose advice the caller adds.
+func unknownReparseProblem(path string, tag uint32) string {
+	return fmt.Sprintf("%s is a reparse point of a kind Loadline does not know (tag 0x%08X), which may lead somewhere else: ", path, tag)
+}
+
+// cloudFileProblem reports path, a reparse point with tag that a cloud
+// service keeps in sync, though Windows did not say which service, or which
+// folder of its holds path.
+func cloudFileProblem(path string, tag uint32) string {
+	return fmt.Sprintf("%s is kept in sync with the cloud (tag 0x%08X), so the token and the binary every hook runs would be copied there: "+
+		`set LOADLINE_HOME to a folder no cloud service keeps in sync, such as the default %%LOCALAPPDATA%%\loadline`, path, tag)
 }
 
 func moreNamesProblem(path string) string {
@@ -140,7 +164,9 @@ func moreNamesProblem(path string) string {
 var foreignOwner = fsperm.ForeignOwner
 
 // inspect is fsperm.Inspect. Tests replace it: no volume at hand gives two
-// files IDs that differ only above their low 64 bits, as ReFS can.
+// files IDs that differ only above their low 64 bits, as ReFS can, and no
+// reparse point a test can make, but a link, lets the system open the path
+// through it, as one its filter handles does.
 var inspect = fsperm.Inspect
 
 // tree is what a walk of Loadline's paths in the data directory found.
@@ -149,8 +175,10 @@ type tree struct {
 	// holds.
 	paths []string
 	// link is the first link among them, or the first file with another
-	// name when moreNames is set, where the walk stopped, or "".
+	// name when moreNames is set, where the walk stopped, or "". linked is
+	// what the walk read of it.
 	link      string
+	linked    fsperm.Entry
 	moreNames bool
 	// locked is the first folder among them that the user may not list, or
 	// "": what it holds is not in paths.
@@ -165,7 +193,7 @@ func (t tree) linkProblem() string {
 	case t.moreNames:
 		return moreNamesProblem(t.link)
 	}
-	return linkProblem(t.link)
+	return linkProblem(t.link, t.linked)
 }
 
 // ownPaths walks what Loadline keeps in dir: each entry it owns, the files
@@ -289,7 +317,7 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 	case err != nil:
 		return err
 	case entry.Link:
-		t.link = path
+		t.link, t.linked = path, entry
 		return nil
 	}
 	t.paths = append(t.paths, path)

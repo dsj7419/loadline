@@ -179,6 +179,19 @@ func TestIsLink_TellsASymlinkFromAFile(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("IsLink(%s) = %v, %v; want %v", path, got, err, want)
 		}
+		// A symbolic link is the only link here, and it leads to another path.
+		if got, err := fsperm.IsNameSurrogate(path); err != nil || got != want {
+			t.Errorf("IsNameSurrogate(%s) = %v, %v; want %v", path, got, err, want)
+		}
+	}
+}
+
+// Only Windows says which folders a cloud service keeps in sync.
+func TestSyncRoot_NeverAnswersUnderHere(t *testing.T) {
+	root, provider, under, err := fsperm.SyncRoot(t.TempDir())
+
+	if under || root != "" || provider != "" || err != nil {
+		t.Errorf("SyncRoot = %q, %q, %t, %v; want not under", root, provider, under, err)
 	}
 }
 
@@ -203,10 +216,10 @@ func TestInspect_TellsWhatAPathIs(t *testing.T) {
 	if other, err := fsperm.Inspect(filepath.Join(dir, "elsewhere")); err != nil || other.ID != got.ID {
 		t.Errorf("Inspect of its second name = %+v, %v; want the same file as %+v", other, err, got)
 	}
-	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
-		t.Errorf("Inspect(%s) = %+v, %v; want a link", link, got, err)
+	if got, err := fsperm.Inspect(link); err != nil || !got.Link || got.Reparse != fsperm.NameSurrogate {
+		t.Errorf("Inspect(%s) = %+v, %v; want a link to another path", link, got, err)
 	}
-	if folder, err := fsperm.Inspect(dir); err != nil || !folder.Folder || folder.Link || folder.ID == got.ID {
+	if folder, err := fsperm.Inspect(dir); err != nil || !folder.Folder || folder.Link || folder.Reparse != fsperm.NotReparse || folder.ID == got.ID {
 		t.Errorf("Inspect(%s) = %+v, %v; want a folder, which is not the file", dir, folder, err)
 	}
 }

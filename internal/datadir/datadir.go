@@ -15,6 +15,11 @@ import (
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
+// syncRoot is fsperm.SyncRoot. Tests replace it: whether Windows lets a test
+// register a sync root depends on the machine, and nothing at hand makes it
+// fail to answer.
+var syncRoot = fsperm.SyncRoot
+
 // movableAdvice ends the report of a folder above the data directory that
 // someone else could move aside.
 const movableAdvice = ", and with it replace the binary every hook runs; " +
@@ -37,11 +42,14 @@ func Secure(dir, top string) error {
 // Make prepares dir as Secure does, but without judging the folders above
 // it, as the creation of the token does on a hook's path: there, a folder
 // others could move aside still keeps the token from them. It refuses a dir
-// that holds anything that is not Loadline's, which making the dir private
-// would take other users' access to, and a link among Loadline's own files.
-// It then creates dir, and each missing folder above it, private to the
-// user, or makes the existing dir private: it judges each of Loadline's own
-// files and folders, refusing a link, a file with another name and one that
+// in a folder that a cloud service keeps in sync, which would copy the token
+// to the cloud, a dir that is a link, one that holds anything that is not
+// Loadline's, which making the dir private would take other users' access
+// to, and a link among Loadline's own files. On Windows a link is any
+// reparse point but a deduplicated file, which is the file it was. It then
+// creates dir, and each missing folder above it, private to the user, or
+// makes the existing dir private: it judges each of Loadline's own files and
+// folders, refusing a link, a file with another name and one that
 // belongs to someone else, and takes off each that it found none of that in
 // whatever its access list holds of its own, which making the dir private
 // leaves (fsperm.EntryPrivate), even when it goes on to refuse another. Only
@@ -266,6 +274,9 @@ func contentProblem(dir string) (string, error) {
 	// Written with a separator at its end, a link's path would have Lstat
 	// look at where it leads, and every check here would judge that.
 	dir = filepath.Clean(dir)
+	if problem := cloudProblem(dir); problem != "" {
+		return problem, nil
+	}
 	if problem, err := dirLinkProblem(dir); err != nil || problem != "" {
 		return problem, err
 	}
@@ -293,25 +304,54 @@ func contentProblem(dir string) (string, error) {
 	return "", nil
 }
 
-// dirLinkProblem reports dir as a link, naming where it leads, or "" when it
-// is not one or does not exist. Made private, a link would admit only the
-// user while the folder it leads to, which then holds the token and the
-// binary every hook runs, stayed as open as it is.
+// cloudProblem reports dir as in a folder that a cloud service keeps in
+// sync, which would copy the token and the binary every hook runs to the
+// cloud, or "" when Windows does not say it is. Only that answer refuses.
+// Windows cannot answer for a folder on a file system its cloud filter does
+// not serve, such as exFAT or a network share, where no service it serves
+// keeps anything in sync, so that it could not answer is no reason to
+// refuse dir, and what kept it from answering is left out.
+func cloudProblem(dir string) string {
+	root, provider, under, _ := syncRoot(dir)
+	if !under {
+		return ""
+	}
+	// Windows names the service, but not always a folder that can be found
+	// for the root.
+	synced := root + ", which " + provider
+	if root == "" {
+		synced = "a folder that " + provider
+	}
+	return dir + " is in " + synced + " keeps in sync with the cloud, so the token and the binary every hook runs " +
+		`would be copied there: set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
+}
+
+// dirLinkProblem reports dir as a link, in the words its kind calls for, or
+// "" when it is not one or does not exist. Made private, a link would admit
+// only the user while the folder it leads to, which then holds the token and
+// the binary every hook runs, stayed as open as it is.
 func dirLinkProblem(dir string) (string, error) {
-	link, err := fsperm.IsLink(dir)
+	entry, err := inspect(dir)
 	switch {
-	case errors.Is(err, fs.ErrNotExist), err == nil && !link:
+	case errors.Is(err, fs.ErrNotExist), err == nil && !entry.Link:
 		return "", nil
 	case err != nil:
 		return "", err
 	}
-	// Where it leads only helps say what to do: a link that cannot be read
-	// is refused just the same.
-	problem := dir + " is a link, which the data directory must never be: set LOADLINE_HOME to the folder it leads to itself"
-	if target, err := os.Readlink(dir); err == nil {
-		problem = dir + " is a link to " + target + ", which the data directory must never be: set LOADLINE_HOME to " + target + " itself"
+	switch entry.Reparse {
+	case fsperm.CloudFile:
+		return cloudFileProblem(dir, entry.Tag), nil
+	case fsperm.OtherReparse:
+		return unknownReparseProblem(dir, entry.Tag) + "set LOADLINE_HOME to a new folder", nil
+	default:
+		// Where it leads only helps say what to do: a link that cannot be
+		// read is refused just the same.
+		problem := dir + " is a link, which the data directory must never be: set LOADLINE_HOME to the folder it leads to itself"
+		if target, err := os.Readlink(dir); err == nil {
+			problem = dir + " is a link to " + target + ", which the data directory must never be: set LOADLINE_HOME to " + target + " itself"
+		}
+		return problem, nil
 	}
-	return problem, nil
 }
 
 // ownerProblem reports path, one of Loadline's files or folders, as

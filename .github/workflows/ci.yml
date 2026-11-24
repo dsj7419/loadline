@@ -93,6 +93,16 @@ jobs:
             throw "the temporary folder is $temp, not on the ReFS volume R:"
           }
           go test -race -count=1 -v -run 'TestInspect_OnReFS$|TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne$' ./internal/fsperm/ ./internal/datadir/
+      - name: Test the refusal of a data directory a cloud service syncs
+        # These tests register a sync root of their own, as a cloud service
+        # registers the folder it keeps in sync, and skip, naming the HRESULT,
+        # where Windows refuses to. The log lists each test as run or skipped,
+        # so it says whether the refusal was seen against a sync root Windows
+        # answers for, or only through a stand-in.
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -v -run 'TestSyncRoot_|InsideASyncRoot$|IntoASyncRoot$' ./internal/fsperm/ ./internal/datadir/
       - name: Test the full generated cases and the real tap under every shell
         # Under the race detector these tests run a reduced set of cases, or
         # one shell, to stay inside CI time; without it they run every case
