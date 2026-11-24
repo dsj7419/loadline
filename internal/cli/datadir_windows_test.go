@@ -175,21 +175,16 @@ func TestDoctor_FailsWhileTheDataDirAdmitsOthers(t *testing.T) {
 }
 
 // Another Loadline process writes a file in the data directory under a
-// temporary name before it puts it in place, here one that brought an
-// entry for every signed-in user from the drive root. Doctor does not take
-// it for one of Loadline's files that others can get into.
+// temporary name before it puts it in place. Begun once install made the
+// data directory private, it has the list the data directory passes down,
+// and doctor has nothing to report of it.
 func TestDoctor_PassesOverAFileAnotherProcessIsWritingInTheDataDir(t *testing.T) {
 	home := sharedHome(t)
 	dir := t.TempDir()
 	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
 		t.Fatalf("install = %d, stderr %q", got.code, got.stderr)
 	}
-	outside := filepath.Join(filepath.Dir(home), "outside")
-	writeAll(t, map[string]string{outside: knownToken})
-	inFlight := filepath.Join(home, ".token-1234")
-	if err := os.Rename(outside, inFlight); err != nil {
-		t.Fatal(err)
-	}
+	writeAll(t, map[string]string{filepath.Join(home, ".token-1234"): knownToken})
 
 	got := run(t, "doctor", "--config-dir", dir)
 

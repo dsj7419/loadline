@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"golang.org/x/sys/windows"
-
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
@@ -15,8 +13,9 @@ import (
 // then: the first has written its token to its temporary file and not yet
 // linked it into place when the second prepares the directory and
 // publishes a token of its own. The second leaves the first's file as it
-// is, which an entry of the test's own on it shows, and the first then
-// takes the token the second published.
+// is, private as the directory made it, which its list shows: the private
+// one with its entries in another order, which a rewrite would change. The
+// first then takes the token the second published.
 func TestEnsureToken_LeavesTheFileAnotherCallerIsWritingAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "token")
 	var second []byte
@@ -27,8 +26,7 @@ func TestEnsureToken_LeavesTheFileAnotherCallerIsWritingAlone(t *testing.T) {
 		if calls > 1 {
 			return
 		}
-		fspermtest.Grant(t, temp, fspermtest.Read, windows.NO_INHERITANCE)
-		before = fspermtest.AccessList(t, temp)
+		before = fspermtest.PrivateInAnotherOrder(t, temp)
 		second = ensureToken(t, path)
 		after = fspermtest.AccessList(t, temp)
 	})

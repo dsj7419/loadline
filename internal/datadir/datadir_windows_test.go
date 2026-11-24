@@ -308,18 +308,36 @@ func moveIn(t *testing.T, top, path string) {
 	}
 }
 
+// beganUnderTwoNames writes path, as another Loadline process begins a file
+// under a temporary name, and gives the file a second temporary name beside
+// it in its folder. The walk takes such a file for its writer's, every name
+// of it being in its folder, but puts right only a file with one name: a
+// list its folder passes down is all that reaches this one.
+func beganUnderTwoNames(t *testing.T, path string) {
+	t.Helper()
+	writeFile(t, path)
+	folder, name := filepath.Split(path)
+	if err := os.Link(path, filepath.Join(folder, strings.Replace(name, "-", "-2", 1))); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+}
+
 // A file another Loadline process is writing under a temporary name is
-// that process's until it puts it in place. It was made after its folder
-// was private, so nothing is to be taken off it, and Secure and Make,
-// which the creation of the token runs in every caller at once, leave it
-// as it is.
+// that process's until it puts it in place. One begun in the private data
+// directory has the list its folder passes down, so nothing is to be taken
+// off it, and Secure and Make, which the creation of the token runs in
+// every caller at once, leave it as it is: its list, private with its
+// entries in another order, shows any rewrite.
 func TestSecure_LeavesAFileAnotherProcessIsWritingAlone(t *testing.T) {
 	for _, name := range inFlight {
 		t.Run(filepath.Base(name), func(t *testing.T) {
 			home, top := loadlineHome(t)
 			path := filepath.Join(home, name)
-			moveIn(t, top, path)
-			before := fspermtest.AccessList(t, path)
+			writeFile(t, path)
+			before := fspermtest.PrivateInAnotherOrder(t, path)
+			if private, err := fsperm.EntryPrivate(path); err != nil || !private {
+				t.Fatalf("%s, with %s, is not private (%v), so the test proves nothing", path, before, err)
+			}
 
 			if err := datadir.Secure(home, top); err != nil {
 				t.Fatalf("Secure: %v", err)
@@ -335,13 +353,50 @@ func TestSecure_LeavesAFileAnotherProcessIsWritingAlone(t *testing.T) {
 	}
 }
 
+// One that brought another list with it, as a file begun before its folder
+// was private did, is put right where it is. Its writer, writing through the
+// handle it holds, goes on as before.
+func TestSecure_PutsRightAFileAnotherProcessIsWritingWithoutStoppingIt(t *testing.T) {
+	for _, name := range inFlight {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, name)
+			moveIn(t, top, path)
+			writer, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = writer.Close() })
+
+			if err := datadir.Secure(home, top); err != nil {
+				t.Fatalf("Secure: %v", err)
+			}
+
+			if _, err := writer.WriteString(strings.Repeat("cd", 32)); err != nil {
+				t.Errorf("the writer of %s could not go on: %v", path, err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Errorf("close %s: %v", path, err)
+			}
+			if data, err := os.ReadFile(path); err != nil || string(data) != strings.Repeat("ab", 32)+strings.Repeat("cd", 32) {
+				t.Errorf("%s reads %q, %v; want what its writer wrote", path, data, err)
+			}
+			if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+				t.Errorf("%s admits %v after Secure, want only the user, SYSTEM and Administrators", path, others)
+			}
+		})
+	}
+}
+
 // One begun before its folder was private took what the folder passed down
-// then. Once Secure has judged everything else, the data directory passes
-// its new list down to it too.
+// then. With one name it is put right where it is. With a second name
+// beside it, which nothing puts right by itself, it is reached once Secure
+// has judged everything else, and the data directory passes its new list
+// down.
 func TestSecure_PassesTheListDownToAFileBegunBeforeTheDirectoryWasPrivate(t *testing.T) {
 	dir, parent := openDataDir(t, privateTop(t))
 	path := filepath.Join(dir, ".token-1234")
-	writeFile(t, path)
+	beganUnderTwoNames(t, path)
 	if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
 		t.Fatalf("%s admits nobody else, so the test proves nothing", path)
 	}
@@ -355,16 +410,148 @@ func TestSecure_PassesTheListDownToAFileBegunBeforeTheDirectoryWasPrivate(t *tes
 	}
 }
 
-// Doctor does not report another process's file as one of Loadline's that
-// others can get into.
+// A data directory that is not private yet holds files other Loadline
+// processes began there, and in its folders, which took its list, one that
+// lets every signed-in user read them. A run refuses it: the installed
+// binary has a second name outside, in a bin that keeps the user out, so
+// that only Make, once it has made the data directory private and bin
+// listable, comes to that name, and the data directory passes nothing down.
+// Once the name outside is removed, the next run finds the data directory
+// private, and passes nothing down either. Each of those files is put right
+// where it is all the same: the token's in the data directory and the
+// binary's in a bin the refused run made private, which nothing passed
+// down reaches any more, and the spool's, whose folder the walk puts right
+// too.
+func TestSecure_RepairsATemporaryFileLeftFromBeforeARefusedRun(t *testing.T) {
+	top := privateTop(t)
+	dir := filepath.Join(top, "loadline")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.Grant(t, dir, windows.FILE_GENERIC_READ, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	bin := filepath.Join(dir, "bin")
+	binary := filepath.Join(bin, "loadline.exe")
+	begun := []string{
+		filepath.Join(dir, "spool", ".put-1.tmp"),
+		filepath.Join(dir, ".token-1"),
+		filepath.Join(bin, ".loadline-1.tmp"),
+	}
+	for _, path := range append([]string{binary}, begun...) {
+		writeFile(t, path)
+	}
+	for _, path := range begun {
+		if others := fspermtest.Others(t, path, windows.FILE_GENERIC_READ); len(others) == 0 {
+			t.Fatalf("%s lets nobody else read it, so the test proves nothing", path)
+		}
+	}
+	planted := filepath.Join(top, "loadline-copy.exe")
+	if err := os.Link(binary, planted); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	// Stored as it is, so that what bin holds keeps what it inherited.
+	fspermtest.SetAccessListAsIs(t, bin, "D:P(A;OICI;FA;;;SY)")
+	t.Cleanup(func() { _ = fsperm.ClearExplicit(bin) })
+
+	if err := datadir.Secure(dir, top); err == nil || !strings.HasPrefix(err.Error(), binary+" has another name") {
+		t.Fatalf("Secure = %v, want it refused, starting %q", err, binary+" has another name")
+	}
+	if err := os.Remove(planted); err != nil {
+		t.Fatal(err)
+	}
+	if err := datadir.Secure(dir, top); err != nil {
+		t.Fatalf("Secure, once %s is removed: %v", planted, err)
+	}
+
+	for _, path := range begun {
+		private, err := fsperm.EntryPrivate(path)
+		if others := fspermtest.Others(t, path, windows.FILE_GENERIC_READ); err != nil || !private || len(others) > 0 {
+			t.Errorf("%s has %s (private: %t, %v), and lets %v read it; want what its folder passes down",
+				path, fspermtest.AccessList(t, path), private, err, others)
+		}
+	}
+}
+
+// A file under a temporary name whose permissions Loadline may not change
+// is no file being deleted, which it passes over, though Windows refuses it
+// alike: its owner's own rights can be taken away by an OWNER RIGHTS entry,
+// to read its permissions or to change them. Install, its first check and
+// doctor refuse it in the same words, which say how to put it right, rather
+// than pass over a file that may let others read it.
+func TestSecure_RefusesATemporaryFileThatKeepsTheUserOut(t *testing.T) {
+	user := fspermtest.UserSID(t)
+	for name, list := range map[string]string{
+		"from reading its permissions":  "D:P(D;;RC;;;OW)(A;;FA;;;WD)",
+		"from changing its permissions": "D:P(D;;WD;;;OW)(A;;FA;;;" + user + ")(A;;FR;;;AU)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, ".token-1234")
+			writeFile(t, path)
+			fspermtest.SetAccessListAsIs(t, path, list)
+			if changeable, err := fsperm.CanChangeList(path); err != nil || changeable {
+				t.Fatalf("the user may both read and change the permissions of %s (%v), so the test proves nothing", path, err)
+			}
+			prefix := path + " does not let you both read and change who may use it, so Loadline cannot make sure it is private; "
+			suffix := ": remove it, or have an administrator remove it if you cannot, then run loadline install"
+
+			err := datadir.Secure(home, top)
+
+			if err == nil || !strings.HasPrefix(err.Error(), prefix) || !strings.HasSuffix(err.Error(), suffix) {
+				t.Fatalf("Secure = %v, want it refused, starting %q and ending %q", err, prefix, suffix)
+			}
+			if verifyErr := datadir.Verify(home, top); verifyErr == nil || verifyErr.Error() != err.Error() {
+				t.Errorf("Verify = %v, want what Secure refused with: %q", verifyErr, err.Error())
+			}
+			if got, checkErr := datadir.Check(home, top); checkErr != nil || got != err.Error() {
+				t.Errorf("Check = %q, %v; want what Secure refused with: %q", got, checkErr, err.Error())
+			}
+			if removeErr := os.Remove(path); removeErr != nil {
+				t.Fatalf("remove %s, as the refusal says: %v", path, removeErr)
+			}
+			if err := datadir.Secure(home, top); err != nil {
+				t.Errorf("Secure, once %s is removed: %v", path, err)
+			}
+		})
+	}
+}
+
+// Doctor has nothing to report of a file another process is writing in the
+// private data directory: it has the list its folder passes down.
 func TestCheck_PassesOverAFileAnotherProcessIsWriting(t *testing.T) {
 	for _, name := range inFlight {
 		t.Run(filepath.Base(name), func(t *testing.T) {
 			home, top := loadlineHome(t)
-			moveIn(t, top, filepath.Join(home, name))
+			writeFile(t, filepath.Join(home, name))
 
 			if got, err := datadir.Check(home, top); err != nil || got != "" {
 				t.Errorf("Check = %q, %v; want \"\"", got, err)
+			}
+		})
+	}
+}
+
+// Doctor reports one that lets others in, as one that brought another list
+// with it does, as it reports any of Loadline's files, and install puts it
+// right.
+func TestCheck_ReportsATemporaryFileOthersCanRead(t *testing.T) {
+	for _, name := range inFlight {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			home, top := loadlineHome(t)
+			path := filepath.Join(home, name)
+			moveIn(t, top, path)
+
+			got, err := datadir.Check(home, top)
+
+			if err != nil || !strings.HasPrefix(got, path+" is not private: its access list also admits ") ||
+				!strings.Contains(got, fspermtest.AuthenticatedUsers(t)) || !strings.HasSuffix(got, "; run loadline install") {
+				t.Errorf("Check = %q, %v; want it to say %s lets %s in, and that install fixes it",
+					got, err, path, fspermtest.AuthenticatedUsers(t))
+			}
+			if err := datadir.Secure(home, top); err != nil {
+				t.Fatalf("Secure: %v", err)
+			}
+			if got, err := datadir.Check(home, top); err != nil || got != "" {
+				t.Errorf("Check after Secure = %q, %v; want \"\"", got, err)
 			}
 		})
 	}
@@ -403,10 +590,12 @@ func TestSecure_TakesADataDirectoryWhileAnotherProcessDeletesItsFile(t *testing.
 // cannot be counted, and one of them may be elsewhere. Secure takes a data
 // directory that is not private yet, and makes it private, but passes no
 // list down to that file, neither the data directory's nor that of the
-// folder that holds it, whatever else the walk goes through after it, and
-// so none to the files other processes began beside it, and in the data
-// directory itself, before the data directory was private, which keep what
-// they inherited then. The next run finds the file gone.
+// folder that holds it, whatever else the walk goes through after it. The
+// files other processes began beside it, and in the data directory itself,
+// before the data directory was private, are put right where they are when
+// they have one name; one with a second name beside it, which only a list
+// passed down reaches, keeps what it inherited then. The next run finds the
+// going file gone.
 func TestSecure_LeavesATemporaryFileBeingDeleted(t *testing.T) {
 	for _, name := range inFlight {
 		t.Run(filepath.Base(name), func(t *testing.T) {
@@ -418,15 +607,24 @@ func TestSecure_LeavesATemporaryFileBeingDeleted(t *testing.T) {
 			}
 			going := filepath.Join(dir, name)
 			writeFile(t, going)
-			begun := map[string]fspermtest.List{}
-			for _, path := range []string{
-				filepath.Join(filepath.Dir(going), strings.Replace(filepath.Base(going), "1234", "5678", 1)),
-				filepath.Join(dir, ".token-9012"),
-			} {
-				writeFile(t, path)
+			beside := func(number string) string {
+				return filepath.Join(filepath.Dir(going), strings.Replace(filepath.Base(going), "1234", number, 1))
+			}
+			shared := func(path string) {
+				t.Helper()
 				if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
 					t.Fatalf("%s admits nobody else, so the test proves nothing", path)
 				}
+			}
+			alone := []string{beside("5678"), filepath.Join(dir, ".token-9012")}
+			for _, path := range alone {
+				writeFile(t, path)
+				shared(path)
+			}
+			begun := map[string]fspermtest.List{}
+			for _, path := range []string{beside("3456"), filepath.Join(dir, ".token-7890")} {
+				beganUnderTwoNames(t, path)
+				shared(path)
 				begun[path] = fspermtest.AccessList(t, path)
 			}
 			fspermtest.DeletePending(t, going)
@@ -438,6 +636,11 @@ func TestSecure_LeavesATemporaryFileBeingDeleted(t *testing.T) {
 			for path, before := range begun {
 				if after := fspermtest.AccessList(t, path); !after.Equal(before) {
 					t.Errorf("Secure passed a list down while %s went unjudged: %s went from %s to %s", going, path, before, after)
+				}
+			}
+			for _, path := range alone {
+				if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
+					t.Errorf("%s admits %v, want it put right where it is while %s went unjudged", path, others, going)
 				}
 			}
 			if others := fspermtest.Others(t, dir, fspermtest.Any); len(others) > 0 || !fspermtest.Protected(t, dir) {
@@ -475,9 +678,9 @@ func TestSecure_LeavesOutAFileOfLoadlinesThatIsBeingDeleted(t *testing.T) {
 	}
 }
 
-// One refused for longer than any deletion takes cannot be told apart from
-// a file the user may not open, so it is no file to pass over: Secure and
-// Check take the refusal as it is, naming the file.
+// One of Loadline's own files refused for longer than any deletion takes is
+// no file to pass over, whatever refuses it: Secure and Check take the
+// refusal as it is, naming the file.
 func TestSecure_RefusesAFileOfLoadlinesItCannotOpen(t *testing.T) {
 	home, top := loadlineHome(t)
 	event := filepath.Join(home, "spool", "1-0000000a.json")

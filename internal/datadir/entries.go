@@ -62,9 +62,12 @@ var tempNames = [...]struct{ prefix, suffix string }{
 // puts it in place under its own name. Such a file belongs to the process
 // writing it, which may be another Loadline process at work right now, and
 // which renames, links or deletes it at any moment. The preparation and the
-// check of the data directory change nothing of it, and judge it in full once
-// it is in place, but look at its names first, and refuse one that is also a
-// file elsewhere (judgeTemporary).
+// check of the data directory look at its names first, and refuse one that
+// is also a file elsewhere (judgeTemporary). One with that name alone they
+// judge where it is, by its owner and its access list, and the preparation
+// takes others off it (repairTemporary). Any of them passes over a file
+// that goes meanwhile (isGoneOrGoing), and refuses one whose permissions
+// keep the user from reading or changing them (temporaryRefusal).
 func Temporary(name string) bool {
 	for _, temp := range tempNames {
 		if strings.HasPrefix(name, temp.prefix) && strings.HasSuffix(name, temp.suffix) {
@@ -178,6 +181,11 @@ var inspect = fsperm.Inspect
 // moment.
 var betweenLookAndCount = func(string) {}
 
+// afterTemporaryJudged runs in the walk Make makes, between judgeTemporary's
+// verdict on a temporary name and repairTemporary. Tests replace it: nothing
+// else can start the file's deletion at that moment.
+var afterTemporaryJudged = func(string) {}
+
 // tree is what a walk of Loadline's paths in the data directory found.
 type tree struct {
 	// paths are Loadline's files and folders, each folder before what it
@@ -199,6 +207,10 @@ type tree struct {
 	// (goneOrGoing), which may be a file elsewhere too: no list may be passed
 	// down to it.
 	unjudged bool
+	// temporary are the files still being written (Temporary) that the walk
+	// found under that name alone, which are their writers'. They are not
+	// among paths.
+	temporary []string
 }
 
 // linkProblem reports what the walk stopped at, or "" when it went through.
@@ -215,18 +227,19 @@ func (t tree) linkProblem() string {
 // ownPaths walks what Loadline keeps in dir: each entry it owns, the files
 // the system leaves there, which are made private with it, and everything
 // below the folders among them, except the regular files that are still
-// being written (Temporary), which it judges by their names alone
-// (judgeTemporary) and leaves to their writers, and what the dashboard's
-// browser profile holds, which the browser keeps (browserProfile). It
-// follows no link: it stops at the first, and at the first file with a
-// name elsewhere. A dir that does not exist holds nothing, and an entry that
-// goes while it looks, as a spooled event does once drained, is left out.
+// being written (Temporary), which it judges by their names
+// (judgeTemporary), noting in temporary those with that name alone, and
+// what the dashboard's browser profile holds, which the browser keeps
+// (browserProfile). It follows no link: it stops at the first, and at the
+// first file with a name elsewhere. A dir that does not exist holds nothing,
+// and an entry that goes while it looks, as a spooled event does once
+// drained, is left out.
 //
 // fix, when it is set, may change each path as the walk comes to it and,
-// for a folder, once the walk is through it (repair), but never the browser
-// profile, and never a folder that holds a temporary name the walk could not
-// judge. Without it, a folder the user may not list is noted in locked, not
-// an error.
+// for a folder, once the walk is through it, and each of temporary as the
+// walk judges it (repair), but never the browser profile, and never a
+// folder that holds a temporary name the walk could not judge. Without it,
+// a folder the user may not list is noted in locked, not an error.
 func ownPaths(dir string, fix *repair) (tree, error) {
 	var found tree
 	entries, err := os.ReadDir(dir)
@@ -259,6 +272,10 @@ type repair struct {
 	// walk looks into it, so that a folder whose list keeps the user out
 	// can be listed.
 	before func(path string, folder bool) error
+	// temporary runs in place of before on each file still being written
+	// that the walk found under that name alone (tree.temporary), so that
+	// what it does to the file reaches no other name.
+	temporary func(path string) error
 	// after runs on each folder once the walk has been through what it
 	// holds and found nothing there to refuse.
 	after func(path string) error
@@ -332,7 +349,8 @@ const (
 	// inPlace is a file with that name alone, or all of whose names are in
 	// its folder: the token while its writer links it into place, and after,
 	// when the writer left the temporary name behind (judgeNames). It is its
-	// writer's, and left alone.
+	// writer's: only one with that name alone is put right where it is
+	// (repairTemporary).
 	inPlace temporaryVerdict = iota + 1
 	// linkedElsewhere is a file with a name in another folder, which every
 	// look found for as long as the walk waits (settle). No writer makes
@@ -346,6 +364,77 @@ const (
 	// aLink is a link, which no writer makes.
 	aLink
 )
+
+// isGoneOrGoing reports whether err, from a look at a temporary name
+// (Temporary), says that the name's file has gone (fs.ErrNotExist), or that
+// Windows still refused the look once it had waited (settle). The look asks
+// for the right to read the file's attributes alone, which the right to
+// list its folder gives, whatever the file's own permissions say: only a
+// deletion still pending refuses it (fsperm.Transient).
+//
+// Every step on a temporary name keeps to one rule: its writer may rename,
+// link or delete the file at any moment, so a file that has gone, or is
+// going, is passed over, never an error. The look at its names
+// (judgeTemporary) tells that by itself. The steps after it, the read of its
+// owner (ownerProblem) and of its access list (entryProblem,
+// clearOwnEntries) and the change of that list (clearOwnEntries), Windows
+// refuses alike to a file being deleted and to one whose permissions keep
+// the user out: when a refusal of theirs lasts, the file is looked at again
+// (temporaryRefusal), and one the look finds there is refused, never passed
+// over.
+func isGoneOrGoing(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || fsperm.Transient(err)
+}
+
+// temporaryRefusal tells what err, from a step on path, a temporary name,
+// after the look at its names, makes of the file: nothing, when it has gone,
+// and what a look at it again tells when Windows refused the step for as
+// long as it waited (keptOut), or err as it is.
+func temporaryRefusal(path string, err error) (string, error) {
+	switch {
+	case err == nil, errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case !fsperm.Transient(err):
+		return "", err
+	}
+	return keptOut(path)
+}
+
+// keptOut looks again at path, a temporary name, whose file Windows would
+// not let a step after the look at its names read or change the
+// permissions of: nothing, when the look finds it gone or refused too, as
+// only a deletion still pending refuses it (isGoneOrGoing), and the step
+// passes over the file, or the sentence that refuses it, when the look
+// finds it there, so that its permissions keep the user out
+// (keptOutProblem).
+//
+// The look is fsperm.Inspect itself, not inspect, which tests replace to
+// have the walk find a file other than it is: this one must find the file
+// as it is.
+func keptOut(path string) (string, error) {
+	_, err := fsperm.Inspect(path)
+	switch {
+	case isGoneOrGoing(err):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	return keptOutProblem(path), nil
+}
+
+// keptOutProblem refuses path, a file still being written (Temporary) whose
+// permissions the user may not both read and change, as when an OWNER
+// RIGHTS entry takes away its owner's right to read them or to change
+// them, or it belongs to someone else and keeps them out: Loadline can then
+// either not tell whether it lets others in, or not keep them out of it.
+// The user may remove it, since its folder, which is private, is theirs,
+// unless it is read-only and its list takes from them the right to change
+// its attributes, which only an administrator may then do. A file being
+// written that goes is written again under a name of its own.
+func keptOutProblem(path string) string {
+	return path + " does not let you both read and change who may use it, so Loadline cannot make sure it is private; " +
+		ownerClause(path) + ": remove it, or have an administrator remove it if you cannot, then run loadline install"
+}
 
 // judgeTemporary tells what is under path, a temporary name that its
 // folder's listing gave as a regular file, and changes nothing. A look at
@@ -373,7 +462,7 @@ func judgeTemporary(path string) (fsperm.Entry, temporaryVerdict, error) {
 		return nil
 	})
 	switch {
-	case errors.Is(err, fs.ErrNotExist), fsperm.Transient(err):
+	case isGoneOrGoing(err):
 		return entry, goneOrGoing, nil
 	case errors.Is(err, errMoreNames):
 		return entry, linkedElsewhere, nil
@@ -426,13 +515,14 @@ func (t *tree) judgeProfile(path string) error {
 }
 
 // judgeTemporaryName judges path, a regular file that is still being
-// written (Temporary), by its names alone (judgeTemporary), and notes what
-// the walk is to refuse, or could not judge. It adds no path: the file is
-// its writer's, and nothing changes it.
-func (t *tree) judgeTemporaryName(path string) error {
+// written (Temporary), by its names (judgeTemporary), notes what the walk
+// is to refuse, or could not judge, and adds the file to temporary, and
+// reports it alone, when it has that name alone. It adds no path: the file
+// is its writer's.
+func (t *tree) judgeTemporaryName(path string) (alone bool, err error) {
 	entry, verdict, err := judgeTemporary(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	switch verdict {
 	case aLink:
@@ -442,17 +532,31 @@ func (t *tree) judgeTemporaryName(path string) error {
 	case goneOrGoing:
 		t.unjudged = true
 	case inPlace:
+		// A file with a second name, even one in this folder, as the token
+		// has while it is linked into place, is not put right under this
+		// one: what was done to it here would be done to it under the other
+		// too.
+		if entry.Names == 1 {
+			t.temporary = append(t.temporary, path)
+			return true, nil
+		}
 	}
-	return nil
+	return false, nil
 }
 
 // walk adds path, whose type its folder's listing gave as typ, and when it
 // is a folder, everything below it, stopping at the first link or file with
-// a name elsewhere, and leaving the regular files that are still being
-// written to their writers once it has judged their names.
+// a name elsewhere. A regular file that is still being written it judges by
+// its names, and leaves to its writer but for what fix does to one with
+// that name alone.
 func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 	if Temporary(filepath.Base(path)) && typ.IsRegular() {
-		return t.judgeTemporaryName(path)
+		alone, err := t.judgeTemporaryName(path)
+		if err != nil || !alone || fix == nil {
+			return err
+		}
+		afterTemporaryJudged(path)
+		return fix.temporary(path)
 	}
 	entry, judged, err := t.judge(path, fix != nil)
 	if err != nil || !judged {

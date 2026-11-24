@@ -82,8 +82,12 @@ func Secure(dir, top string) error {
 // (browserProfile).
 //
 // Several Loadline processes may run it at once, and write files in dir
-// meanwhile (Temporary), which it refuses only for a name elsewhere, and
-// otherwise leaves alone. It changes nothing that is private already:
+// meanwhile (Temporary), which it refuses for a name elsewhere, and for an
+// owner as it refuses Loadline's own files. One with that name alone it
+// puts right where it is as it does them (repairTemporary): one begun before
+// the dir was private has the list it had then. It passes over one that
+// goes meanwhile, and refuses one whose permissions the user may not read
+// or change (keptOutProblem). It changes nothing that is private already:
 // Windows passes a new access list on a folder down to everything in it,
 // those files among them.
 func Make(dir string) error {
@@ -134,6 +138,7 @@ func Make(dir string) error {
 			unlocked[path], err = makePrivateHere(path)
 			return err
 		},
+		temporary: func(path string) error { return repairTemporary(dir, path) },
 		after: func(path string) error {
 			if !unlocked[path] {
 				return nil
@@ -153,8 +158,31 @@ func Make(dir string) error {
 		return nil
 	}
 	// Last, as well as everything above, what other Loadline processes
-	// began writing before the dir was private, which the walk left alone.
+	// began writing before the dir was private and the walk did not put
+	// right itself: a file with a second name beside it, or one it found
+	// going, should it stay.
 	return fsperm.PassDown(dir)
+}
+
+// repairTemporary puts right path, a file another Loadline process is
+// writing in dir, the data directory, which the walk found under that name
+// alone: it refuses the file when it belongs to someone else, as it refuses
+// any of Loadline's own (ownerProblem), and otherwise takes off it whatever
+// its access list holds besides what its folder passes down
+// (clearOwnEntries), as a file begun there before the data directory was
+// private holds. Its writer goes on through the handle it holds. A file
+// begun since has the private list, and is left as it is. One that goes
+// meanwhile it passes over, and one whose permissions keep the user from
+// reading or changing them it refuses (temporaryRefusal).
+func repairTemporary(dir, path string) error {
+	problem, err := ownerProblem(dir, path)
+	switch {
+	case err != nil:
+		problem, err = temporaryRefusal(path, err)
+	case problem == "":
+		problem, err = temporaryRefusal(path, clearOwnEntries(path))
+	}
+	return problemError(problem, err)
 }
 
 // makePrivateHere gives path, one of Loadline's folders, the private list
@@ -234,8 +262,9 @@ func Verify(dir, top string) error {
 
 // Check reports, in a sentence that says what to do, the first thing that
 // keeps dir from being the user's alone: what Verify refuses, or access that
-// others have to dir or to one of Loadline's files in it. It returns "" when
-// there is none. A dir whose own permissions keep the user from listing it is
+// others have to dir or to one of Loadline's files in it, a file still being
+// written there with that name alone among them. It returns "" when there
+// is none. A dir whose own permissions keep the user from listing it is
 // reported first, saying whether install can let them back in. A dir that
 // does not exist yet is reported with what install would refuse to make it
 // for, judged from the folders above it that exist, or, when install would
@@ -267,6 +296,49 @@ func Check(dir, top string) (string, error) {
 	}
 	for _, path := range found.paths {
 		if problem, err := entryProblem(path); err != nil || problem != "" {
+			return problem, err
+		}
+	}
+	return temporaryProblem(found.temporary, entryProblem)
+}
+
+// temporaryFileProblem reports what Make would refuse path, a file still
+// being written in dir with that name alone, for, as Verify does: one that
+// belongs to someone else (ownerProblem), or one whose permissions Make
+// would put right, since they are not what its folder passes down, but the
+// user may not change (canChangeList, keptOut). It returns "" when there is
+// none. A refused read of the file's owner or permissions it returns as the
+// error it is, which temporaryProblem tells apart.
+func temporaryFileProblem(dir, path string) (string, error) {
+	if problem, err := ownerProblem(dir, path); err != nil || problem != "" {
+		return problem, err
+	}
+	var private bool
+	err := settle(func() (err error) {
+		private, err = fsperm.EntryPrivate(path)
+		return err
+	})
+	if err != nil || private {
+		return "", err
+	}
+	changeable, err := canChangeList(path)
+	if err != nil || changeable {
+		return "", err
+	}
+	return keptOut(path)
+}
+
+// temporaryProblem returns the first problem judge finds with one of paths,
+// files still being written (Temporary), or "" when it finds none, passing
+// over a file that has gone or is going, and taking one that Windows keeps
+// judge from for a problem (temporaryRefusal).
+func temporaryProblem(paths []string, judge func(path string) (string, error)) (string, error) {
+	for _, path := range paths {
+		problem, err := judge(path)
+		if err != nil {
+			problem, err = temporaryRefusal(path, err)
+		}
+		if err != nil || problem != "" {
 			return problem, err
 		}
 	}
@@ -347,6 +419,10 @@ func contentProblem(dir string) (string, error) {
 		if problem, err := ownerProblem(dir, path); err != nil || problem != "" {
 			return problem, err
 		}
+	}
+	judgeIn := func(path string) (string, error) { return temporaryFileProblem(dir, path) }
+	if problem, err := temporaryProblem(found.temporary, judgeIn); err != nil || problem != "" {
+		return problem, err
 	}
 	if found.profile != "" {
 		// The user removes a refused profile, as the refusal says, and may do so
