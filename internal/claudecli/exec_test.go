@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 )
 
 const (
@@ -116,11 +118,20 @@ const (
 	helperPatience = 30 * time.Second
 )
 
+// The tests' own run is sealed: an Exec that loses the path a test gives it
+// runs the claude on PATH, which is then a stand-in that fails the run,
+// never the user's own.
 func TestMain(m *testing.M) {
+	hermetictest.StandIn()
 	if mode := os.Getenv(helperModeEnv); mode != "" {
 		os.Exit(runHelper(mode))
 	}
-	os.Exit(m.Run())
+	sealed, err := hermetictest.Seal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(sealed.Finish(m.Run()))
 }
 
 func runHelper(mode string) int {

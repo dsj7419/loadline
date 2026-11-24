@@ -3,9 +3,11 @@ package install_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -42,8 +44,13 @@ func TestBashForm_RealTapBeforeOriginalsThatNeverRead(t *testing.T) {
 	o := options(install.ShellBash)
 	o.Exe = filepath.ToSlash(exe)
 	// The tap sends nothing of an input without a session, so it needs no
-	// server; the home it is given must stay empty.
+	// server, and it must write nothing to the home it is given. Its config
+	// names a port nothing listens on all the same: the defaults' is where
+	// the user's own server may be listening.
 	loadlineHome := t.TempDir()
+	configFile := filepath.Join(loadlineHome, "config.json")
+	hermetictest.WriteConfig(t, configFile, `{}`, hermetictest.ClosedPort(t))
+	config := string(readFile(t, configFile))
 	env := append(standInHome(t, shells), helperEnv+"=loadline", "LOADLINE_HOME="+loadlineHome)
 	input := largeStatusInput(t)
 	pipefail := make(map[string]bool, len(shells))
@@ -71,8 +78,8 @@ func TestBashForm_RealTapBeforeOriginalsThatNeverRead(t *testing.T) {
 			}
 		}
 	}
-	if names := entries(t, loadlineHome); len(names) != 0 {
-		t.Errorf("the tap wrote %q to its Loadline home, want it to pass its input through and nothing else", names)
+	if names := entries(t, loadlineHome); !slices.Equal(names, []string{"config.json"}) || string(readFile(t, configFile)) != config {
+		t.Errorf("the tap left %q in its Loadline home, want it to pass its input through and leave its config as it was", names)
 	}
 }
 

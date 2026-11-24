@@ -193,7 +193,7 @@ func TestDoctor_PassesOverAFileAnotherProcessIsWritingInTheDataDir(t *testing.T)
 	}
 }
 
-// A folder between a drive root and LOADLINE_HOME, as D:\tools is above
+// A folder between a drive root and the data directory, as D:\tools is above
 // D:\tools\loadline, inherits the root's "Authenticated Users: Modify",
 // which lets them move it aside and put a binary of their own at the path
 // every hook runs. Install refuses before it shows or asks or writes
@@ -203,8 +203,7 @@ func TestInstall_RefusesADataDirOthersCanMoveAside(t *testing.T) {
 	if err := os.Mkdir(tools, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	home := filepath.Join(tools, "loadline")
-	t.Setenv("LOADLINE_HOME", home)
+	home := dataDirApart(t, tools)
 	dir := t.TempDir()
 
 	got := runWithInput(t, "y\n", "install", "--config-dir", dir)
@@ -302,6 +301,7 @@ func linkedHome(t *testing.T) (home, target string) {
 	home = filepath.Join(root, "profile", "loadline")
 	junction(t, home, target)
 	t.Setenv("LOADLINE_HOME", home)
+	writeConfigPort(t, home, freePort(t))
 	return home, target
 }
 

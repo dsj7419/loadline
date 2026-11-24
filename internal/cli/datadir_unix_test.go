@@ -91,7 +91,11 @@ func TestInstall_RefusesAFolderOthersCanWriteWithoutTheStickyBit(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := filepath.Join(shared, "loadline")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("LOADLINE_HOME", home)
+	writeConfigPort(t, home, freePort(t))
 
 	got := run(t, "install", "--config-dir", t.TempDir(), "--yes")
 

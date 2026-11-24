@@ -25,6 +25,7 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/fsperm"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/server"
 	"github.com/dsj7419/loadline/internal/tracker"
@@ -39,7 +40,15 @@ import (
 // The tests work below a private temporary folder of their own. The
 // system's may let other accounts in, as it does on some machines, and
 // install, serve and doctor refuse a data directory below such a folder.
+//
+// The run is sealed: claude on PATH is a stand-in that fails the run, and
+// the home directory, Claude Code's config dir and Loadline's files are in
+// that folder, with a config naming a port nothing listens on, which is also
+// what the doctor falls back on when it cannot load a config. A test that
+// loses its fake claude or its port, as a mutant of the code under test can
+// make it, then reaches neither the user's claude nor the user's server.
 func TestMain(m *testing.M) {
+	hermetictest.StandIn()
 	exetest.Hold()
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		os.Exit(0)
@@ -49,8 +58,17 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	sealed, err := hermetictest.Seal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(root)
+		os.Exit(1)
+	}
 	restore := cli.TrustFoldersFrom(root)
+	restoreFallback := cli.DoctorFallsBackOn(sealed.Defaults())
 	goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) {
+		code = sealed.Finish(code)
+		restoreFallback()
 		restore()
 		_ = os.RemoveAll(root)
 		os.Exit(code)
@@ -155,7 +173,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
-	return &fixture{
+	f := &fixture{
 		t: t,
 		paths: config.Paths{
 			DataDir:    filepath.Join(dir, "data"),
@@ -173,6 +191,10 @@ func newFixture(t *testing.T) *fixture {
 			"CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude-b"),
 		},
 	}
+	// Until the test serves one, a port nothing listens on: the defaults'
+	// is where the user's own server may be listening.
+	f.serverDown()
+	return f
 }
 
 func (f *fixture) env() cli.Env {

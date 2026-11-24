@@ -27,6 +27,7 @@ import (
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/fsperm"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/tracker"
 )
@@ -34,7 +35,13 @@ import (
 // The tests work below a private temporary folder of their own. The
 // system's may let other accounts in, as it does on some machines, and the
 // server refuses a data directory below such a folder.
+//
+// The run is sealed: claude on PATH is a stand-in that fails the run, and
+// the home directory, Claude Code's config dir and Loadline's files are
+// temporary, so that a server that loses its fake claude reaches neither the
+// user's claude nor the user's account.
 func TestMain(m *testing.M) {
+	hermetictest.StandIn()
 	root, err := os.MkdirTemp("", "loadline-e2e-")
 	if err == nil {
 		err = fsperm.Private(root)
@@ -44,12 +51,19 @@ func TestMain(m *testing.M) {
 			err = os.Setenv(name, root)
 		}
 	}
+	unsealedEnv = os.Environ()
+	var sealed *hermetictest.Sealed
+	if err == nil {
+		sealed, err = hermetictest.Seal()
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(root)
 		os.Exit(1)
 	}
 	tempRoot = root
 	goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) {
+		code = sealed.Finish(code)
 		_ = os.RemoveAll(root)
 		os.Exit(code)
 	}))
@@ -58,6 +72,10 @@ func TestMain(m *testing.M) {
 // tempRoot is the private temporary folder TestMain makes, which the
 // servers the tests run trust, with every folder above it.
 var tempRoot string
+
+// unsealedEnv is the test binary's environment as it was before TestMain
+// sealed it, with the user's own home.
+var unsealedEnv []string
 
 const (
 	// s1 is the session of the model call in the OpenTelemetry fixture.
@@ -156,8 +174,13 @@ type machine struct {
 }
 
 // serve runs the server in-process until it is stopped or the test ends.
+// It first writes the config the server reads, replacing any there: one
+// that names the server's port and the stand-in claude besides the options,
+// so that a server that loses either still serves on the test's port and
+// runs no real claude.
 func serve(t *testing.T, o cli.ServeOptions) *machine {
 	t.Helper()
+	hermetictest.WriteConfig(t, o.Paths.ConfigFile, `{}`, o.Port)
 	ready := make(chan struct{})
 	o.Ready = func(string) { close(ready) }
 	o.TrustFrom = tempRoot

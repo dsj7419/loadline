@@ -11,8 +11,10 @@ import (
 )
 
 // dashboardURL has what a shell would split or act on, which must reach the
-// browser untouched as a single argument.
-const dashboardURL = "http://127.0.0.1:8289/login?code=0123abcd&next=/ a"
+// browser untouched as a single argument. Its port is one that browsers
+// refuse to fetch from: a test that opened a real browser by mistake reaches
+// no server, least of all the user's own on the default port.
+const dashboardURL = "http://127.0.0.1:1/login?code=0123abcd&next=/ a"
 
 // installedAt finds each browser named in paths, and no other.
 func installedAt(paths map[string]string) func(string) (string, bool) {

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/cli"
+	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 )
 
 type result struct {
@@ -29,6 +32,55 @@ func run(t *testing.T, args ...string) result {
 		Err: &stderr,
 	})
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// loadlineHome points LOADLINE_HOME at a new folder, with a config there that
+// names a port nothing listens on and the stand-in claude, and returns the
+// paths Loadline finds its files at there.
+func loadlineHome(t *testing.T) config.Paths {
+	t.Helper()
+	t.Setenv("LOADLINE_HOME", t.TempDir())
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		t.Fatalf("find the paths in LOADLINE_HOME: %v", err)
+	}
+	hermetictest.WriteConfig(t, paths.ConfigFile, `{}`, freePort(t))
+	return paths
+}
+
+// dataDirApart points Loadline's data directory at parent/loadline, which it
+// leaves for the test to make or not, and its config at a folder of its own
+// holding a config that names a port nothing listens on and the stand-in
+// claude: LOADLINE_HOME is unset, and the system's folders for state and for
+// configuration name parent and that folder. A command whose data directory
+// the test keeps absent then still never reads the default port. On macOS,
+// where the two share a folder, LOADLINE_HOME names parent/loadline instead,
+// with no config. It returns the data directory.
+func dataDirApart(t *testing.T, parent string) string {
+	t.Helper()
+	dataDir := filepath.Join(parent, "loadline")
+	configHome := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("LOCALAPPDATA", parent)
+		t.Setenv("APPDATA", configHome)
+	case "darwin":
+		t.Setenv("LOADLINE_HOME", dataDir)
+		return dataDir
+	default:
+		t.Setenv("XDG_STATE_HOME", parent)
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+	}
+	t.Setenv("LOADLINE_HOME", "")
+	paths, err := config.DefaultPaths()
+	if err != nil || paths.DataDir != dataDir {
+		t.Fatalf("DefaultPaths = %+v, %v; want the data directory %s", paths, err, dataDir)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.ConfigFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hermetictest.WriteConfig(t, paths.ConfigFile, `{}`, freePort(t))
+	return dataDir
 }
 
 func setVersion(t *testing.T, version string) {
@@ -139,7 +191,7 @@ func TestRun_DispatchesServeAndStatus(t *testing.T) {
 // status and version take no arguments, so anything after them is a usage
 // error that shows the command's usage, never something they quietly ignore.
 func TestRun_StatusAndVersionRejectArguments(t *testing.T) {
-	t.Setenv("LOADLINE_HOME", t.TempDir())
+	loadlineHome(t)
 	for _, tc := range []struct {
 		args []string
 		says string
@@ -161,7 +213,7 @@ func TestRun_StatusAndVersionRejectArguments(t *testing.T) {
 // Like every command that parses its flags, status and version show their
 // usage for -h and exit 0. status then asks no server anything.
 func TestRun_StatusAndVersionHelp(t *testing.T) {
-	t.Setenv("LOADLINE_HOME", t.TempDir())
+	loadlineHome(t)
 	for _, command := range []string{"status", "version"} {
 		for _, flag := range []string{"-h", "--help"} {
 			got := run(t, command, flag)
