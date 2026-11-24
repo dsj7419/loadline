@@ -251,9 +251,10 @@ func TestCommand_ProfileDirIsOneArgument(t *testing.T) {
 // Windows runs a batch file through cmd.exe, which reads its command line
 // again, so a batch file given as the browser gets the arguments it got
 // before the dashboard had a profile of its own, whatever the profile folder
-// is: a profile path may hold an & or ^ that cmd.exe would act on.
+// is: a profile path may hold an & or ^ that cmd.exe would act on. Dots and
+// blanks after the name are dropped, as Windows drops them.
 func TestCommand_ABatchFileGetsNoProfile(t *testing.T) {
-	for _, name := range []string{"browser.cmd", "Browser.BAT", "launch.Cmd"} {
+	for _, name := range []string{"browser.cmd", "Browser.BAT", "launch.Cmd", "browser.cmd.", "browser.bat . "} {
 		path := filepath.Join(t.TempDir(), "launchers", name)
 		t.Run(name, func(t *testing.T) {
 			appWindow := commandFor(t, launch.Browser{Pref: path, AppWindow: true, ProfileDir: dashboardProfile}, nothingInstalled)

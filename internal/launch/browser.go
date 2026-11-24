@@ -109,19 +109,31 @@ func known(pref string) bool {
 }
 
 // resolve decides which program opens the dashboard for b, and how it takes
-// the URL. The program is the one locate finds; a Chromium-family one whose
-// name ends in .cmd or .bat, in any case, is a batch file, whether b gives
-// its path or find finds it.
+// the URL. The program is the one locate finds; a Chromium-family one is a
+// batch file when the file it runs is one, whether b gives its path or find
+// finds it.
 func resolve(b Browser, find func(name string) (string, bool)) (program string, kind browserKind) {
 	program, kind = locate(b, find)
-	if kind == chromiumKind && isBatchFile(program) {
+	if kind == chromiumKind && isBatchFile(fileRun(program)) {
 		return program, batchFileKind
 	}
 	return program, kind
 }
 
+// fileRun returns the file that Windows takes program to name when it starts
+// it: the one exec.LookPath finds, as exec.Command does, which for a name
+// without an extension is the first that PATHEXT names, without the dots and
+// blanks that Windows drops from the end of a name. A program that is not
+// found stays as it is named.
+func fileRun(program string) string {
+	if found, err := exec.LookPath(program); err == nil {
+		program = found
+	}
+	return strings.TrimRight(program, ". ")
+}
+
 // isBatchFile reports whether path names a batch file, which Windows runs
-// through cmd.exe.
+// through cmd.exe: one whose name ends in .cmd or .bat, in any case.
 func isBatchFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".cmd" || ext == ".bat"

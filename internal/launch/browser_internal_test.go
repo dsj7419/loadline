@@ -38,6 +38,8 @@ func TestResolve(t *testing.T) {
 		{name: "a Chromium path", pref: chromiumPath, wantProgram: chromiumPath, wantKind: chromiumKind},
 		{name: "a firefox path", pref: firefoxPath, wantProgram: firefoxPath, wantKind: firefoxKind},
 		{name: "a batch file's path", pref: batchPath, wantProgram: batchPath, wantKind: batchFileKind},
+		{name: "a batch file's path with a dot after it", pref: batchPath + ".", wantProgram: batchPath + ".", wantKind: batchFileKind},
+		{name: "a batch file's path with blanks and dots after it", pref: batchPath + " . ", wantProgram: batchPath + " . ", wantKind: batchFileKind},
 		{
 			name: "a Chromium browser installed as a batch file", pref: "brave",
 			installed: map[string]string{"brave": "/opt/brave.BAT"}, wantProgram: "/opt/brave.BAT", wantKind: batchFileKind,
