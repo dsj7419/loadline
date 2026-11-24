@@ -2,6 +2,7 @@ package install_test
 
 import (
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/install"
@@ -81,11 +82,31 @@ func TestDetectShell(t *testing.T) {
 			want:  install.ShellBash,
 		},
 		{
-			name:  "windows with Git installed for the user",
+			name:  "windows with Git in Program Files, whatever ProgramFiles says",
+			goos:  "windows",
+			env:   map[string]string{"ProgramFiles": `D:\Program Files`, "ProgramFiles(x86)": `D:\Program Files (x86)`},
+			files: []string{`C:\Program Files\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			// Claude Code looks only at the literal C:\Program Files\Git and
+			// C:\Program Files (x86)\Git before PATH, not where ProgramFiles
+			// points.
+			name:  "windows with Git only under a ProgramFiles on another drive",
+			goos:  "windows",
+			env:   map[string]string{"ProgramFiles": `D:\Program Files`},
+			files: []string{`D:\Program Files\Git\bin\bash.exe`},
+			want:  install.ShellPowerShell,
+		},
+		{
+			// Claude Code looks only at the literal C:\Program Files\Git and
+			// C:\Program Files (x86)\Git before PATH, so a per-user install
+			// counts only through its git on PATH, as its installer puts it.
+			name:  "windows with Git installed for the user but not on PATH",
 			goos:  "windows",
 			env:   windowsEnv,
 			files: []string{`C:\Users\example\AppData\Local\Programs\Git\bin\bash.exe`},
-			want:  install.ShellBash,
+			want:  install.ShellPowerShell,
 		},
 		{
 			name:  "windows with Git on PATH",
@@ -100,6 +121,95 @@ func TestDetectShell(t *testing.T) {
 			env:   windowsEnv,
 			files: []string{`D:\Tools\Git\cmd\git.exe`},
 			want:  install.ShellPowerShell,
+		},
+		{
+			name: "windows where only the first git on PATH counts",
+			goos: "windows",
+			env:  map[string]string{"PATH": `D:\Tools\Git\cmd;E:\Git\cmd`},
+			files: []string{
+				`D:\Tools\Git\cmd\git.exe`,
+				`E:\Git\cmd\git.exe`, `E:\Git\bin\bash.exe`,
+			},
+			want: install.ShellPowerShell,
+		},
+		{
+			name: "windows skips a root-relative PATH entry for the next git, with bash beside it",
+			goos: "windows",
+			env:  map[string]string{"PATH": `\cmd;D:\Tools\Git\cmd`},
+			files: []string{
+				`\cmd\git.exe`, `\bin\bash.exe`,
+				`D:\Tools\Git\cmd\git.exe`, `D:\Tools\Git\bin\bash.exe`,
+			},
+			want: install.ShellBash,
+		},
+		{
+			name: "windows skips a root-relative PATH entry for the next git, without bash beside it",
+			goos: "windows",
+			env:  map[string]string{"PATH": `\cmd;D:\Tools\Git\cmd`},
+			files: []string{
+				`\cmd\git.exe`, `\bin\bash.exe`,
+				`D:\Tools\Git\cmd\git.exe`,
+			},
+			want: install.ShellPowerShell,
+		},
+		{
+			name:  "windows skips a deeper root-relative PATH entry",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `\Tools\Git\cmd`},
+			files: []string{`\Tools\Git\cmd\git.exe`, `\Tools\Git\bin\bash.exe`},
+			want:  install.ShellPowerShell,
+		},
+		{
+			// Git is there when the entry is read from the root of the
+			// current drive, and when it is read as it is written.
+			name: "windows skips a relative PATH entry",
+			goos: "windows",
+			env:  map[string]string{"PATH": `Tools\Git\cmd`},
+			files: []string{
+				`Tools\Git\cmd\git.exe`, `Tools\Git\bin\bash.exe`,
+				`\Tools\Git\cmd\git.exe`, `\Tools\Git\bin\bash.exe`,
+			},
+			want: install.ShellPowerShell,
+		},
+		{
+			// Git is there when the root is the folder current on D:, and
+			// when the entry is read as it is written.
+			name: "windows skips a drive-relative PATH entry",
+			goos: "windows",
+			env:  map[string]string{"PATH": `D:Tools\Git\cmd`},
+			files: []string{
+				`D:Tools\Git\cmd\git.exe`, `D:Tools\Git\bin\bash.exe`,
+				`D:\Tools\Git\cmd\git.exe`, `D:\Tools\Git\bin\bash.exe`,
+			},
+			want: install.ShellPowerShell,
+		},
+		{
+			name:  "windows with git at the root of a drive on PATH",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `E:\`},
+			files: []string{`E:\git.exe`, `E:\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with Git on a share on PATH",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `\\host\share\Git\cmd\`},
+			files: []string{`\\host\share\Git\cmd\git.exe`, `\\host\share\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with Git on PATH under a path with the long-path prefix",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `\\?\C:\Tools\Git\cmd`},
+			files: []string{`\\?\C:\Tools\Git\cmd\git.exe`, `\\?\C:\Tools\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows resolves dots in a PATH entry as Windows does",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `D:/Tools/Git/mingw64/../cmd/.`},
+			files: []string{`D:\Tools\Git\cmd\git.exe`, `D:\Tools\Git\bin\bash.exe`},
+			want:  install.ShellBash,
 		},
 		{
 			name:  "windows with bash only somewhere unknown",
@@ -172,6 +282,107 @@ func TestDetectShell_ReadsTheSettingsEnvFirst(t *testing.T) {
 
 			if got := install.DetectShellOn("windows", getenv, exists); got != tt.want {
 				t.Errorf("shell = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRelativeGitEntries(t *testing.T) {
+	const workDir = `D:\work\project`
+	tests := []struct {
+		name    string
+		workDir string
+		path    string
+		files   []string
+		want    []string
+	}{
+		{name: "no PATH", workDir: workDir},
+		{
+			name:    "an absolute entry",
+			workDir: workDir,
+			path:    `C:\Git\cmd;\\host\share\Git\cmd`,
+			files:   []string{`C:\Git\cmd\git.exe`, `\\host\share\Git\cmd\git.exe`},
+		},
+		{
+			// Claude Code stops at the first git it finds, so no entry after
+			// one that holds git.exe can lead it anywhere.
+			name:    "relative entries up to the first absolute entry that holds git",
+			workDir: workDir,
+			path:    `tools;C:\Windows;C:\Git\cmd;bin`,
+			files:   []string{`D:\work\project\tools\git.exe`, `C:\Git\cmd\git.exe`, `D:\work\project\bin\git.exe`},
+			want:    []string{`tools`},
+		},
+		{
+			name:    "a root-relative entry, from the root of the working directory's drive",
+			workDir: workDir,
+			path:    `C:\Windows;\cmd`,
+			files:   []string{`D:\cmd\git.exe`},
+			want:    []string{`\cmd`},
+		},
+		{
+			name:    "a relative entry, from the working directory",
+			workDir: workDir,
+			path:    `"tools\git";C:\Windows`,
+			files:   []string{`D:\work\project\tools\git\git.exe`},
+			want:    []string{`tools\git`},
+		},
+		{
+			name:    "relative entries with dots, in PATH's order",
+			workDir: workDir,
+			path:    `..\shared;.\bin\`,
+			files:   []string{`D:\work\project\bin\git.exe`, `D:\work\shared\git.exe`},
+			want:    []string{`..\shared`, `.\bin\`},
+		},
+		{
+			name:    "a relative entry without a git",
+			workDir: workDir,
+			path:    `tools`,
+			files:   []string{`D:\work\project\tools\bash.exe`, `tools\git.exe`},
+		},
+		{
+			name:    "a drive-relative entry on the working directory's drive, from the working directory",
+			workDir: workDir,
+			path:    `d:tools`,
+			files:   []string{`D:\work\project\tools\git.exe`},
+			want:    []string{`d:tools`},
+		},
+		{
+			// Which folder is current on another drive is not known, so
+			// the entry resolves from that drive's root, Windows' default.
+			name:    "a drive-relative entry on another drive, from that drive's root",
+			workDir: workDir,
+			path:    `E:tools`,
+			files:   []string{`E:\tools\git.exe`},
+			want:    []string{`E:tools`},
+		},
+		{
+			name:    "a working directory on a share",
+			workDir: `\\host\share\project`,
+			path:    `\cmd;tools`,
+			files:   []string{`\\host\share\cmd\git.exe`, `\\host\share\project\tools\git.exe`},
+			want:    []string{`\cmd`, `tools`},
+		},
+		{
+			name:    "a working directory that is not absolute",
+			workDir: `work\project`,
+			path:    `tools;\cmd`,
+			files:   []string{`work\project\tools\git.exe`, `tools\git.exe`, `\cmd\git.exe`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string {
+				if key == "PATH" {
+					return tt.path
+				}
+				return ""
+			}
+			exists := func(path string) bool { return slices.Contains(tt.files, path) }
+
+			got := install.RelativeGitEntries(getenv, exists, tt.workDir)
+
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("RelativeGitEntries = %q, want %q", got, tt.want)
 			}
 		})
 	}

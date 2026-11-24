@@ -134,6 +134,14 @@ The settings edits:
   | Any command, on Windows without Git Bash, where Claude Code uses PowerShell | `& "<loadline>" tap --run-b64 '<command as base64url>'` |
   | None | `"<loadline>" tap --print`, refreshing every 10 s (`&` in front for PowerShell) |
 
+  On Windows, install looks for Git Bash where Claude Code does: the file
+  `CLAUDE_CODE_GIT_BASH_PATH` names if it is a bash or sh that exists, then `C:\Program Files\Git`
+  and `C:\Program Files (x86)\Git`, then the `bin` folder beside the folder that holds the first
+  `git.exe` in a `PATH` folder given in full (`C:\Tools\Git\bin` for `C:\Tools\Git\cmd\git.exe`).
+  Claude Code's own lookup can still differ in ways install cannot know: it searches each
+  session's working directory first, and through `PATHEXT` a `git.cmd` or `git.bat` earlier on
+  `PATH` can win.
+
   bash reads the whole wrapped command before it runs any of it. A command of several lines that
   turns on a parse-time option for its own later lines, such as `shopt -s extglob` or
   `shopt -s expand_aliases`, therefore stops working once wrapped. Keep such a command in a script
@@ -333,7 +341,13 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
   would change.
 - **status line:** a warning when the status line runs through the PowerShell wrapper, which starts
   PowerShell on every refresh. Installing Git for Windows and running `loadline install` again
-  avoids it.
+  avoids it. On Windows, also a warning for each `PATH` entry that is not given in full, such as
+  `\cmd` or `tools`, and leads to a `git` from the folder you run the doctor in, unless it comes
+  after a folder given in full that holds `git.exe`. Claude Code resolves such an entry against
+  each session's working directory, so its shell may differ from the one install chose. Setting
+  `CLAUDE_CODE_GIT_BASH_PATH` settles it. There is no such warning when that variable names a bash
+  or sh that exists, or when Git is in `C:\Program Files\Git` or `C:\Program Files (x86)\Git`,
+  where Claude Code looks before `PATH`.
 - **token in:** a warning when a settings file, or the config folder that holds it, is a link, so
   that the token goes into the file it ends up in, and on macOS and Linux when its mode lets group or
   others read the token, as a rewrite by Claude Code can leave it.

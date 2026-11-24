@@ -37,6 +37,9 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 	// config dir from home, and says so.
 	home, _ := os.UserHomeDir()
 	cfg, checks := doctorConfig(paths.ConfigFile, home)
+	// Without a working directory, no relative PATH entry can be resolved,
+	// and the doctor only leaves out its warning about them.
+	workDir, _ := os.Getwd()
 
 	claude := claudeRunner(cfg, home)
 	checks = append(checks, doctor.Run(ctx, doctor.Deps{
@@ -54,7 +57,10 @@ func runDoctor(ctx context.Context, args []string, stdio IO) int {
 		CheckDataDir: func(dir string) (string, error) {
 			return datadir.Check(dir, trustFrom)
 		},
-		Now: time.Now,
+		Getenv:  os.Getenv,
+		IsFile:  isFile,
+		WorkDir: workDir,
+		Now:     time.Now,
 	})...)
 	return printChecks(stdio, checks)
 }

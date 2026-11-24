@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -53,22 +54,31 @@ func SettingsEnv(settings []byte, getenv func(string) string) func(string) strin
 	}
 }
 
-// detectShell follows Claude Code: on Windows it uses Git Bash when
-// CLAUDE_CODE_GIT_BASH_PATH names an existing bash or sh, or Git for Windows
-// is installed, and PowerShell otherwise.
+// detectShell follows Claude Code's own lookup. On Windows, Claude Code uses
+// Git Bash when it finds one before it looks on PATH, or in the bin folder
+// beside the folder that holds the first git.exe on PATH, and PowerShell
+// otherwise.
 func detectShell(goos string, getenv func(string) string, exists func(string) bool) Shell {
 	if goos != "windows" {
 		return ShellBash
 	}
-	if bash := getenv("CLAUDE_CODE_GIT_BASH_PATH"); isBashName(bash) && exists(bash) {
+	if GitBashBeforePath(getenv, exists) || gitBashOnPath(getenv, exists) {
 		return ShellBash
 	}
-	for _, bash := range gitBashCandidates(getenv, exists) {
-		if exists(bash) {
-			return ShellBash
-		}
-	}
 	return ShellPowerShell
+}
+
+// GitBashBeforePath reports whether Claude Code on Windows finds Git Bash
+// before it looks on PATH: when CLAUDE_CODE_GIT_BASH_PATH names an existing
+// bash or sh, or when Git Bash is at C:\Program Files\Git\bin\bash.exe or
+// C:\Program Files (x86)\Git\bin\bash.exe. Claude Code passes over a
+// CLAUDE_CODE_GIT_BASH_PATH that names anything else. getenv and exists are
+// as DetectShell takes them.
+func GitBashBeforePath(getenv func(string) string, exists func(string) bool) bool {
+	if bash := getenv("CLAUDE_CODE_GIT_BASH_PATH"); isBashName(bash) && exists(bash) {
+		return true
+	}
+	return slices.ContainsFunc(programFilesGitBash[:], exists)
 }
 
 // isBashName reports whether path names a shell Claude Code accepts in
@@ -83,31 +93,73 @@ func isBashName(path string) bool {
 	return false
 }
 
-// gitBashCandidates lists where Git for Windows keeps bash.exe: beside the
-// git.exe found on PATH, and in its standard install directories.
-func gitBashCandidates(getenv func(string) string, exists func(string) bool) []string {
-	var candidates []string
-	for _, dir := range strings.Split(getenv("PATH"), ";") {
-		dir = trimDir(strings.Trim(dir, `"`))
-		if dir == "" || !exists(dir+`\git.exe`) {
+// programFilesGitBash are where Claude Code looks for Git Bash before PATH,
+// after CLAUDE_CODE_GIT_BASH_PATH. They are literal paths: Claude Code looks
+// there whatever ProgramFiles says, and nowhere else, so a per-user install
+// in %LOCALAPPDATA%\Programs\Git counts only through its git on PATH.
+var programFilesGitBash = [...]string{`C:\Program Files\Git\bin\bash.exe`, `C:\Program Files (x86)\Git\bin\bash.exe`}
+
+// gitBashOnPath reports whether bash.exe is where Git for Windows keeps it
+// for the first git.exe on PATH: in the bin folder beside the one that holds
+// git.exe. Only that first git counts, as it does for Claude Code.
+//
+// Only absolute entries are searched. Claude Code resolves an entry such as
+// cmd, \cmd or C:cmd against each session's own working directory, so what
+// it leads to depends on where each session runs, which install cannot know.
+// loadline doctor warns of such an entry that leads to a git.
+func gitBashOnPath(getenv func(string) string, exists func(string) bool) bool {
+	for _, entry := range pathEntries(getenv("PATH")) {
+		if !isWindowsAbs(entry) {
 			continue
 		}
-		if i := strings.LastIndexAny(dir, `\/`); i > 0 {
-			candidates = append(candidates, dir[:i]+`\bin\bash.exe`)
+		volume, rest := splitWindowsVolume(entry)
+		if holdsGit(exists, volume, rest) {
+			return exists(joinWindows(volume, rest, "..", "bin", "bash.exe"))
 		}
 	}
-	for _, location := range []struct{ env, dir string }{
-		{env: "ProgramFiles", dir: `Git`},
-		{env: "ProgramFiles(x86)", dir: `Git`},
-		{env: "LOCALAPPDATA", dir: `Programs\Git`},
-	} {
-		if root := trimDir(getenv(location.env)); root != "" {
-			candidates = append(candidates, root+`\`+location.dir+`\bin\bash.exe`)
-		}
-	}
-	return candidates
+	return false
 }
 
-func trimDir(dir string) string {
-	return strings.TrimRight(strings.TrimSpace(dir), `\/`)
+// RelativeGitEntries returns the entries of the Windows PATH that getenv
+// reads which are not absolute, such as cmd, \cmd or D:cmd, and hold git.exe
+// when resolved against workDir, in PATH's order. The shell detection skips
+// them, since Claude Code resolves them against each session's own working
+// directory. The list ends at the first absolute entry that holds git.exe:
+// Claude Code stops at the first git it finds, so it never reaches the
+// entries after that one. It returns nil when workDir is not an absolute
+// Windows path.
+func RelativeGitEntries(getenv func(string) string, exists func(string) bool, workDir string) []string {
+	if !isWindowsAbs(workDir) {
+		return nil
+	}
+	var entries []string
+	for _, entry := range pathEntries(getenv("PATH")) {
+		if isWindowsAbs(entry) {
+			if volume, rest := splitWindowsVolume(entry); holdsGit(exists, volume, rest) {
+				return entries
+			}
+			continue
+		}
+		if volume, rest := resolveWindows(workDir, entry); holdsGit(exists, volume, rest) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+// holdsGit reports whether the folder rest on volume holds git.exe.
+func holdsGit(exists func(string) bool, volume, rest string) bool {
+	return exists(joinWindows(volume, rest, "git.exe"))
+}
+
+// pathEntries returns the folders the Windows PATH list names, without their
+// quotes, surrounding spaces or empty entries.
+func pathEntries(list string) []string {
+	var entries []string
+	for entry := range strings.SplitSeq(list, ";") {
+		if entry = strings.TrimSpace(strings.Trim(entry, `"`)); entry != "" {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }

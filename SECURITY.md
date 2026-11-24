@@ -136,13 +136,23 @@ What it defends against:
   keep the newest three backups they made of each file and remove the older ones; they touch no
   other file.
 - **The shell Claude Code uses on Windows.** Install quotes the status line for Git Bash when it
-  finds Git for Windows (through `CLAUDE_CODE_GIT_BASH_PATH`, `git.exe` on `PATH`, or the standard
-  install folders), and for PowerShell otherwise. On an unusual Git install, such as a Scoop or
-  portable one, its answer can differ from Claude Code's, and the status-line command would then run
-  under a shell it was not quoted for. Which PowerShell Claude Code uses without Git Bash is not
-  documented; when Loadline runs your status line for PowerShell, it uses PowerShell 7 (`pwsh`)
-  if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` warns when the status
-  line uses the PowerShell form, but cannot tell which shell Claude Code will actually use.
+  finds Git Bash where Claude Code looks for it, in this order: the file `CLAUDE_CODE_GIT_BASH_PATH`
+  names if it is a bash or sh that exists, `C:\Program Files\Git` or `C:\Program Files (x86)\Git`
+  (those paths exactly, wherever `%ProgramFiles%` points), or the `bin` folder beside the folder
+  that holds the first `git.exe` on `PATH`. Otherwise it quotes it for PowerShell. A per-user Git
+  in `%LOCALAPPDATA%\Programs\Git` therefore counts only through its `git.exe` on `PATH`, as it
+  does for Claude Code. Claude Code resolves a `PATH` entry that is not absolute, such as `cmd` or
+  `\cmd`, against each session's own working directory, which install cannot know, so install
+  skips such entries, and `loadline doctor` warns when one of them leads to a `git` from the
+  folder it runs in ahead of the first absolute folder that holds `git.exe`. Claude Code's own
+  lookup can still differ in other ways install cannot know: it searches each session's working
+  directory first, and through `PATHEXT` a `git.cmd` or `git.bat` earlier on `PATH` can win. In
+  such a setup the status-line command can run under a shell it was not quoted for; setting
+  `CLAUDE_CODE_GIT_BASH_PATH` settles the shell for every session. Which PowerShell Claude Code uses
+  without Git Bash is not documented; when Loadline runs your status line for PowerShell, it uses
+  PowerShell 7 (`pwsh`) if it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor`
+  warns when the status line uses the PowerShell form, but cannot tell which shell Claude Code will
+  actually use.
 
 ## Known limitations
 
