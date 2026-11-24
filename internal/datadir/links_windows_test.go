@@ -42,6 +42,20 @@ func elsewhere(t *testing.T, top string) (project, doc string) {
 	return project, doc
 }
 
+// sharedFile returns a file in a folder every signed-in user may work in,
+// which they may read, and a check that its access list is as it was.
+func sharedFile(t *testing.T) (path string, unchanged func(*testing.T)) {
+	t.Helper()
+	_, doc := elsewhere(t, privateTop(t))
+	before := fspermtest.AccessList(t, doc)
+	return doc, func(t *testing.T) {
+		t.Helper()
+		if after := fspermtest.AccessList(t, doc); !after.Equal(before) {
+			t.Errorf("the access list of %s, outside the data directory, went from %s to %s", doc, before, after)
+		}
+	}
+}
+
 // openDataDir returns a data directory that is not private yet, in a folder
 // that lets every signed-in user in, as LOADLINE_HOME on a second drive was
 // before Loadline first secured it, and that folder.
@@ -420,14 +434,14 @@ func TestSecure_LeavesAFileOutsideAsItIsWhenTheDataDirectoryIsNotPrivateYet(t *t
 
 // A file's own leftover temporary name beside it excuses no other name. In a
 // spool that keeps the user out, a spooled event has both, its temporary
-// name and a name elsewhere: Secure removes the leftover, judges the event
-// again, and refuses it for the name elsewhere, which keeps its list.
+// name and a name elsewhere: Secure comes to the temporary name first, and
+// refuses it for the name elsewhere, which keeps its list.
 func TestSecure_RefusesANameElsewhereHiddenBesideALeftoverTemporaryName(t *testing.T) {
 	home, top := loadlineHome(t)
 	_, doc := elsewhere(t, top)
 	spool := filepath.Join(home, "spool")
-	event := filepath.Join(spool, "1-0000000b.json")
-	for _, name := range []string{event, filepath.Join(spool, ".put-1234.tmp")} {
+	event, leftover := filepath.Join(spool, "1-0000000b.json"), filepath.Join(spool, ".put-1234.tmp")
+	for _, name := range []string{event, leftover} {
 		if err := os.Link(doc, name); err != nil {
 			t.Skipf("cannot make a hard link here: %v", err)
 		}
@@ -438,7 +452,7 @@ func TestSecure_RefusesANameElsewhereHiddenBesideALeftoverTemporaryName(t *testi
 
 	err := datadir.Secure(home, top)
 
-	if want := event + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+	if want := leftover + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("Secure = %v, want it refused, starting %q", err, want)
 	}
 	if after := fspermtest.AccessList(t, doc); !after.Equal(before) {

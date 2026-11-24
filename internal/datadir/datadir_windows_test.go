@@ -372,8 +372,9 @@ func TestCheck_PassesOverAFileAnotherProcessIsWriting(t *testing.T) {
 
 // Windows refuses to open a file whose deletion is pending, as a token's
 // temporary file is a moment after another caller linked it into place,
-// with "access denied". Nothing that prepares or checks the directory opens
-// another process's file, so none of them fails on one.
+// with "access denied". What prepares or checks the directory waits that
+// out for another process's file, as for any of Loadline's, and then leaves
+// the file to its writer: none of them fails on one.
 func TestSecure_TakesADataDirectoryWhileAnotherProcessDeletesItsFile(t *testing.T) {
 	for _, name := range inFlight {
 		t.Run(filepath.Base(name), func(t *testing.T) {
@@ -393,6 +394,41 @@ func TestSecure_TakesADataDirectoryWhileAnotherProcessDeletesItsFile(t *testing.
 			}
 			if got, err := datadir.Check(home, top); err != nil || got != "" {
 				t.Errorf("Check = %q, %v; want \"\"", got, err)
+			}
+		})
+	}
+}
+
+// A temporary file whose deletion stays pending cannot be judged: its names
+// cannot be counted, and one of them may be elsewhere. Secure takes a data
+// directory that is not private yet, and makes it private, but passes no
+// list down to that file, neither the data directory's nor that of the
+// folder that holds it, and so none to another process's file begun beside
+// it before the data directory was private, which keeps what it inherited
+// then. The next run finds the file gone.
+func TestSecure_LeavesATemporaryFileBeingDeleted(t *testing.T) {
+	for _, name := range inFlight {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			dir, parent := openDataDir(t, privateTop(t))
+			going := filepath.Join(dir, name)
+			writeFile(t, going)
+			begun := filepath.Join(filepath.Dir(going), strings.Replace(filepath.Base(going), "1234", "5678", 1))
+			writeFile(t, begun)
+			if others := fspermtest.Others(t, begun, fspermtest.Any); len(others) == 0 {
+				t.Fatalf("%s admits nobody else, so the test proves nothing", begun)
+			}
+			before := fspermtest.AccessList(t, begun)
+			fspermtest.DeletePending(t, going)
+
+			if err := datadir.Secure(dir, parent); err != nil {
+				t.Fatalf("Secure = %v, want it to go on", err)
+			}
+
+			if after := fspermtest.AccessList(t, begun); !after.Equal(before) {
+				t.Errorf("Secure passed a list down beside %s, which it could not judge: %s went from %s to %s", going, begun, before, after)
+			}
+			if others := fspermtest.Others(t, dir, fspermtest.Any); len(others) > 0 || !fspermtest.Protected(t, dir) {
+				t.Errorf("%s admits %v (protected: %t), want the private list", dir, others, fspermtest.Protected(t, dir))
 			}
 		})
 	}

@@ -3,6 +3,7 @@
 package datadir_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +119,30 @@ func TestCheck_SaysWhyInstallWouldRefuseADataDirectoryNotMadeYet(t *testing.T) {
 
 	if want := home + " does not exist yet, and loadline install would refuse to make it: " + refused.Error(); err != nil || got != want {
 		t.Errorf("Check = %q, %v; want %q", got, err, want)
+	}
+}
+
+// sharedFile returns a file that group and others may read, and a check that
+// its mode is as it was.
+func sharedFile(t *testing.T) (path string, unchanged func(*testing.T)) {
+	t.Helper()
+	const shared fs.FileMode = 0o644
+	path = filepath.Join(t.TempDir(), "shared.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, shared); err != nil {
+		t.Fatal(err)
+	}
+	return path, func(t *testing.T) {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != shared {
+			t.Errorf("%s, outside the data directory, has mode %v; want %v as it was", path, info.Mode().Perm(), shared)
+		}
 	}
 }
 
