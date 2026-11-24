@@ -132,7 +132,7 @@ func TestForeignOwner_TellsAnAccountThisComputerNoLongerHas(t *testing.T) {
 	}{
 		{"an account of this computer's own that it no longer has", gone, Owner{Name: gone, Gone: true}},
 		{"an account of another domain", "S-1-5-21-1-2-3-4242", Owner{Name: "S-1-5-21-1-2-3-4242 (an account this computer cannot name right now)"}},
-		{"Guests", "S-1-5-32-546", Owner{Name: `BUILTIN\Guests`}},
+		{"Guests", "S-1-5-32-546", Owner{Name: accountName(sidOf(t, "S-1-5-32-546"))}},
 		{"a SID below this computer's domain that is none of its accounts", gone + "-1", Owner{Name: gone + "-1 (an account this computer cannot name right now)"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,34 +158,40 @@ func lookUpAs(t *testing.T, lookup func(*windows.SID) (account, domain string, u
 }
 
 // The answers no computer at hand gives on cue. An account Windows says was
-// deleted is gone, wherever it was. One of this computer's own that it
-// cannot look up for another reason than that no account answers to it, or
-// any whose computer's own account domain cannot be told, may still exist.
+// deleted is gone, of whichever domain, and named by its SID when Windows
+// gives it no name. One of this computer's own that it cannot look up for
+// another reason than that no account answers to it, or any whose
+// computer's own account domain cannot be told, may still exist.
 func TestForeignOwner_SaysAnAccountIsGoneOnlyWhenWindowsIsSure(t *testing.T) {
 	domain, err := machineDomain()
 	if err != nil {
 		t.Fatal(err)
 	}
 	gone := domain.String() + "-4242"
+	const elsewhere = "S-1-5-21-1-2-3-4242"
 	cannotName := Owner{Name: gone + " (an account this computer cannot name right now)"}
 	for _, tt := range []struct {
-		name         string
-		use          uint32
-		lookupErr    error
-		domainFailed bool
-		want         Owner
+		name            string
+		sid             string
+		account, domain string
+		use             uint32
+		lookupErr       error
+		domainFailed    bool
+		want            Owner
 	}{
-		{name: "a deleted account", use: windows.SidTypeDeletedAccount, want: Owner{Name: `OLD-PC\former`, Gone: true}},
-		{name: "a user account", use: windows.SidTypeUser, want: Owner{Name: `OLD-PC\former`}},
-		{name: "an account of its own it cannot look up right now", lookupErr: windows.ERROR_TRUSTED_RELATIONSHIP_FAILURE, want: cannotName},
-		{name: "an account no account answers to, when its own domain cannot be told", lookupErr: windows.ERROR_NONE_MAPPED, domainFailed: true, want: cannotName},
+		{name: "a deleted account of this computer's", sid: gone, account: "former", domain: "OLD-PC", use: windows.SidTypeDeletedAccount, want: Owner{Name: `OLD-PC\former`, Gone: true}},
+		{name: "a deleted account of another domain", sid: elsewhere, account: "former", domain: "OLD-DOMAIN", use: windows.SidTypeDeletedAccount, want: Owner{Name: `OLD-DOMAIN\former`, Gone: true}},
+		{name: "a deleted account Windows gives no name", sid: elsewhere, use: windows.SidTypeDeletedAccount, want: Owner{Name: elsewhere, Gone: true}},
+		{name: "a user account", sid: gone, account: "former", domain: "OLD-PC", use: windows.SidTypeUser, want: Owner{Name: `OLD-PC\former`}},
+		{name: "an account of its own it cannot look up right now", sid: gone, lookupErr: windows.ERROR_TRUSTED_RELATIONSHIP_FAILURE, want: cannotName},
+		{name: "an account no account answers to, when its own domain cannot be told", sid: gone, lookupErr: windows.ERROR_NONE_MAPPED, domainFailed: true, want: cannotName},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			lookUpAs(t, func(*windows.SID) (string, string, uint32, error) {
 				if tt.lookupErr != nil {
 					return "", "", 0, tt.lookupErr
 				}
-				return "former", "OLD-PC", tt.use, nil
+				return tt.account, tt.domain, tt.use, nil
 			})
 			if tt.domainFailed {
 				previous := machineDomain
@@ -193,7 +199,7 @@ func TestForeignOwner_SaysAnAccountIsGoneOnlyWhenWindowsIsSure(t *testing.T) {
 				t.Cleanup(func() { machineDomain = previous })
 			}
 			dir := t.TempDir()
-			ownedBySID(t, dir, sidOf(t, gone))
+			ownedBySID(t, dir, sidOf(t, tt.sid))
 
 			got, err := ForeignOwner(dir)
 
@@ -201,6 +207,29 @@ func TestForeignOwner_SaysAnAccountIsGoneOnlyWhenWindowsIsSure(t *testing.T) {
 				t.Errorf("ForeignOwner = %+v, %v; want %+v", got, err, tt.want)
 			}
 		})
+	}
+}
+
+// An account of this computer's own is its account domain's SID with one
+// RID after it, and nothing else: not one more, nor a SID whose parts only
+// start the same.
+func TestAccountOfThisComputer_IsItsDomainPlusOneRID(t *testing.T) {
+	previous := machineDomain
+	machineDomain = func() (*windows.SID, error) { return windows.StringToSid("S-1-5-21-1-2-3") }
+	t.Cleanup(func() { machineDomain = previous })
+	for sid, want := range map[string]bool{
+		"S-1-5-21-1-2-3-5":          true,
+		"S-1-5-21-1-2-3-4294967295": true,
+		"S-1-5-21-1-2-3":            false,
+		"S-1-5-21-1-2-3-5-6":        false,
+		"S-1-5-21-1-2-34-5":         false,
+		"S-1-5-21-1-2-30":           false,
+		"S-1-5-22-1-2-3-5":          false,
+		"S-1-5-21-0-1-2-3-5":        false,
+	} {
+		if got := accountOfThisComputer(sidOf(t, sid)); got != want {
+			t.Errorf("accountOfThisComputer(%s), of S-1-5-21-1-2-3 = %t; want %t", sid, got, want)
+		}
 	}
 }
 

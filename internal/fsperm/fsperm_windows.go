@@ -742,6 +742,10 @@ var lookupAccount = func(sid *windows.SID) (account, domain string, use uint32, 
 func ownerAccount(sid *windows.SID) Owner {
 	account, domain, use, err := lookupAccount(sid)
 	switch {
+	case err == nil && account == "":
+		// An answer that names no account, as one for a deleted account
+		// may be, leaves the SID to name it.
+		return Owner{Name: sid.String(), Gone: use == windows.SidTypeDeletedAccount}
 	case err == nil:
 		return Owner{Name: domain + `\` + account, Gone: use == windows.SidTypeDeletedAccount}
 	case errors.Is(err, windows.ERROR_NONE_MAPPED) && accountOfThisComputer(sid):
