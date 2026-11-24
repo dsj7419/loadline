@@ -233,13 +233,21 @@ func TestRunTap_ForwardsNothingWhileTheEchoIsBlocked(t *testing.T) {
 }
 
 // The status line process does not linger on a server that does not answer:
-// the tap gives up on its post at its bound. The bound here is the test's
-// own, long enough for the post to reach the server on a loaded machine;
-// TestRunTap_CapsItsPostAt100ms pins the tap's.
+// the tap gives up on its post at its bound, and starts a server. The bound
+// here is the test's own, long enough for the post to reach the server on a
+// loaded machine; TestRunTap_CapsItsPostAt100ms pins the tap's.
+//
+// The server times the wait, so the tap's work around it, which a loaded
+// machine can slow without bound, does not count. The whole tap takes at
+// least the wait and the server's start, which load can only lengthen, and
+// is otherwise timed only against a hang. The server's start, after the
+// post, is slow enough here to take the tap as a whole past the bound and
+// its margin.
 func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
 	const deadline = 400 * time.Millisecond
 	cli.SetTapSendTimeout(t, deadline)
 	f := newFixture(t)
+	f.spawns.delay = 200 * time.Millisecond
 	out := newEchoPipe(t)
 	// The answer comes, but long after the tap should have given up on it.
 	srv := f.serve(func(s *ingestServer) { s.hold = 2 * deadlinetest.Limit(deadline) })
@@ -248,7 +256,14 @@ func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
 
 	code := cli.RunTap(t.Context(), strings.NewReader(input), out.writer, f.env(), f.paths, f.cfg, cli.TapMode{})
 
-	deadlinetest.AssertGaveUpAt(t, "the tap", time.Since(start), deadline)
+	took := time.Since(start)
+	if least := deadline + f.spawns.delay; took < least {
+		t.Errorf("the tap returned after %v, want no sooner than its %v post and the %v start: %v",
+			took, deadline, f.spawns.delay, least)
+	}
+	if hang := 10 * deadline; took >= hang {
+		t.Errorf("the tap returned after %v, want it well within %v", took, hang)
+	}
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -258,6 +273,14 @@ func TestRunTap_GivesUpOnAHungServer(t *testing.T) {
 	if posts := srv.received(); len(posts) != 1 {
 		t.Errorf("server received %d posts, want 1", len(posts))
 	}
+	if started := f.spawns.started(); !slices.Equal(started, []string{testExe + " serve"}) {
+		t.Errorf("started %v, want [%s serve]", started, testExe)
+	}
+	held := srv.heldFor("/ingest/status")
+	if len(held) != 1 {
+		t.Fatalf("the tap gave up on %d posts while the server held them, want 1", len(held))
+	}
+	deadlinetest.AssertHeldFor(t, "the post", held[0], deadline)
 }
 
 // The spec caps the tap's post at 100 ms: the status line's process lingers
