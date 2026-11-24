@@ -334,15 +334,50 @@ func Inspect(path string) (Entry, error) {
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return Entry{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	id, err := readFileID(handle)
+	if err != nil {
+		return Entry{}, fmt.Errorf("read %s: %w", path, err)
+	}
 	return Entry{
 		Link:   info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0,
 		Folder: info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0,
 		Names:  uint64(info.NumberOfLinks),
-		ID: FileID{
-			volume: uint64(info.VolumeSerialNumber),
-			index:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
-		},
+		ID:     id,
 	}, nil
+}
+
+// fileIDInfo is FILE_ID_INFO, what GetFileInformationByHandleEx gives for
+// FileIdInfo.
+type fileIDInfo struct {
+	VolumeSerialNumber uint64
+	FileID             [16]byte
+}
+
+// readFileID reads the ID of the file handle is open on (fileIDByHandle).
+// Tests replace it: no volume at hand gives two files IDs that differ only
+// above their low 64 bits, as ReFS can.
+var readFileID = func(handle windows.Handle) (FileID, error) {
+	return fileIDByHandle(handle, windows.GetFileInformationByHandleEx)
+}
+
+// fileIDByHandle reads the ID of the file handle is open on in full, as
+// FILE_ID_INFO, which infoEx, GetFileInformationByHandleEx, gives. A volume
+// that cannot give it refuses with an error that depends on its file system
+// and driver, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED and
+// ERROR_INVALID_FUNCTION among them. So any refusal falls back to the file
+// index, from GetFileInformationByHandle, the call Inspect has already made
+// on the same handle for the rest of what it tells.
+func fileIDByHandle(handle windows.Handle, infoEx func(windows.Handle, uint32, *byte, uint32) error) (FileID, error) {
+	var full fileIDInfo
+	//nolint:gosec // G103: infoEx fills exactly the FILE_ID_INFO it is given, of the size it is told
+	if err := infoEx(handle, windows.FileIdInfo, (*byte)(unsafe.Pointer(&full)), uint32(unsafe.Sizeof(full))); err == nil {
+		return FullFileID(full.VolumeSerialNumber, full.FileID), nil
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return FileID{}, err
+	}
+	return indexFileID(uint64(info.VolumeSerialNumber), uint64(info.FileIndexHigh)<<32|uint64(info.FileIndexLow)), nil
 }
 
 // PrivateHere gives dir the access list of privateDescriptor, as Private

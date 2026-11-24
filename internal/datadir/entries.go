@@ -139,6 +139,10 @@ func moreNamesProblem(path string) string {
 // not elevated, or not root, cannot give a file another owner.
 var foreignOwner = fsperm.ForeignOwner
 
+// inspect is fsperm.Inspect. Tests replace it: no volume at hand gives two
+// files IDs that differ only above their low 64 bits, as ReFS can.
+var inspect = fsperm.Inspect
+
 // tree is what a walk of Loadline's paths in the data directory found.
 type tree struct {
 	// paths are Loadline's files and folders, each folder before what it
@@ -215,7 +219,7 @@ type repair struct {
 // is set, judgeNames tries to remove those leftovers, as far as it can for
 // a moment, and judges the file again.
 func judgeNames(path string, tidy bool) (fsperm.Entry, error) {
-	entry, err := fsperm.Inspect(path)
+	entry, err := inspect(path)
 	if err != nil || entry.Link || entry.Folder || entry.Names == 1 {
 		return entry, err
 	}
@@ -251,7 +255,7 @@ func leftovers(path string, id fsperm.FileID) ([]string, error) {
 		name := filepath.Join(dir, entry.Name())
 		// One that cannot be looked at, as while its writer deletes it, is
 		// not counted: the walk then waits for it to go (settle).
-		if other, err := fsperm.Inspect(name); err == nil && other.ID == id {
+		if other, err := inspect(name); err == nil && other.ID == id {
 			names = append(names, name)
 		}
 	}
