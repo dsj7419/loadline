@@ -32,7 +32,7 @@ func TestApplySpooledHook_AppliesTheHookAndNotesItsDir(t *testing.T) {
 		At:      eventTime,
 		Dir:     domain.ConfigDir(configDir),
 		Session: "s1",
-		PID:     4242,
+		PID:     testPID,
 		Name:    "SessionStart",
 		Source:  "startup",
 	}

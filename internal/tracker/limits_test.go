@@ -641,6 +641,177 @@ func TestTracker_AResumeWhileTheFirstProcessRunsKeepsTheMostAPITime(t *testing.T
 	}
 }
 
+// fromProcess is st sent from the Claude process pid.
+func fromProcess(st domain.Status, pid int) domain.Status {
+	st.PID = pid
+	return st
+}
+
+// A session is resumed on the same account while its first process stays
+// open and idle, and the owner's reset keeps the reset time. When the lines
+// name their processes, each is judged by its own: the resumed process's API
+// time growing from where its first line put it dates its 0%, however far
+// below the first process's count it stays, and the first process's older 97%
+// does not come back. The resumed process counts from nothing when the session
+// saved no API time, and otherwise continues from what it saved.
+func TestTracker_ASameWindowResetShowsWhileAnotherProcessOfTheSessionLives(t *testing.T) {
+	for name, base := range map[string]int64{
+		"counting from nothing":                              0,
+		"continuing from a restored count below the first's": 30_000,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			shared := s1
+			first := func(sec int) domain.Status {
+				return fromProcess(withAPITime(weeklyFrom(sec, shared, 97), 50_000), pidA)
+			}
+			shownWeekly(h, fromProcess(withAPITime(weeklyFrom(0, shared, 97), 49_000), pidA))
+			shownWeekly(h, first(1))
+			start := hook(5, shared, "SessionStart")
+			start.Source, start.PID = "resume", pidB
+			h.clock.Set(at(5))
+			h.tr.Apply(start)
+
+			if got := shownWeekly(h, fromProcess(withAPITime(weeklyFrom(10, shared, 0), base), pidB)); got != 97 {
+				t.Errorf("shown %v%% from the resumed process's first line, want the 97%% held: nothing says what its count started from", got)
+			}
+			shownWeekly(h, first(12))
+			if got := shownWeekly(h, fromProcess(withAPITime(weeklyFrom(20, shared, 0), base+400), pidB)); got != 0 {
+				t.Errorf("shown %v%% once the resumed process's API time grew from %d, want 0%%", got, base)
+			}
+			for sec := 25; sec < 120; sec += 5 {
+				if got := shownWeekly(h, first(sec)); got != 0 {
+					t.Fatalf("at %ds the first process's older 97%% came back (%v%%)", sec, got)
+				}
+			}
+		})
+	}
+}
+
+// Every line from a current Claude Code names its process. The calls waiting
+// for a line date the process whose line takes them, so a reset that keeps
+// its reset time shows from the busy session's next response, as it does when
+// lines name no process.
+func TestTracker_TheCallsALineTakesDateItsProcess(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	busy, idle := s1, s2
+	h.tr.RecordAPI(request(at(0), idle, "Opus 5.5", 0.1))
+	shownWeekly(h, fromProcess(weeklyFrom(1, idle, 95), pidA))
+	h.tr.RecordAPI(request(at(10), busy, "Opus 5.5", 0.1))
+	shownWeekly(h, fromProcess(weeklyFrom(11, busy, 95), pidB))
+
+	h.tr.RecordAPI(request(at(60), busy, "Opus 5.5", 0.1))
+	if got := shownWeekly(h, fromProcess(weeklyFrom(61, busy, 0), pidB)); got != 0 {
+		t.Errorf("shown %v%% after the busy process's response since the reset, want 0%%", got)
+	}
+	if got := shownWeekly(h, fromProcess(weeklyFrom(66, idle, 95), pidA)); got != 0 {
+		t.Errorf("shown %v%% after the idle process's older reading, want the 0%% still", got)
+	}
+}
+
+// A process of a session goes while another stays open and idle at 97%, and
+// the next process to resume the session takes the gone one's PID. It counts
+// on from what the session saved, below the gone process's count, so it must
+// be judged on its own count: its 0% after the owner's reset shows once its
+// API time grows. A process that is killed leaves no end behind, as the poll
+// still lists the session for the one left open, but the new process's start
+// says it is new; one that exits ends the session, though the new process's
+// lines may come before its start does.
+func TestTracker_ANewProcessOnAGoneOnesPIDCountsAfresh(t *testing.T) {
+	for name, gone := range map[string]func(h *harness){
+		"killed, and the new process started": func(h *harness) {
+			start := hook(10, s1, "SessionStart")
+			start.Source, start.PID = "resume", pidB
+			h.clock.Set(at(10))
+			h.tr.Apply(start)
+		},
+		"exited, and the new process's start not yet in": func(h *harness) {
+			end := sessionEnd(10, s1, "prompt_input_exit")
+			end.PID = pidB
+			h.clock.Set(at(10))
+			h.tr.Apply(end)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			line := func(sec, pid int, pct float64, ms int64) domain.Status {
+				return fromProcess(withAPITime(weeklyFrom(sec, s1, pct), ms), pid)
+			}
+			shownWeekly(h, line(0, pidB, 97, 10_000))
+			shownWeekly(h, line(1, pidA, 97, 49_000))
+			shownWeekly(h, line(2, pidB, 97, 10_500))
+			shownWeekly(h, line(5, pidA, 97, 50_000))
+			gone(h)
+
+			shownWeekly(h, line(12, pidB, 0, 8_000))
+			shownWeekly(h, line(14, pidA, 97, 50_000))
+			if got := shownWeekly(h, line(20, pidB, 0, 8_400)); got != 0 {
+				t.Errorf("shown %v%% once the new process's API time grew from its own start, want 0%%: the gone process's count must not hold it back", got)
+			}
+			if got := shownWeekly(h, line(25, pidA, 97, 50_000)); got != 0 {
+				t.Errorf("shown %v%% after the idle process's older reading, want the 0%% still", got)
+			}
+		})
+	}
+}
+
+// A new process on a gone one's PID has had no response of its own when its
+// first line comes, and that line may carry what the session last heard, from
+// before the owner's reset, which kept its reset time. It is older news than a
+// reading whose response is known, however fresh the gone process's last
+// response was.
+func TestTracker_ANewProcessOnAGoneOnesPIDIsNotAsFreshAsTheGoneOne(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	line := func(sec, pid int, pct float64, ms int64) domain.Status {
+		return fromProcess(withAPITime(weeklyFrom(sec, s1, pct), ms), pid)
+	}
+	shownWeekly(h, line(0, pidA, 20, 49_000))
+	shownWeekly(h, line(1, pidB, 20, 10_000))
+	shownWeekly(h, line(2, pidA, 20, 50_000))
+	shownWeekly(h, line(5, pidB, 20, 10_500))
+	start := hook(10, s1, "SessionStart")
+	start.Source, start.PID = "resume", pidB
+	h.clock.Set(at(10))
+	h.tr.Apply(start)
+
+	if got := shownWeekly(h, line(12, pidB, 97, 8_000)); got != 20 {
+		t.Errorf("shown %v%% from the new process's first line, want the 20%% held: it is not as fresh as the gone process's last response", got)
+	}
+}
+
+// Claude Code also fires SessionStart in a process that compacts its session,
+// and a subagent's hooks may carry one: neither is a new process, and the
+// process goes on with its count. Nor does a start without a PID say which
+// process began, so lines without one go on being judged together. Either
+// way, the process's next response shows at once.
+func TestTracker_AStartOfNoNewProcessForgetsNothing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pid           int
+		source, agent string
+	}{
+		"the process compacts its session":   {pid: pidA, source: "compact"},
+		"a subagent of the process starts":   {pid: pidA, source: "startup", agent: "agent-1"},
+		"a start and lines that name no PID": {pid: 0, source: "resume"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			line := func(sec int, pct float64, ms int64) domain.Status {
+				return fromProcess(withAPITime(weeklyFrom(sec, s1, pct), ms), tc.pid)
+			}
+			shownWeekly(h, line(0, 95, 1000))
+			shownWeekly(h, line(1, 95, 1200))
+			start := hook(5, s1, "SessionStart")
+			start.PID, start.Source, start.AgentID = tc.pid, tc.source, tc.agent
+			h.clock.Set(at(5))
+			h.tr.Apply(start)
+
+			if got := shownWeekly(h, line(10, 0, 1500)); got != 0 {
+				t.Errorf("shown %v%% after the process's next response, want 0%%: the start must not forget its count", got)
+			}
+		})
+	}
+}
+
 // A session is resumed on account B while its first process stays open and
 // idle on account A. The resumed process's API time never passes the old
 // one's, so its calls wait unplaced. When the resumed process ends, the old
