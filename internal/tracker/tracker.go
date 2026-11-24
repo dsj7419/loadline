@@ -540,12 +540,12 @@ func (t *Tracker) observeLimits(dir domain.ConfigDir, l domain.Limits, freshAs t
 // not supplied one.
 func (t *Tracker) attach(s *sessionEntry, r domain.APIRequest) {
 	// A call stamped before the clock was set back would date its session
-	// ahead of every response after the step, so it is dated at the step, as a
-	// poll is. That still makes it newer than the responses held from before
-	// the step, which is accepted: its session's next reading is taken once,
-	// until another session's next response, and a call made at the limit in
-	// between may go uncounted on credits.
-	s.responses.call(notAhead(r.At, t.newest))
+	// ahead of every response after the step, so it is taken to end at the
+	// step, as a poll is dated there. That still makes it newer than the
+	// responses held from before the step, which is accepted: its session's
+	// next reading is taken once, until another session's next response, and
+	// a call made at the limit in between may go uncounted on credits.
+	s.responses.call(notAhead(r.At, t.newest), r.DurationMS)
 	dir := s.session.Dir
 	entry := t.account(dir)
 	t.usage.add(dir, r.Session, r.Model, r.At, usageOf(r))

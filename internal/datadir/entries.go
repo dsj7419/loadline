@@ -16,11 +16,12 @@ import (
 // ownNames are the entries Loadline makes in the data directory: the token,
 // the installed binary's folder, the spool, the server's log, the history
 // and the files SQLite keeps beside it, the stamps the server and the status
-// line leave, and, under LOADLINE_HOME, the config file.
+// line leave, under LOADLINE_HOME the config file, and the dashboard's
+// browser profile.
 var ownNames = []string{
 	"token", "bin", "spool", "loadline.log",
 	"loadline.db", "loadline.db-wal", "loadline.db-shm", "loadline.db-journal",
-	"ensure.stamp", "opened.stamp", "config.json",
+	"ensure.stamp", "opened.stamp", "config.json", browserProfile,
 }
 
 const (
@@ -183,6 +184,9 @@ type tree struct {
 	// locked is the first folder among them that the user may not list, or
 	// "": what it holds is not in paths.
 	locked string
+	// profile is the dashboard's browser profile when the walk found it, or
+	// "". It is among paths, and what it holds is not (browserProfile).
+	profile string
 }
 
 // linkProblem reports what the walk stopped at, or "" when it went through.
@@ -199,13 +203,15 @@ func (t tree) linkProblem() string {
 // ownPaths walks what Loadline keeps in dir: each entry it owns, the files
 // the system leaves there, which are made private with it, and everything
 // below the folders among them, except the regular files that are still
-// being written (Temporary). It follows no link: it stops at the
-// first. A dir that does not exist holds nothing, and an entry that goes
-// while it looks, as a spooled event does once drained, is left out.
+// being written (Temporary), and what the dashboard's browser profile holds,
+// which the browser keeps (browserProfile). It follows no link: it stops at
+// the first. A dir that does not exist holds nothing, and an entry that
+// goes while it looks, as a spooled event does once drained, is left out.
 //
 // fix, when it is set, may change each path as the walk comes to it and,
-// for a folder, once the walk is through it (repair). Without it, a folder
-// the user may not list is noted in locked, not an error.
+// for a folder, once the walk is through it (repair), but never the browser
+// profile. Without it, a folder the user may not list is noted in locked,
+// not an error.
 func ownPaths(dir string, fix *repair) (tree, error) {
 	var found tree
 	entries, err := os.ReadDir(dir)
@@ -219,7 +225,13 @@ func ownPaths(dir string, fix *repair) (tree, error) {
 		if !Owns(entry.Name()) && !systemFile(entry) {
 			continue
 		}
-		if err := found.walk(filepath.Join(dir, entry.Name()), entry.Type(), fix); err != nil || found.link != "" {
+		path := filepath.Join(dir, entry.Name())
+		if entry.Name() == browserProfile {
+			err = found.judgeProfile(path)
+		} else {
+			err = found.walk(path, entry.Type(), fix)
+		}
+		if err != nil || found.link != "" {
 			return found, err
 		}
 	}
@@ -290,6 +302,44 @@ func leftovers(path string, id fsperm.FileID) ([]string, error) {
 	return names, nil
 }
 
+// judge tells what path itself is, and adds it to the paths when it is no
+// link and has no name elsewhere (judgeNames, which tidies when tidy is
+// set). judged is false when the walk is to go no further with path: it is
+// gone, or it is what the walk stopped at.
+func (t *tree) judge(path string, tidy bool) (entry fsperm.Entry, judged bool, err error) {
+	// What the path itself is, read even when its own list keeps the user
+	// out, as one in a folder that was just made listable may.
+	err = settle(func() (err error) {
+		entry, err = judgeNames(path, tidy)
+		return err
+	})
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return entry, false, nil
+	case errors.Is(err, errMoreNames):
+		t.link, t.moreNames = path, true
+		return entry, false, nil
+	case err != nil:
+		return entry, false, err
+	case entry.Link:
+		t.link, t.linked = path, entry
+		return entry, false, nil
+	}
+	t.paths = append(t.paths, path)
+	return entry, true, nil
+}
+
+// judgeProfile adds path, the dashboard's browser profile, judged itself as
+// any of Loadline's folders is, and neither changes it nor goes below it
+// (browserProfile).
+func (t *tree) judgeProfile(path string) error {
+	_, judged, err := t.judge(path, false)
+	if judged {
+		t.profile = path
+	}
+	return err
+}
+
 // walk adds path, whose type its folder's listing gave as typ, and when it
 // is a folder, everything below it, stopping at the first link and passing
 // over the regular files that are still being written.
@@ -301,26 +351,10 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 		// file from a link, which no writer makes and which is refused.
 		return nil
 	}
-	// What the path itself is, read even when its own list keeps the user
-	// out, as one in a folder that was just made listable may.
-	var entry fsperm.Entry
-	err := settle(func() (err error) {
-		entry, err = judgeNames(path, fix != nil)
+	entry, judged, err := t.judge(path, fix != nil)
+	if err != nil || !judged {
 		return err
-	})
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case errors.Is(err, errMoreNames):
-		t.link, t.moreNames = path, true
-		return nil
-	case err != nil:
-		return err
-	case entry.Link:
-		t.link, t.linked = path, entry
-		return nil
 	}
-	t.paths = append(t.paths, path)
 	if fix != nil {
 		if err := fix.before(path, entry.Folder); err != nil {
 			return err

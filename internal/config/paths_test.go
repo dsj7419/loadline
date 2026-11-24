@@ -22,14 +22,43 @@ func TestDefaultPaths_LoadlineHomeHoldsEverything(t *testing.T) {
 	}
 
 	want := config.Paths{
-		DataDir:    home,
-		ConfigFile: filepath.Join(home, "config.json"),
-		TokenFile:  filepath.Join(home, "token"),
-		SpoolDir:   filepath.Join(home, "spool"),
-		DBFile:     filepath.Join(home, "loadline.db"),
+		DataDir:           home,
+		ConfigFile:        filepath.Join(home, "config.json"),
+		TokenFile:         filepath.Join(home, "token"),
+		SpoolDir:          filepath.Join(home, "spool"),
+		DBFile:            filepath.Join(home, "loadline.db"),
+		BrowserProfileDir: filepath.Join(home, "browser"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)
+	}
+}
+
+// The dashboard's browser profile is private only because the data
+// directory is, wherever that is.
+func TestPaths_KeepTheBrowserProfileInTheDataDirectory(t *testing.T) {
+	for name, home := range map[string]string{
+		"the platform's location": "",
+		"LOADLINE_HOME":           filepath.Join(t.TempDir(), "loadline-home"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("LOADLINE_HOME", home)
+			for _, variable := range []string{"LOCALAPPDATA", "APPDATA", "HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
+				t.Setenv(variable, t.TempDir())
+			}
+
+			paths, err := config.DefaultPaths()
+			if err != nil {
+				t.Fatalf("DefaultPaths: %v", err)
+			}
+
+			if want := filepath.Join(paths.DataDir, "browser"); paths.BrowserProfileDir != want {
+				t.Errorf("BrowserProfileDir = %q, want %q", paths.BrowserProfileDir, want)
+			}
+			if home != "" && paths.DataDir != home {
+				t.Errorf("DataDir = %q, want LOADLINE_HOME, %q", paths.DataDir, home)
+			}
+		})
 	}
 }
 
@@ -188,7 +217,7 @@ func TestDefaultPaths_TheDataDirectoryOwnsEveryFileTheLayoutPutsThere(t *testing
 		t.Fatalf("DefaultPaths: %v", err)
 	}
 
-	for _, path := range []string{paths.ConfigFile, paths.TokenFile, paths.SpoolDir, paths.DBFile} {
+	for _, path := range []string{paths.ConfigFile, paths.TokenFile, paths.SpoolDir, paths.DBFile, paths.BrowserProfileDir} {
 		if !datadir.Owns(filepath.Base(path)) {
 			t.Errorf("datadir.Owns(%q) = false, want true", filepath.Base(path))
 		}

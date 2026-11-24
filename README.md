@@ -152,7 +152,7 @@ The settings edits:
   that starts with Loadline but was edited by hand, one that ends in a backslash or holds a
   here-document, or one too long for a Windows command line once encoded.
 - **OpenTelemetry.** These keys go into `env`, so that Claude Code reports each API request's model,
-  tokens and cost to Loadline:
+  tokens, cost and duration to Loadline:
 
   | Key | Value |
   | --- | --- |
@@ -212,6 +212,11 @@ delete them to remove Loadline completely.
   outside the binary and runs under a strict content security policy.
 - **Stored history.** The server keeps accounts, sessions, state changes, rate-limit samples and
   per-minute token and cost totals in a SQLite database in the data directory, for `retentionDays`.
+- **The dashboard's browser profile.** The browser keeps the dashboard's profile, its sign-in
+  cookie and whatever else it stores, in `browser` in the data directory, apart from your own
+  browsing. Loadline makes that folder private like the rest of the data directory, never looks
+  inside it, and refuses a `browser` folder that it did not make private. `loadline uninstall`
+  leaves it in place, as it leaves the rest of the data directory.
 
 [SECURITY.md](SECURITY.md) describes the threat model, its limits, and how to report a
 vulnerability.
@@ -225,8 +230,8 @@ Loadline reads four feeds, all of them interfaces that Claude Code documents:
    lines changed, prompt cache and the account's rate limits. It is also the session's heartbeat.
 2. **Hooks.** Session start and end, prompts, stops and failures, permission requests, questions,
    subagents and compaction, as they happen.
-3. **OpenTelemetry.** Claude Code's `claude_code.api_request` log events, for the model, tokens
-   and cost of each API request.
+3. **OpenTelemetry.** Claude Code's `claude_code.api_request` log events, for the model, tokens,
+   cost and duration of each API request.
 4. **`claude agents --json`.** The server polls it for each config directory every 5 s while any
    session is live, every 30 s otherwise, and 500 ms after a hook. Its answer is the source of truth
    for each session's state; hooks change the state between polls. It also finds sessions started
