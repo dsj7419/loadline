@@ -322,11 +322,13 @@ or is narrow.
       message names it as "an account this computer cannot name right now" and offers nothing.
       Nothing is offered for a group or any other account that exists, nor on macOS and Linux.
     - Nothing is offered for a folder outside your profile either. Loadline places each folder
-      where it really is, every link followed and every short 8.3 name in full, and asks the file
-      system which folder is your profile rather than comparing names. So neither a link, a short
-      name, nor a folder beside the profile whose name differs from it only in letters that
-      Unicode folds together and Windows keeps apart, such as the micro sign and the Greek mu, can
-      make a folder outside the profile pass for one in it.
+      where it really is, every link followed and every short 8.3 name in full, and takes it for
+      your profile, or a folder in it, only when the path Windows resolves it to is your profile's,
+      letter for letter, and the folder there has your profile's file identity. So neither a link,
+      a short name, a folder beside the profile whose name differs from it only in letters that
+      Unicode folds together and Windows keeps apart, such as the micro sign and the Greek mu, nor
+      the profile's copy on a cloned disk left attached can make a folder outside the profile pass
+      for one in it.
   - *Mitigation:* use the default on a standard profile. Otherwise, if the folder or file is yours,
     run the command the message offers, or take ownership of the folder or file it names yourself
     (for example `takeown /f <folder>`), and run `loadline install`.
