@@ -20,6 +20,15 @@ func linkFolder(t *testing.T, link, target string) {
 	}
 }
 
+// lookPrivate gives path, a file, mode 0700, which fsperm.DirPrivate reads
+// alone.
+func lookPrivate(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // described describes each path in dir, a link not followed: its mode, and
 // for a link, where it leads.
 func described(t *testing.T, dir string) map[string]string {

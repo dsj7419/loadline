@@ -48,10 +48,16 @@ func openFolder(t *testing.T) string {
 }
 
 // refusedAsNotPrivate checks that each step that takes the data directory,
-// or the profile, refuses profile, in home below top, in the same words.
+// or the profile, refuses profile, in home below top, as not private.
 func refusedAsNotPrivate(t *testing.T, home, top, profile string) {
 	t.Helper()
-	want := profile + notPrivateProfile
+	profileRefusedWith(t, home, top, profile, profile+notPrivateProfile)
+}
+
+// profileRefusedWith checks that each step that takes the data directory,
+// or the profile, refuses profile, in home below top, in the words want.
+func profileRefusedWith(t *testing.T, home, top, profile, want string) {
+	t.Helper()
 	for step, err := range map[string]error{
 		"Make":                  datadir.Make(home),
 		"Verify":                datadir.Verify(home, top),
@@ -138,7 +144,10 @@ func TestPrepareBrowserProfile_RefusesALink(t *testing.T) {
 }
 
 // The profile is one of Loadline's folders, judged itself as each of them
-// is: no link, and the user's own.
+// is: no link, and the user's own. Its access list says nothing of its
+// owner, who may always change that list, so one that belongs to someone
+// else is refused even when its list is exactly what Loadline gives it, by
+// the browser's launch too.
 func TestMake_JudgesTheBrowserProfileItself(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -179,8 +188,28 @@ func TestMake_JudgesTheBrowserProfileItself(t *testing.T) {
 			if got, checkErr := datadir.Check(home, top); checkErr != nil || got != err.Error() {
 				t.Errorf("Check = %q, %v; want what Make refused with: %q", got, checkErr, err.Error())
 			}
+			if prepareErr := datadir.PrepareBrowserProfile(profile); prepareErr == nil || prepareErr.Error() != err.Error() {
+				t.Errorf("PrepareBrowserProfile = %v; want what Make refused with: %q", prepareErr, err.Error())
+			}
 		})
 	}
+}
+
+// A file by the profile's name is no profile, whatever its permissions say:
+// the browser cannot keep anything in it.
+func TestMake_RefusesABrowserProfileThatIsNotAFolder(t *testing.T) {
+	home, top := securedHome(t)
+	profile := filepath.Join(home, "browser")
+	if err := os.WriteFile(profile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookPrivate(t, profile)
+	if private, err := fsperm.DirPrivate(profile); err != nil || !private {
+		t.Fatalf("%s does not look private (%v), so the test proves nothing", profile, err)
+	}
+
+	profileRefusedWith(t, home, top, profile,
+		profile+" is not a folder, so the dashboard's browser profile cannot be kept there: remove it, and Loadline makes the profile in its place")
 }
 
 // The browser writes in the profile Loadline made private, as the user, and

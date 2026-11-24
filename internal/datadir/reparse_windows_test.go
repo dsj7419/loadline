@@ -198,6 +198,9 @@ func TestEveryLinkCheck_RefusesEachReparseKindButDeduplicated(t *testing.T) {
 		{name: "the walk of a file", at: "token", check: func(dir, _, _ string) error { return Make(dir) }},
 		{name: "the walk of a folder", at: "spool", folder: true, check: func(dir, _, _ string) error { return Make(dir) }},
 		{name: "Check of a file", at: "token", check: func(dir, top, _ string) error { return problemOf(dir, top) }},
+		{name: "the walk of the browser profile", at: "browser", folder: true, check: func(dir, _, _ string) error { return Make(dir) }},
+		{name: "Check of the browser profile", at: "browser", folder: true, check: func(dir, top, _ string) error { return problemOf(dir, top) }},
+		{name: "PrepareBrowserProfile", at: "browser", folder: true, check: func(_, _, path string) error { return PrepareBrowserProfile(path) }},
 	}
 	for _, kind := range kinds {
 		for _, way := range ways {

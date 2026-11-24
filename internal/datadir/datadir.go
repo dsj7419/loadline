@@ -45,18 +45,18 @@ func Secure(dir, top string) error {
 // in a folder that a cloud service keeps in sync, which would copy the token
 // to the cloud, a dir that is a link, one that holds anything that is not
 // Loadline's, which making the dir private would take other users' access
-// to, a link among Loadline's own files, and a browser profile that is not
-// private as Loadline makes it (PrepareBrowserProfile). On Windows a link is
-// any reparse point but a deduplicated file, which is the file it was. It
-// then creates dir, and each missing folder above it, private to the user,
-// or makes the existing dir private: it judges each of Loadline's own files
-// and folders, refusing a link, a file with another name and one that
-// belongs to someone else, and takes off each that it found none of that in
-// whatever its access list holds of its own, which making the dir private
-// leaves (fsperm.EntryPrivate), even when it goes on to refuse another. Only
-// when it refuses none does it have the dir pass its list down. The browser
-// profile it judges by itself alone, and changes nothing there
-// (browserProfile).
+// to, a link among Loadline's own files, and a browser profile that is no
+// folder, or not private as Loadline makes it (PrepareBrowserProfile). On
+// Windows a link is any reparse point but a deduplicated file, which is the
+// file it was. It then creates dir, and each missing folder above it,
+// private to the user, or makes the existing dir private: it judges each of
+// Loadline's own files and folders, refusing a link, a file with another
+// name and one that belongs to someone else, and takes off each that it
+// found none of that in whatever its access list holds of its own, which
+// making the dir private leaves (fsperm.EntryPrivate), even when it goes on
+// to refuse another. Only when it refuses none does it have the dir pass
+// its list down. The browser profile it judges by itself alone, and changes
+// nothing there (browserProfile).
 //
 // Several Loadline processes may run it at once, and write files in dir
 // meanwhile (Temporary), which it leaves alone. It changes nothing that is
@@ -307,7 +307,18 @@ func contentProblem(dir string) (string, error) {
 	if found.profile == "" {
 		return "", nil
 	}
-	return profileProblem(found.profile)
+	// The user removes a refused profile, as the refusal says, and may do so
+	// while a hook secures the data directory. One that is being deleted is
+	// waited for (settle), and once gone, has no problem.
+	var problem string
+	err = settle(func() (err error) {
+		problem, err = profileProblem(found.profile)
+		return err
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return problem, err
 }
 
 // cloudProblem reports dir as in a folder that a cloud service keeps in

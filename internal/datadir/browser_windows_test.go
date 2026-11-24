@@ -17,11 +17,31 @@ import (
 // (lpacChromeNetworkSandbox), whether its sandbox is on or not.
 const chromiumNetworkSandbox = "S-1-15-3-1024-1528657515-1944437972-2795272136-1227674495-293963776-353393192-4060142787-1908764039"
 
+// networkSandbox returns chromiumNetworkSandbox as a SID.
+func networkSandbox(t *testing.T) *windows.SID {
+	t.Helper()
+	sid, err := windows.StringToSid(chromiumNetworkSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sid
+}
+
 // linkFolder makes link a junction to target, as any user may in a folder
 // they can create folders in.
 func linkFolder(t *testing.T, link, target string) {
 	t.Helper()
 	junction(t, link, target)
+}
+
+// lookPrivate gives path, a file, the protected list Loadline gives its
+// folders, which fsperm.DirPrivate reads alone. It is stored as is, as
+// SetFileSecurity or a backup tool stores it: set the usual way, a file's
+// entries lose the inheritance flags that the folders' list holds.
+func lookPrivate(t *testing.T, path string) {
+	t.Helper()
+	fspermtest.SetAccessListAsIs(t, path,
+		"D:P(A;OICI;FA;;;"+fspermtest.UserSID(t)+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 }
 
 // sameLists reports each path whose access list differs between before and
@@ -62,11 +82,7 @@ func plantWhatABrowserLeaves(t *testing.T, profile string) (unchanged func(*test
 		"D:AI(A;;0x1301bf;;;"+chromiumNetworkSandbox+")(A;OICIIO;SDGXGWGR;;;"+chromiumNetworkSandbox+")")
 	cookies := filepath.Join(network, "Cookies")
 	writeFile(t, cookies)
-	sandbox, err := windows.StringToSid(chromiumNetworkSandbox)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list := fspermtest.AccessList(t, cookies); !list.Names(sandbox) {
+	if list := fspermtest.AccessList(t, cookies); !list.Names(networkSandbox(t)) {
 		t.Fatalf("%s inherits no access for the network service, so the test proves nothing: %s", cookies, list)
 	}
 	storage := filepath.Join(profile, "Default", "LocalStorage")
@@ -130,6 +146,9 @@ func TestSecure_PassesNothingDownIntoTheBrowserProfile(t *testing.T) {
 	fspermtest.SetAccessListAsIs(t, state, "D:AI(A;ID;0x1301bf;;;"+chromiumNetworkSandbox+")(A;ID;FA;;;"+
 		fspermtest.UserSID(t)+")(A;ID;FA;;;SY)(A;ID;FA;;;BA)")
 	before := fspermtest.AccessList(t, state)
+	if !before.Names(networkSandbox(t)) {
+		t.Fatalf("%s has %s, with no entry for the network service, so the test proves nothing", state, before)
+	}
 	// Another Loadline process's file, which only the data directory's list,
 	// passed down, makes private.
 	writing := filepath.Join(home, ".token-1234")

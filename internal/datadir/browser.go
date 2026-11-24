@@ -3,6 +3,7 @@ package datadir
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
@@ -26,36 +27,82 @@ const browserProfile = "browser"
 // PrepareBrowserProfile makes dir, the dashboard's browser profile
 // (config.Paths.BrowserProfileDir), ready for the browser to launch in. It
 // creates dir private when it is missing, and refuses a dir that is a link,
-// or one that is not private, which Loadline did not make so.
+// one that belongs to someone else, one that is no folder, and one that is
+// not private, which Loadline did not make so, in the words Make refuses
+// them with. Making dir makes the data directory too when that is missing,
+// so it first refuses a data directory that a cloud service keeps in sync,
+// as Make does.
 func PrepareBrowserProfile(dir string) error {
 	dir = filepath.Clean(dir)
+	if problem := cloudProblem(filepath.Dir(dir)); problem != "" {
+		return errors.New(problem)
+	}
 	if err := CheckLink(dir); err != nil {
+		return err
+	}
+	if err := problemError(ownerProblem(dir)); err != nil {
+		return err
+	}
+	// MkdirAll fails on a file in words that say nothing of what to do.
+	if err := problemError(notFolderProblem(dir)); err != nil {
 		return err
 	}
 	if err := fsperm.MkdirAll(dir); err != nil {
 		return fmt.Errorf("create the dashboard's browser profile: %w", err)
 	}
-	problem, err := profileProblem(dir)
-	if err != nil {
-		return err
-	}
-	if problem != "" {
-		return errors.New(problem)
-	}
-	return nil
+	// A dir that is gone by now is an error, never a profile to launch the
+	// browser into: the browser would make it again, without Loadline's list.
+	return problemError(notPrivateProblem(dir))
 }
 
-// profileProblem reports dir, the browser profile, as one Loadline did not
-// make when it is not private as Loadline makes it (fsperm.DirPrivate):
+// profileProblem reports dir, the browser profile, as no folder
+// (notFolderProblem) or as one Loadline did not make (notPrivateProblem),
+// or returns "" when it is neither.
+func profileProblem(dir string) (string, error) {
+	if problem, err := notFolderProblem(dir); err != nil || problem != "" {
+		return problem, err
+	}
+	return notPrivateProblem(dir)
+}
+
+// notFolderProblem reports dir, the browser profile, as no folder, which the
+// browser cannot keep anything in, whatever its permissions say, or returns
+// "" when it is one or does not exist.
+func notFolderProblem(dir string) (string, error) {
+	entry, err := inspect(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil || entry.Folder:
+		return "", err
+	}
+	return dir + " is not a folder, so the dashboard's browser profile cannot be kept there: " +
+		"remove it, and Loadline makes the profile in its place", nil
+}
+
+// notPrivateProblem reports dir, the browser profile, as one Loadline did
+// not make when it is not private as Loadline makes it (fsperm.DirPrivate):
 // protected, on Windows, and admitting only the user, SYSTEM and
 // Administrators. It returns "" when it is. Such a profile is never
 // repaired: the files it holds keep whatever they inherited before, so it
 // is removed, and Loadline makes a new one.
-func profileProblem(dir string) (string, error) {
+func notPrivateProblem(dir string) (string, error) {
 	private, err := fsperm.DirPrivate(dir)
 	if err != nil || private {
 		return "", err
 	}
 	return dir + " is not private, so the dashboard's browser profile there cannot be trusted: " +
 		"remove it, and Loadline makes it again", nil
+}
+
+// problemError returns err when there is one, or else problem as an error,
+// or nil when problem is "".
+func problemError(problem string, err error) error {
+	switch {
+	case err != nil:
+		return err
+	case problem != "":
+		return errors.New(problem)
+	}
+	return nil
 }
