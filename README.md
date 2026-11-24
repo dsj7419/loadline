@@ -33,8 +33,11 @@ Loadline needs Claude Code 2.1.300 or later, on Windows, macOS or Linux.
    It lists every change, shows the diff of your settings file with the ingest token masked, and
    asks before writing anything. `--dry-run` shows the changes and writes nothing; `--yes` applies
    them without asking. The installer copies the binary into the Loadline data directory, so you
-   can delete the downloaded copy afterwards. An upgrade on Windows while Loadline runs leaves the
-   old binary as `bin\loadline.exe.old`; install removes it once nothing runs it.
+   can delete the downloaded copy afterwards. Installing over a running server hands it over to
+   the new binary: install asks the server to stop, waits until it has, and starts the new one. A
+   server from 0.1.0 cannot be asked, so install prints how to end it once. Reload an open
+   dashboard afterwards. An upgrade on Windows while Loadline runs leaves the old binary as
+   `bin\loadline.exe.old`; install removes it once nothing runs it.
 
 3. Start a new Claude Code session. Its first hook starts the Loadline server, which opens the
    dashboard. Sessions that were already running show up fully once you restart them.
@@ -53,6 +56,7 @@ With Go 1.26 or later you can also build it yourself:
 | `loadline uninstall [--config-dir DIR]... [--dry-run] [--yes]` | Takes Loadline's entries out again and restores your status line. |
 | `loadline doctor [--config-dir DIR]...` | Checks the setup, the server and the feeds that reach it. Changes nothing. |
 | `loadline open` | Opens the dashboard, starting the server first if none is running. |
+| `loadline stop [--port N]` | Asks the running server to stop, and waits until its process has exited. Exits 0 once it has stopped or when none is running, 1 when it could not stop it, saying what to do, and 2 for a usage error. It does not keep the server down: a live session's status line starts it again within 30 seconds. |
 | `loadline status` | Prints the accounts and the sessions that have not ended, as a table. |
 | `loadline serve [--port N] [--no-open] [--demo]` | Runs the server in the foreground, logging to `loadline.log` in the data directory. The hooks start it in the background for you. `--no-open` keeps it from opening the dashboard; `--demo` serves made-up data and takes no events. |
 | `loadline hook` | Run by Claude Code's hooks. Forwards the hook event on stdin and prints nothing. |
@@ -173,8 +177,8 @@ Running `loadline install` again brings everything up to date and changes nothin
 Loadline hook handler, restores your original status-line command (or removes the status line
 Loadline added), and removes the OpenTelemetry keys when they are Loadline's. Like install, it
 shows the diff, asks first and keeps a backup. It leaves the data directory and the config file in
-place: once the server has stopped, which it does `idleExitMinutes` after the last session ends,
-delete them to remove Loadline completely.
+place: once the server has stopped, which `loadline stop` does at once and the server does itself
+`idleExitMinutes` after the last session ends, delete them to remove Loadline completely.
 
 ## Privacy and security
 
@@ -258,7 +262,8 @@ polls to find the sessions that ended meanwhile. Until the restore is done it re
 and the hooks spool those too.
 
 The data directory holds the installed binary, the token, the history (`loadline.db`), the server's
-log (`loadline.log`, rotated at 5 MB) and the spool:
+log (`loadline.log`, rotated at 5 MB), the spool, and `server.lock`, which a server holds locked
+while it has the history open, so that one starting while another stops waits for it:
 
 | System | Data directory |
 | --- | --- |

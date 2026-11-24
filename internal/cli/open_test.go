@@ -125,8 +125,9 @@ func TestOpen_FailsWhenTheServerDoesNotAnswerWithin3s(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("open went on waiting after its 3 s")
 	}
-	if got.code != 1 || !strings.Contains(got.stderr, fmt.Sprintf("port %d", f.port)) || !strings.Contains(got.stderr, "3s") {
-		t.Errorf("open = %d, stderr %q; want 1 and the port and wait named", got.code, got.stderr)
+	if got.code != 1 || !strings.Contains(got.stderr, fmt.Sprintf("port %d", f.port)) || !strings.Contains(got.stderr, "3s") ||
+		strings.Count(got.stderr, "run loadline serve to see why") != 1 {
+		t.Errorf("open = %d, stderr %q; want 1, the port and wait named, and what to run", got.code, got.stderr)
 	}
 	if n := f.opens.count(); n != 0 {
 		t.Errorf("open opened %d browsers without a server, want none", n)

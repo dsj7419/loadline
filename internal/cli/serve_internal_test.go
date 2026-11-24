@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,5 +184,32 @@ func TestClaudeRunner_DefaultDirComesFromTheHomeDirAlone(t *testing.T) {
 	}
 	if want := filepath.Join(home, "bin", "claude"); runner.Path != want {
 		t.Errorf("Path = %q, want the configured %q", runner.Path, want)
+	}
+}
+
+// A stop request repeated while the server stops is answered as the first
+// was, and asks nothing more of it.
+func TestInstance_AnswersAStopRequestRepeatedWhileItStops(t *testing.T) {
+	const port = 40001 // named in the Host header only; nothing listens
+	token := []byte(strings.Repeat("ab", 32))
+	dir := t.TempDir()
+	o := ServeOptions{Paths: config.Paths{DataDir: dir, SpoolDir: filepath.Join(dir, "spool")}, Demo: true, NoOpen: true}
+	s := newInstance(t.Context(), o, config.Defaults(), port, token, slog.New(slog.DiscardHandler))
+	t.Cleanup(s.tracker.Close)
+
+	for i := range 2 {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/stop", http.NoBody)
+		req.Host = fmt.Sprintf("127.0.0.1:%d", port)
+		req.Header.Set("X-Loadline-Token", string(token))
+		rec := httptest.NewRecorder()
+		s.srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("stop request %d = %d %q, want 200", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	select {
+	case <-s.stopAsked:
+	default:
+		t.Error("the server was not asked to stop")
 	}
 }

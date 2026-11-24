@@ -28,6 +28,7 @@ func TestDefaultPaths_LoadlineHomeHoldsEverything(t *testing.T) {
 		SpoolDir:          filepath.Join(home, "spool"),
 		DBFile:            filepath.Join(home, "loadline.db"),
 		BrowserProfileDir: filepath.Join(home, "browser"),
+		ServerLock:        filepath.Join(home, "server.lock"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)

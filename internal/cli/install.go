@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/datadir"
 	"github.com/dsj7419/loadline/internal/install"
+	"github.com/dsj7419/loadline/internal/launch"
 )
 
 const (
@@ -26,8 +28,9 @@ const (
 // runInstall wires Loadline into each settings file and puts the running
 // binary where the settings point. It shows the changes first and asks
 // unless --yes; --dry-run writes nothing at all: not the settings, not the
-// binary, not the token.
-func runInstall(args []string, stdio IO) int {
+// binary, not the token. Once it has replaced the binary, it hands a server
+// that answers on the configured port over to the new one (handOver).
+func runInstall(ctx context.Context, args []string, stdio IO) int {
 	flags := newFlagSet("install", stdio)
 	edit := addEditFlags(flags)
 	port := flags.Int("port", 0, "send telemetry to the dashboard on `port` (default from the Loadline config)")
@@ -116,8 +119,26 @@ func runInstall(args []string, stdio IO) int {
 	if err := writeEdits(out, edits); err != nil {
 		return fail(stdio, err)
 	}
-	removeAsideAndSay(out, stdio, paths.DataDir)
+	var stoppedOld bool
+	var handoverErr error
+	if install.HasEdits(binary) {
+		// The port the hooks start the server on. Without a home directory,
+		// the config's port and the defaults' are the same.
+		home, _ := os.UserHomeDir()
+		stoppedOld, handoverErr = handOver(ctx, out, handoverOptions{
+			port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
+			dataDir: paths.DataDir, spawn: spawnServer, elevated: isElevated(),
+		})
+	}
+	if stoppedOld {
+		removeAsideSettlingAndSay(out, stdio, paths.DataDir)
+	} else {
+		removeAsideAndSay(out, stdio, paths.DataDir)
+	}
 	out.printf("%s\n", restartNotice)
+	if handoverErr != nil {
+		return out.exit(stdio, fail(stdio, handoverErr))
+	}
 	return out.exit(stdio, exitOK)
 }
 
@@ -128,16 +149,29 @@ var (
 	removeAside   = install.RemoveAside
 )
 
+// spawnServer starts the server install hands over to, and isElevated says
+// whether install runs elevated. Tests replace them.
+var (
+	spawnServer = launch.SpawnDetached
+	isElevated  = processElevated
+)
+
 // removeAsideAndSay removes the binaries earlier upgrades moved aside in
 // dataDir that nothing runs any more, and says which went. One that still
 // runs goes on a later run, and needs no word. What fails is a warning: it
 // never fails the install.
 func removeAsideAndSay(out *printer, stdio IO, dataDir string) {
 	removed, err := removeAside(dataDir)
+	sayAsideRemoved(out, dataDir, removed)
+	warnAside(stdio, err)
+}
+
+// sayAsideRemoved says which binaries earlier upgrades moved aside in
+// dataDir went.
+func sayAsideRemoved(out *printer, dataDir string, removed []string) {
 	for _, path := range removed {
 		out.printf("Removed %s, which an earlier upgrade replaced.\n", dataDirName(dataDir, path))
 	}
-	warnAside(stdio, err)
 }
 
 // noteAside says, in a dry run, which binaries earlier upgrades moved aside

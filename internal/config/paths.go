@@ -36,6 +36,9 @@ type Paths struct {
 	// dashboard's sign-in cookie. It is in the data directory, so that it is
 	// as private as the rest of Loadline's state.
 	BrowserProfileDir string
+	// ServerLock is the file a server holds locked while the history is
+	// open, so that no other server opens it meanwhile.
+	ServerLock string
 }
 
 // DefaultPaths returns the paths for this platform and user. When
@@ -65,6 +68,7 @@ func layout(dataDir, configDir string) Paths {
 		SpoolDir:          filepath.Join(dataDir, "spool"),
 		DBFile:            filepath.Join(dataDir, "loadline.db"),
 		BrowserProfileDir: filepath.Join(dataDir, "browser"),
+		ServerLock:        filepath.Join(dataDir, "server.lock"),
 	}
 }
 

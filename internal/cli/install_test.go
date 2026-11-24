@@ -62,12 +62,15 @@ func runWithInput(t *testing.T, stdin string, args ...string) result {
 }
 
 // sandbox points Loadline's own files at a temporary directory and returns
-// it, with a Claude Code config dir holding settings ("" for none).
+// it, with a Claude Code config dir holding settings ("" for none). Its
+// config names a free port: install asks whether a server answers on the
+// configured port, and the machine's own Loadline may answer on the default.
 func sandbox(t *testing.T, settings string) (home, configDir string) {
 	t.Helper()
 
 	home = t.TempDir()
 	t.Setenv("LOADLINE_HOME", home)
+	writeConfigPort(t, home, freePort(t))
 	configDir = t.TempDir()
 	if settings != "" {
 		writeSettings(t, configDir, settings)
@@ -149,8 +152,8 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 	if names := entries(t, dir); !slices.Equal(names, []string{"settings.json"}) {
 		t.Errorf("config dir holds %q after a dry run, want only settings.json", names)
 	}
-	if names := entries(t, home); len(names) != 0 {
-		t.Errorf("a dry run wrote %q to the Loadline home, want nothing (no binary, no token)", names)
+	if names := entries(t, home); !slices.Equal(names, []string{"config.json"}) {
+		t.Errorf("a dry run wrote %q to the Loadline home, want nothing beside the config (no binary, no token)", names)
 	}
 }
 
@@ -232,8 +235,8 @@ func TestInstall_RejectsAMalformedToken(t *testing.T) {
 	if readSettings(t, dir) != ownerSettings {
 		t.Error("settings changed although the token is unusable")
 	}
-	if names := entries(t, home); !slices.Equal(names, []string{"token"}) {
-		t.Errorf("Loadline home holds %q, want only the untouched token file", names)
+	if names := entries(t, home); !slices.Equal(names, []string{"config.json", "token"}) {
+		t.Errorf("Loadline home holds %q, want only the config and the untouched token file", names)
 	}
 }
 
@@ -352,8 +355,8 @@ func TestInstall_AsksBeforeWriting(t *testing.T) {
 			if readSettings(t, dir) != ownerSettings {
 				t.Error("settings changed without a yes")
 			}
-			if names := entries(t, home); len(names) != 0 {
-				t.Errorf("Loadline home holds %q without a yes, want nothing", names)
+			if names := entries(t, home); !slices.Equal(names, []string{"config.json"}) {
+				t.Errorf("Loadline home holds %q without a yes, want nothing beside the config", names)
 			}
 		})
 	}
@@ -433,8 +436,8 @@ func TestInstall_RefusesInvalidJSON(t *testing.T) {
 	if readSettings(t, dir) != `{"model": ` {
 		t.Error("an invalid settings file was rewritten")
 	}
-	if names := entries(t, home); len(names) != 0 {
-		t.Errorf("Loadline home holds %q after a refusal, want nothing", names)
+	if names := entries(t, home); !slices.Equal(names, []string{"config.json"}) {
+		t.Errorf("Loadline home holds %q after a refusal, want nothing beside the config", names)
 	}
 }
 
@@ -464,8 +467,8 @@ func TestInstall_RefusesMissingConfigDir(t *testing.T) {
 	if got.code != 1 || !strings.Contains(got.stderr, missing) {
 		t.Errorf("code %d, stderr %q, want a failure naming %s", got.code, got.stderr, missing)
 	}
-	if names := entries(t, home); len(names) != 0 {
-		t.Errorf("Loadline home holds %q after a refusal, want nothing", names)
+	if names := entries(t, home); !slices.Equal(names, []string{"config.json"}) {
+		t.Errorf("Loadline home holds %q after a refusal, want nothing beside the config", names)
 	}
 }
 
@@ -622,8 +625,8 @@ func TestInstall_RefusesALoadlineHomeThatHoldsOtherThings(t *testing.T) {
 	if settings := readSettings(t, dir); settings != ownerSettings {
 		t.Errorf("install changed the settings although it refused:\n%s", settings)
 	}
-	if names := entries(t, home); !slices.Equal(names, []string{"notes.txt"}) {
-		t.Errorf("LOADLINE_HOME holds %q after the refusal, want only notes.txt", names)
+	if names := entries(t, home); !slices.Equal(names, []string{"config.json", "notes.txt"}) {
+		t.Errorf("LOADLINE_HOME holds %q after the refusal, want only the config and notes.txt", names)
 	}
 }
 

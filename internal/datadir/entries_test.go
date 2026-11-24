@@ -14,7 +14,7 @@ func TestOwns_KnowsLoadlinesEntriesOnly(t *testing.T) {
 	for _, name := range []string{
 		"token", ".token-123456", "bin", "spool", "loadline.log", "loadline.log.1", "loadline.log.12",
 		"loadline.db", "loadline.db-wal", "loadline.db-shm", "loadline.db-journal",
-		"ensure.stamp", "opened.stamp", "config.json",
+		"ensure.stamp", "opened.stamp", "config.json", "server.lock",
 	} {
 		if !datadir.Owns(name) {
 			t.Errorf("Owns(%q) = false, want true", name)

@@ -30,6 +30,7 @@ func TestServe_DemoRunsFromADataDirOthersCouldMoveAside(t *testing.T) {
 		TokenFile:  filepath.Join(data, "token"),
 		SpoolDir:   filepath.Join(data, "spool"),
 		DBFile:     filepath.Join(data, "loadline.db"),
+		ServerLock: filepath.Join(data, "server.lock"),
 	}
 	var stderr strings.Builder
 	// Bounded, so that a server that wrongly starts gives way to the check.
