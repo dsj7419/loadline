@@ -279,6 +279,29 @@ func inGitBash(root, windowsPath string) map[string]string {
 	}
 }
 
+// msys2WithGit are the files of an MSYS2 in C:\msys64 with git installed
+// through pacman: its git.exe in usr\bin, which has bash.exe in the folder
+// that the bin beside it names, and the MSYS runtime.
+var msys2WithGit = []string{`C:\msys64\usr\bin\git.exe`, `C:\msys64\usr\bin\bash.exe`, `C:\msys64\usr\bin\msys-2.0.dll`}
+
+// inMSYS2 is the environment a program started from an MSYS2 UCRT64 shell
+// that inherits the Windows PATH, windowsPath, sees.
+func inMSYS2(windowsPath string) map[string]string {
+	return map[string]string{
+		"MSYSTEM": "UCRT64",
+		"PATH":    `C:\msys64\ucrt64\bin;C:\msys64\usr\local\bin;C:\msys64\usr\bin;` + windowsPath,
+	}
+}
+
+// inMSYS2Default is the environment a program started from MSYS2's default
+// shell sees, whatever the Windows PATH holds: MSYS2's own folders and a
+// minimal Windows PATH of system folders.
+var inMSYS2Default = map[string]string{
+	"MSYSTEM": "MSYS",
+	"PATH": `C:\msys64\usr\local\bin;C:\msys64\usr\bin;C:\msys64\usr\bin;` +
+		`C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\`,
+}
+
 // onWindowsDisk reports whether one of files exists, matching names without
 // regard to case, as Windows does.
 func onWindowsDisk(files []string) func(string) bool {
@@ -302,13 +325,11 @@ func TestDetectShell_TheTerminalInstallRunsInDoesNotChangeTheShell(t *testing.T)
 	spelledOtherwise := inGitBash(userGit, userGitPath)
 	spelledOtherwise["PATH"] = `c:/users/example/appdata/local/programs/git/MINGW64/BIN/;` +
 		`C:/Users/Example/AppData/Local/Programs/Git/usr/local/bin/;C:\USERS\EXAMPLE\APPDATA\LOCAL\PROGRAMS\GIT\USR\BIN\\;` + userGitPath
-	msys2 := []string{`C:\msys64\usr\bin\bash.exe`, `C:\msys64\usr\bin\msys-2.0.dll`}
-	inMSYS2 := func(windowsPath string) map[string]string {
-		return map[string]string{
-			"MSYSTEM": "UCRT64",
-			"PATH":    `C:\msys64\ucrt64\bin;C:\msys64\usr\local\bin;C:\msys64\usr\bin;` + windowsPath,
-		}
+	onARM64 := map[string]string{
+		"MSYSTEM": "CLANGARM64",
+		"PATH":    userGit + `\clangarm64\bin;` + userGit + `\usr\local\bin;` + userGit + `\usr\bin;` + userGitPath,
 	}
+	msys2UsrBinPath := windowsPath + `;C:\msys64\usr\bin`
 	tests := []struct {
 		name  string
 		files []string
@@ -369,17 +390,31 @@ func TestDetectShell_TheTerminalInstallRunsInDoesNotChangeTheShell(t *testing.T)
 			want:        install.ShellBash,
 		},
 		{
+			name:        "Git Bash on ARM64, whose environment is CLANGARM64",
+			files:       append(gitForWindows(userGit), userGit+`\clangarm64\bin\git.exe`),
+			windowsPath: userGitPath,
+			msys:        onARM64,
+			want:        install.ShellBash,
+		},
+		{
 			// MSYS2's own git, in usr\bin, has bash.exe in the folder that
-			// the bin beside it names.
-			name:        "MSYS2 with its own git, without Git for Windows",
-			files:       append([]string{`C:\msys64\usr\bin\git.exe`}, msys2...),
-			windowsPath: windowsPath,
-			msys:        inMSYS2(windowsPath),
-			want:        install.ShellPowerShell,
+			// the bin beside it names, so Claude Code uses that bash.
+			name:        "MSYS2 alone, its git from pacman, its usr\\bin on the Windows PATH",
+			files:       msys2WithGit,
+			windowsPath: msys2UsrBinPath,
+			msys:        inMSYS2(msys2UsrBinPath),
+			want:        install.ShellBash,
+		},
+		{
+			name:        "the same, in MSYS2's default shell, which shows a minimal Windows PATH",
+			files:       msys2WithGit,
+			windowsPath: msys2UsrBinPath,
+			msys:        inMSYS2Default,
+			want:        install.ShellBash,
 		},
 		{
 			name:        "MSYS2 with its MinGW git, beside a Git for Windows installed for the user",
-			files:       append(append([]string{`C:\msys64\ucrt64\bin\git.exe`}, msys2...), gitForWindows(userGit)...),
+			files:       append([]string{`C:\msys64\ucrt64\bin\git.exe`, `C:\msys64\usr\bin\bash.exe`, `C:\msys64\usr\bin\msys-2.0.dll`}, gitForWindows(userGit)...),
 			windowsPath: userGitPath,
 			msys:        inMSYS2(userGitPath),
 			want:        install.ShellBash,
@@ -408,22 +443,77 @@ func TestDetectShell_TheTerminalInstallRunsInDoesNotChangeTheShell(t *testing.T)
 	}
 }
 
-// 0.1.0 wrote the Git Bash form of the status line, which a Claude Code
-// started outside Git Bash runs with Git Bash. An upgrade typed in Git Bash,
-// or run through Claude Code's own Bash tool, must leave it as it is, not
-// rewrite it into the PowerShell form that Git Bash refuses.
-func TestPlan_AnUpgradeTypedInGitBashKeepsTheWorkingStatusLine(t *testing.T) {
-	env := inGitBash(userGit, `C:\Windows\system32;C:\Windows;`+userGit+`\cmd`)
-	const exe = "C:/Users/example/AppData/Local/loadline/bin/loadline.exe"
-	working := `"` + exe + `" tap | ~/.claude/statusline.sh`
-	settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, working) + `}}`)
-	shell := install.DetectShellOn("windows", install.SettingsEnv(settings, func(name string) string { return env[name] }),
-		onWindowsDisk(gitForWindows(userGit)))
+// A machine whose only Git is MSYS2's, from pacman, and whose Windows PATH
+// does not hold MSYS2's folders: Claude Code started from PowerShell finds
+// no git there and uses PowerShell. Inside MSYS2's default shell the Windows
+// PATH is not visible, so this machine and the one whose Windows PATH holds
+// C:\msys64\usr\bin, where Claude Code uses MSYS2's bash, look the same from
+// there, and one of them must get the other's answer. Install keeps the
+// answer 0.1.0 gave: MSYS2's git, with bash beside it, counts.
+func TestDetectShell_InsideMSYS2ItsOwnGitCountsAsIn010(t *testing.T) {
+	const windowsPath = `C:\Windows\system32;C:\Windows`
+	exists := onWindowsDisk(msys2WithGit)
+	fromWindows := install.DetectShellOn("windows", func(name string) string {
+		if name == "PATH" {
+			return windowsPath
+		}
+		return ""
+	}, exists)
+	if fromWindows != install.ShellPowerShell {
+		t.Errorf("typed in PowerShell, install chose shell %d, want PowerShell (%d)", fromWindows, install.ShellPowerShell)
+	}
+	for name, env := range map[string]map[string]string{
+		"MSYS2's default shell":                         inMSYS2Default,
+		"a UCRT64 shell that inherits the Windows PATH": inMSYS2(windowsPath),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := install.DetectShellOn("windows", func(name string) string { return env[name] }, exists); got != install.ShellBash {
+				t.Errorf("install chose shell %d, want Git Bash (%d), as 0.1.0 did", got, install.ShellBash)
+			}
+		})
+	}
+}
 
-	out, _, _ := plan(t, settings, install.Options{Exe: exe, Port: 8289, Token: "token", Shell: shell})
+// A working status line in the Git Bash form, which install wrote before,
+// must survive an upgrade typed in an MSYS shell: Git Bash, or Claude Code's
+// own Bash tool, where 0.1.0 wrote it so too, and MSYS2's shell on a machine
+// whose only Git is MSYS2's, with its usr\bin on the Windows PATH. Rewritten
+// into the PowerShell form, it is a syntax error under the bash Claude Code
+// uses.
+func TestPlan_AnUpgradeTypedInAnMSYSShellKeepsTheWorkingStatusLine(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		env   map[string]string
+	}{
+		{
+			name:  "Git Bash, Git installed for the user",
+			files: gitForWindows(userGit),
+			env:   inGitBash(userGit, `C:\Windows\system32;C:\Windows;`+userGit+`\cmd`),
+		},
+		{
+			name:  "MSYS2's shell, MSYS2 the only Git, its usr\\bin on the Windows PATH",
+			files: msys2WithGit,
+			env: map[string]string{
+				"MSYSTEM": "UCRT64",
+				"PATH": `C:\msys64\ucrt64\bin;C:\msys64\usr\local\bin;C:\msys64\usr\bin;C:\msys64\usr\bin;` +
+					`C:\Windows\system32;C:\Windows;C:\msys64\usr\bin`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const exe = "C:/Users/example/AppData/Local/loadline/bin/loadline.exe"
+			working := `"` + exe + `" tap | ~/.claude/statusline.sh`
+			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, working) + `}}`)
+			shell := install.DetectShellOn("windows", install.SettingsEnv(settings, func(name string) string { return tc.env[name] }),
+				onWindowsDisk(tc.files))
 
-	if got := statusCommand(t, out); got != working {
-		t.Errorf("install made the status line %q, want it left as %q", got, working)
+			out, _, _ := plan(t, settings, install.Options{Exe: exe, Port: 8289, Token: "token", Shell: shell})
+
+			if got := statusCommand(t, out); got != working {
+				t.Errorf("install made the status line %q, want it left as %q", got, working)
+			}
+		})
 	}
 }
 

@@ -145,14 +145,17 @@ The settings edits:
   and `C:\Program Files (x86)\Git`, then the `bin` folder beside the folder that holds the first
   `git.exe` in a `PATH` folder given in full (`C:\Tools\Git\bin` for `C:\Tools\Git\cmd\git.exe`).
   Typed in Git Bash, or another MSYS shell, install and `loadline doctor` leave out the folders
-  that shell puts in front of `PATH` for itself, such as Git's own `mingw64\bin`, so they choose
-  what they choose in PowerShell or cmd: the shell of a Claude Code started from those. A Claude
-  Code started from Git Bash sees those folders too, and with Git in neither `Program Files`
-  folder it may use PowerShell. If you start Claude Code from Git Bash, set
-  `CLAUDE_CODE_GIT_BASH_PATH` to Git's `bin\bash.exe` in your settings' `env`, and Claude Code and
-  install then use Git Bash whichever terminal starts them. Claude Code's own lookup can still
-  differ in ways install cannot know: it searches each session's working directory first, and
-  through `PATHEXT` a `git.cmd` or `git.bat` earlier on `PATH` can win.
+  that shell puts in front of `PATH` for itself, such as Git's own `mingw64\bin`, whose `git.exe`
+  has no `bash.exe` beside it; one whose `git.exe` has, as MSYS2's `usr\bin` with git from pacman,
+  stays. With `PATH` as Git's installer sets it, they then choose what they choose in PowerShell
+  or cmd: the shell of a Claude Code started from those. Inside MSYS2's own shell its git counts as
+  it did in 0.1.0, even when the Windows `PATH` does not hold it. A Claude Code started from Git
+  Bash sees those folders too, and with Git in neither `Program Files` folder it may use
+  PowerShell. If you start Claude Code from Git Bash, set `CLAUDE_CODE_GIT_BASH_PATH` to Git's
+  `bin\bash.exe` in your settings' `env`, and Claude Code and install then use Git Bash whichever
+  terminal starts them. Claude Code's own lookup can still differ in ways install cannot know: it
+  searches each session's working directory first, and through `PATHEXT` a `git.cmd` or `git.bat`
+  earlier on `PATH` can win.
 
   bash reads the whole wrapped command before it runs any of it. A command of several lines that
   turns on a parse-time option for its own later lines, such as `shopt -s extglob` or

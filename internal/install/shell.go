@@ -116,10 +116,16 @@ func gitBashOnPath(getenv func(string) string, exists func(string) bool) bool {
 		}
 		volume, rest := splitWindowsVolume(entry)
 		if holdsGit(exists, volume, rest) {
-			return exists(joinWindows(volume, rest, "..", "bin", "bash.exe"))
+			return bashBesideGit(exists, volume, rest)
 		}
 	}
 	return false
+}
+
+// bashBesideGit reports whether bash.exe is in the bin folder beside the
+// folder rest on volume, where Git for Windows keeps it for a git.exe there.
+func bashBesideGit(exists func(string) bool, volume, rest string) bool {
+	return exists(joinWindows(volume, rest, "..", "bin", "bash.exe"))
 }
 
 // RelativeGitEntries returns the entries of the Windows PATH that getenv
@@ -157,6 +163,14 @@ func RelativeGitEntries(getenv func(string) string, exists func(string) bool, wo
 // PowerShell, cmd or the Start menu sees none of them. Without them, install
 // and doctor answer for that Claude Code from whichever terminal they run
 // in, and a status line written from Git Bash keeps working there.
+//
+// One of those folders whose git.exe has bash.exe beside it, as MSYS2's
+// usr\bin has with git from pacman, stays: that git leads to the
+// same bash from any terminal whose PATH holds the folder, and it is how
+// Claude Code finds a bash on a machine whose only Git is MSYS2's. MSYS2's
+// default shell does not show the Windows PATH, so it cannot tell such a
+// machine from one whose Windows PATH lacks the folder; keeping it gives
+// both the answer 0.1.0 gave.
 func searchedEntries(getenv func(string) string, exists func(string) bool) []string {
 	entries := pathEntries(getenv("PATH"))
 	own := msysFolders(getenv("MSYSTEM"), entries, exists)
@@ -168,7 +182,11 @@ func searchedEntries(getenv func(string) string, exists func(string) bool) []str
 			return false
 		}
 		folder := cleanWindows(entry)
-		return slices.ContainsFunc(own, func(o string) bool { return strings.EqualFold(folder, o) })
+		if !slices.ContainsFunc(own, func(o string) bool { return strings.EqualFold(folder, o) }) {
+			return false
+		}
+		volume, rest := splitWindowsVolume(entry)
+		return !holdsGit(exists, volume, rest) || !bashBesideGit(exists, volume, rest)
 	})
 }
 

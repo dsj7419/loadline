@@ -220,22 +220,26 @@ What it defends against:
   `usr\bin`, `usr\local\bin` and its environment's `bin`, such as `mingw64\bin`, under the shell's
   root, the folder above the first `usr\bin` on `PATH` that holds `msys-2.0.dll`. Git's
   `mingw64\bin` holds a `git.exe` with no `bash.exe` beside it, and a Claude Code started from
-  PowerShell, cmd or the Start menu never sees it, so install chooses the same shell whichever
-  terminal it is typed in. A Claude Code started from Git Bash does see those folders, and with
-  Git in neither `Program Files` folder it may then use PowerShell for a status line install
-  quoted for Git Bash; setting `CLAUDE_CODE_GIT_BASH_PATH` in the settings file's `env` makes
-  Claude Code and install use Git Bash whichever terminal starts them. Claude Code resolves a
-  `PATH` entry that is not absolute, such as `cmd` or `\cmd`, against each session's own working
-  directory, which install cannot know, so install skips such entries, and `loadline doctor` warns
-  when one of them leads to a `git` from the folder it runs in ahead of the first absolute folder
-  that holds `git.exe`. Claude Code's own lookup can still differ in other ways install cannot
-  know: it searches each session's working directory first, and through `PATHEXT` a `git.cmd` or
-  `git.bat` earlier on `PATH` can win. In such a setup the status-line command can run under a
-  shell it was not quoted for; setting `CLAUDE_CODE_GIT_BASH_PATH` settles the shell for every
-  session. Which PowerShell Claude Code uses without Git Bash is not documented; when Loadline runs
-  your status line for PowerShell, it uses PowerShell 7 (`pwsh`) if it is on `PATH`, and Windows
-  PowerShell otherwise. `loadline doctor` warns when the status line uses the PowerShell form, but
-  cannot tell which shell Claude Code will actually use.
+  PowerShell, cmd or the Start menu never sees it, so with `PATH` as Git's installer sets it,
+  install chooses the same shell whichever terminal it is typed in. One of those folders whose
+  `git.exe` has `bash.exe` beside it stays, as MSYS2's `usr\bin` with git from pacman does: on a
+  machine whose only Git is MSYS2's, with that folder on the Windows `PATH`, it is the bash Claude
+  Code uses. MSYS2's own shell does not show the Windows `PATH`, so there that git counts even when
+  the Windows `PATH` lacks it, as in 0.1.0. A Claude Code started from Git Bash does see those
+  folders, and with Git in neither `Program Files` folder it may then use PowerShell for a status
+  line install quoted for Git Bash; setting `CLAUDE_CODE_GIT_BASH_PATH` in the settings file's
+  `env` makes Claude Code and install use Git Bash whichever terminal starts them. Claude Code
+  resolves a `PATH` entry that is not absolute, such as `cmd` or `\cmd`, against each session's own
+  working directory, which install cannot know, so install skips such entries, and
+  `loadline doctor` warns when one of them leads to a `git` from the folder it runs in ahead of the
+  first absolute folder that holds `git.exe`. Claude Code's own lookup can still differ in other
+  ways install cannot know: it searches each session's working directory first, and through
+  `PATHEXT` a `git.cmd` or `git.bat` earlier on `PATH` can win. In such a setup the status-line
+  command can run under a shell it was not quoted for; setting `CLAUDE_CODE_GIT_BASH_PATH` settles
+  the shell for every session. Which PowerShell Claude Code uses without Git Bash is not
+  documented; when Loadline runs your status line for PowerShell, it uses PowerShell 7 (`pwsh`) if
+  it is on `PATH`, and Windows PowerShell otherwise. `loadline doctor` warns when the status line
+  uses the PowerShell form, but cannot tell which shell Claude Code will actually use.
 
 ## Known limitations
 
