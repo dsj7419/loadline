@@ -435,8 +435,9 @@ It exits 1 when any check fails. Common fixes:
 
 Releases are tracked as milestones:
 
-- [**0.1.1**](https://github.com/dsj7419/loadline/milestone/1): polish and hardening. Its changes
-  are listed under Unreleased in the [CHANGELOG](CHANGELOG.md).
+- **0.1.1** is released: see its
+  [release page](https://github.com/dsj7419/loadline/releases/tag/v0.1.1) and the
+  [CHANGELOG](CHANGELOG.md).
 - [**0.2.0**](https://github.com/dsj7419/loadline/milestone/2): accounts by purpose. Each account gets
   a purpose, and project folders are assigned to accounts in the config. `loadline start`, or an
   opt-in `claude` wrapper, launches the account a folder is assigned to; `loadline accounts` adds,
