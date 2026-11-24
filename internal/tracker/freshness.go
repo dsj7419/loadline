@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"maps"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/domain"
@@ -27,9 +28,11 @@ import (
 // process last left it, if anything, so a line's API time is judged against
 // the most its own process has reported, and a process's first line dates no
 // response, whatever it reports. A line names its process by the PID Claude
-// Code runs the status line with. Lines that name none, from a Claude Code
-// that sets no PID, are taken for one process: their API time counts as grown
-// only past the most any of them has reported.
+// Code runs the status line with, and a later process may take the PID of one
+// that has gone, so a process's start forgets what is known of the PID (see
+// started). Lines that name none, from a Claude Code that sets no PID, are
+// taken for one process: their API time counts as grown only past the most
+// any of them has reported.
 //
 // A call does not say which process, or account, made it, so it waits for a
 // line that shows the response it brought: the next on which a process's API
@@ -44,8 +47,8 @@ type responseClock struct {
 	// was made, zero when there is none.
 	unplaced time.Time
 	// mostAPIDurationMS is, for each process by its PID, the most API time a
-	// line of it has reported since the session last ended. A process with no
-	// line seen since is absent.
+	// line of it has reported since the session last ended or the process
+	// started. A process with no line seen since is absent.
 	mostAPIDurationMS map[int]int64
 }
 
@@ -67,19 +70,19 @@ func (c *responseClock) call(at time.Time) {
 // account in dir and observed at at, that reports the process's API time as
 // apiDurationMS.
 func (c *responseClock) line(dir domain.ConfigDir, pid int, apiDurationMS int64, at time.Time) {
-	most, seen := c.mostAPIDurationMS[pid]
-	first, grew := !seen, seen && apiDurationMS > most
+	previous, seen := c.mostAPIDurationMS[pid]
+	first, grew := !seen, seen && apiDurationMS > previous
 	if first || grew {
 		if c.mostAPIDurationMS == nil {
 			c.mostAPIDurationMS = make(map[int]int64)
 		}
-		c.mostAPIDurationMS[pid], most = apiDurationMS, apiDurationMS
+		c.mostAPIDurationMS[pid] = apiDurationMS
 	}
 	process := processAccount{pid: pid, dir: dir}
 	if grew {
 		c.date(process, at)
 	}
-	if first || grew || most == 0 {
+	if first || grew || c.mostAPIDurationMS[pid] == 0 {
 		c.date(process, c.unplaced)
 		c.unplaced = time.Time{}
 	}
@@ -107,6 +110,22 @@ func (c *responseClock) date(process processAccount, at time.Time) {
 func (c *responseClock) ended() {
 	clear(c.mostAPIDurationMS)
 	c.unplaced = time.Time{}
+}
+
+// started notes that the process pid has started on the session or resumed
+// it. A process that had the PID before has gone, and may have left no end
+// behind: one killed while another process of the session runs does not end
+// it. What is known of the gone process is forgotten, so the new process's
+// next line is a first line, and its count and responses are its own. Lines
+// that name no process are taken for one, which no start replaces.
+func (c *responseClock) started(pid int) {
+	if pid <= 0 {
+		return
+	}
+	delete(c.mostAPIDurationMS, pid)
+	maps.DeleteFunc(c.newest, func(process processAccount, _ time.Time) bool {
+		return process.pid == pid
+	})
 }
 
 // freshAs returns when the newest response known for the process pid on the

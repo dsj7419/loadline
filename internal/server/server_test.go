@@ -30,6 +30,8 @@ const (
 	testVersion = "1.2.3"
 	tokenHeader = "X-Loadline-Token" //nolint:gosec // G101: the name of the header, not a credential
 	uiCookie    = "loadline_ui"
+	// testPID is the Claude Code process the test envelopes come from.
+	testPID = 4242
 
 	contentSecurityPolicy = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; " +
 		"script-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -373,7 +375,7 @@ func envelope(t *testing.T, kind protocol.Kind, id, payload string) []byte {
 		Kind:      kind,
 		At:        eventTime,
 		ConfigDir: configDir,
-		PID:       4242,
+		PID:       testPID,
 		Payload:   json.RawMessage(payload),
 	})
 	if err != nil {

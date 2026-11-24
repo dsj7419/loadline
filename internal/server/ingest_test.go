@@ -111,7 +111,7 @@ func TestIngest_HookAppliesAndKicks(t *testing.T) {
 		At:      eventTime,
 		Dir:     domain.ConfigDir(configDir),
 		Session: "s1",
-		PID:     4242,
+		PID:     testPID,
 		Name:    "SessionStart",
 		Source:  "startup",
 	}
@@ -169,7 +169,7 @@ func TestIngest_AStatusLineCarriesItsProcess(t *testing.T) {
 		body []byte
 		want int
 	}{
-		"the envelope's pid": {body: statusEnvelope(t, eventID(1)), want: 4242},
+		"the envelope's pid": {body: statusEnvelope(t, eventID(1)), want: testPID},
 		"no pid":             {body: withoutPID, want: 0},
 	} {
 		t.Run(name, func(t *testing.T) {
