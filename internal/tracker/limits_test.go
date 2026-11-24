@@ -501,6 +501,20 @@ func TestTracker_AGarbledCountDatesNoResponseAhead(t *testing.T) {
 	}
 }
 
+// A line's API time that grows from below zero by less than an int64 holds
+// grew by just that much: it dates the line a second before it here, after
+// the reading heard at 10 s, and not as long ago as a duration reaches.
+func TestTracker_AnAPITimeGrownFromBelowZeroDatesTheLineByItsGrowth(t *testing.T) {
+	h := newHarness(t, tracker.Config{})
+	h.tr.RecordAPI(request(at(10), s2, "Opus 5.5", 0.1))
+	shownWeekly(h, weeklyFrom(11, s2, 100))
+	shownWeekly(h, withAPITime(weeklyFrom(20, s1, 97), -1))
+
+	if got := shownWeekly(h, withAPITime(weeklyFrom(30, s1, 97), 1000)); got != 97 {
+		t.Errorf("shown %v%%, want the 97%% heard about 29 s, after the 100%% heard at 10 s", got)
+	}
+}
+
 // The tracker learns of every response a session gets while it watches it,
 // so a session it has seen none from has had none since its first line: what
 // it reports is older than any reading whose response the tracker knows.
