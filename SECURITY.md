@@ -85,8 +85,8 @@ What it defends against:
   attributes, which the right to list its folder allows whatever the file's own permissions say,
   and which only a pending deletion refuses. A file they find there, and one whose permissions
   they would put right but you may not change, install, the server and `loadline doctor` refuse
-  in the same words: "<file> does not let you both read and change who may use it, so Loadline
-  cannot make sure it is private; it belongs to <owner>: remove it, or have an administrator
+  in the same words: "\<file> does not let you both read and change who may use it, so Loadline
+  cannot make sure it is private; it belongs to \<owner>: remove it, or have an administrator
   remove it if you cannot, then run loadline install", or "its owner cannot be read" when they
   may not read that either. Its folder is yours, so you may remove it, unless it is read-only and
   its permissions also take away your right to change its attributes, which only an
@@ -205,7 +205,10 @@ What it defends against:
   stop` or the request it sends, which takes the token and never the dashboard cookie. On macOS and
   Linux the token is in `settings.json`, which Claude Code may leave readable by others, as the
   item above says. The cost is availability alone: while no server runs, the hooks spool their
-  events, and a session's next hook or status line starts the server again.
+  events, and a session's next hook or status line starts the server again. Install stops a
+  running server the same way to hand it over to the binary it put in place. Run from an
+  administrator's shell, or as root, it starts none in its place, so that neither the server nor
+  the `claude` it runs keeps those rights.
 - **Backups of the settings.** Each backup holds the token the file held. Install and uninstall
   keep the newest three backups they made of each file and remove the older ones; they touch no
   other file.
@@ -258,12 +261,12 @@ or is narrow.
   - *Impact:* install, the server and `loadline doctor` refuse it, and leave its permissions exactly
     as they were, but for the entry, or your rights, that two runs at once may leave, as described
     above, which let in you alone.
-    - One that keeps you from listing it: "<folder> keeps you out, and Loadline cannot let you
-      back in without widening who else may use it; it belongs to <owner>: an administrator can
-      reset it with icacls "<folder>" /reset, then run loadline install".
-    - One you may list but not change, as with that OWNER RIGHTS entry: "<folder> cannot be made
-      private, since you may not change who may use it; it belongs to <owner>: set LOADLINE_HOME
-      to a folder of your own, or have an administrator reset it with icacls "<folder>" /reset,
+    - One that keeps you from listing it: "\<folder> keeps you out, and Loadline cannot let you
+      back in without widening who else may use it; it belongs to \<owner>: an administrator can
+      reset it with icacls "\<folder>" /reset, then run loadline install".
+    - One you may list but not change, as with that OWNER RIGHTS entry: "\<folder> cannot be made
+      private, since you may not change who may use it; it belongs to \<owner>: set LOADLINE_HOME
+      to a folder of your own, or have an administrator reset it with icacls "\<folder>" /reset,
       then run loadline install".
     - When its owner cannot be read either, as on a folder that gives you nothing, the sentence
       says "its owner cannot be read" in its place.
@@ -279,11 +282,19 @@ or is narrow.
     run `loadline install`. A folder that belongs to another account is refused then for its owner,
     as above: set `LOADLINE_HOME` to a folder of your own instead.
 - **Cloud and deduplicated files.**
-  - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, where
-    Loadline's own files can be reparse points.
-  - *Impact:* install and the server take a reparse point among Loadline's files for a link, and
-    refuse the data directory as holding one. This fails closed, but the message names a link. A
-    volume with data deduplication works: they take a deduplicated file for the ordinary file it is.
+  - *What it takes:* on Windows, a data directory in a folder that a cloud service keeps in sync,
+    such as a OneDrive folder.
+  - *Impact:* install, the server and `loadline doctor` ask Windows, through its Cloud Files API,
+    whether the data directory is in such a folder, and refuse it when Windows says it is, naming
+    the folder and the service: the token and the binary every hook runs would otherwise be copied
+    to the cloud. This fails closed, and is tested against a folder registered with Windows as a
+    sync root, as a cloud service registers the folder it keeps in sync. Only that answer refuses:
+    where Windows cannot answer, as on a file system its cloud filter does not serve, the other
+    checks judge the data directory alone, and a service that keeps a folder in sync without
+    registering it with Windows goes unseen, as does any on macOS and Linux. A reparse point among
+    Loadline's files is refused in words that say what it is: a link, a file kept in sync with the
+    cloud, or a reparse point of a kind Loadline does not know. A volume with data deduplication
+    works: they take a deduplicated file for the ordinary file it is.
   - *Mitigation:* use the default, which is outside OneDrive, or keep `LOADLINE_HOME` inside your
     profile and out of such folders.
 - **Volumes without a drive letter.**
@@ -292,7 +303,7 @@ or is narrow.
     container mounts and network redirectors.
   - *Impact:* Windows names the folders that really hold the data directory there only by the
     volume's GUID name (`\\?\Volume{…}\`), which Loadline judges no folder by. Install, the server
-    and `loadline doctor` refuse it, and say why: "<folder> is on a volume Windows gives no drive
+    and `loadline doctor` refuse it, and say why: "\<folder> is on a volume Windows gives no drive
     letter to, as some RAM disks, container mounts and network redirectors are, so Loadline cannot
     check the folders that hold it: set LOADLINE_HOME to a folder on a disk with a drive letter,
     such as one in your user profile". This fails closed.
@@ -309,7 +320,7 @@ or is narrow.
   - *The repair Loadline offers (Windows):* when the owner is an account this computer no longer
     has, and the folder is in your user profile, the message ends with the command that takes it
     back: "…; it belongs to an account this computer no longer has, as after a profile was moved
-    or restored: if the folder is yours, run takeown /f "<folder>" and then loadline install".
+    or restored: if the folder is yours, run takeown /f "\<folder>" and then loadline install".
     - The command names the folder where it really is, every link followed and every short 8.3
       name in full: the folder Loadline checks is in your profile, and the one `takeown` takes.
     - For the data directory, or one of Loadline's files in it, the dashboard's browser profile
@@ -325,7 +336,7 @@ or is narrow.
       reading no file's content and changing nothing.
       Otherwise the command names what the message reports alone, the data directory or the file
       or folder in it, without `/r`, and calls a file a file: "if the file is yours, run takeown /f
-      "<file>" and then loadline install". A folder above the data directory never gets `/r`.
+      "\<file>" and then loadline install". A folder above the data directory never gets `/r`.
     - A path that holds `"`, `%`, `$`, `!`, a backtick or a typographic double quote, which
       Command Prompt or PowerShell would not take as written, or a control or format character
       (such as a zero-width space or a right-to-left override) or a line or paragraph separator,
