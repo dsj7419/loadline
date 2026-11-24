@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -18,6 +19,23 @@ import (
 	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/install"
 )
+
+// waitedIn runs f in a synctest bubble and returns how far the bubble's
+// clock moved meanwhile. That clock moves only while f waits on time, as a
+// pause between renames does, so the result is exactly the time f waited,
+// however slow the machine. Only waits on Go's own clock count: one that
+// blocks in a system call, such as a sleep the system does for it, reads as
+// no time at all.
+func waitedIn(t *testing.T, f func()) time.Duration {
+	t.Helper()
+	var waited time.Duration
+	synctest.Test(t, func(*testing.T) {
+		start := time.Now()
+		f()
+		waited = time.Since(start)
+	})
+	return waited
+}
 
 // runningCopy writes the test binary to path and runs it until the test
 // ends, as a hook or the server runs the installed loadline. It returns the
@@ -147,16 +165,19 @@ func TestSelfInstall_GivesUpOnAHoldThatOutlastsTheBudget(t *testing.T) {
 	install.SetRename(t, (&heldFiles{
 		target: target, errno: windows.ERROR_SHARING_VIOLATION, holds: -1,
 	}).rename)
-	install.SetRenameBudget(t, 50*time.Millisecond)
+	const budget = 50 * time.Millisecond
+	install.SetRenameBudget(t, budget)
+	src := writeBinary(t, "loadline v2")
 
-	start := time.Now()
-	_, err := install.SelfInstall(writeBinary(t, "loadline v2"), dataDir)
+	var err error
+	waited := waitedIn(t, func() { _, err = install.SelfInstall(src, dataDir) })
 
 	if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
 		t.Errorf("err = %v, want the sharing violation", err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("SelfInstall took %s to give up, want about the 50ms budget", elapsed)
+	// It spends its budget waiting, and gives up rather than pause past it.
+	if waited <= budget/2 || waited > budget {
+		t.Errorf("SelfInstall waited %v before it gave up, want most of its %v budget and no more", waited, budget)
 	}
 	if content := readFile(t, target); string(content) != "loadline v1" {
 		t.Errorf("target holds %q, want the previous binary untouched", content)
@@ -387,12 +408,16 @@ func TestSelfInstall_MovesPastARunningOldAtOnce(t *testing.T) {
 	scripted := &refusals{running: map[string]bool{target: true, target + ".old": true}}
 	install.SetRename(t, scripted.rename)
 	install.SetRenameBudget(t, 2*time.Second)
+	src := writeBinary(t, "loadline v2")
 
-	start := time.Now()
-	selfInstall(t, writeBinary(t, "loadline v2"), dataDir)
+	var err error
+	waited := waitedIn(t, func() { _, err = install.SelfInstall(src, dataDir) })
 
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("SelfInstall took %s, want it to move past the running .old at once", elapsed)
+	if err != nil {
+		t.Fatalf("SelfInstall: %v", err)
+	}
+	if waited != 0 {
+		t.Errorf("SelfInstall waited %v, want it to move past the running .old at once", waited)
 	}
 	if n := scripted.attempts[target+".old"]; n != 1 {
 		t.Errorf("tried .old %d times, want once", n)
