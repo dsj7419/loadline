@@ -52,3 +52,13 @@ func SetBeforeRecheck(t *testing.T, f func()) {
 	testHookBeforeRecheck = f
 	t.Cleanup(func() { testHookBeforeRecheck = previous })
 }
+
+// SetFinalPath replaces, for the rest of the test, how Apply asks the system
+// where a settings file is, so a test can make it fail to say.
+func SetFinalPath(t *testing.T, f func(path string) (string, error)) {
+	t.Helper()
+
+	previous := finalPath
+	finalPath = f
+	t.Cleanup(func() { finalPath = previous })
+}
