@@ -14,9 +14,17 @@ import (
 
 // Entry is what Inspect tells of a path itself.
 type Entry struct {
-	// Link reports a symbolic link, or on Windows a junction or another
-	// reparse point, which opening the path would follow somewhere else.
+	// Link reports a symbolic link, or on Windows a junction or any other
+	// reparse point but a deduplicated file, which opening the path would
+	// follow somewhere else, or may: Loadline cannot tell where a reparse
+	// point of a kind it does not know leads.
 	Link bool
+	// Reparse is the kind of reparse point the path is, which says what
+	// kind of link it is: on systems other than Windows, a symbolic link is
+	// a NameSurrogate.
+	Reparse ReparseKind
+	// Tag is the reparse point's tag, which names its kind to Windows, or 0.
+	Tag uint32
 	// Folder reports a folder.
 	Folder bool
 	// Names is how many names the file has: more than one when it was hard
@@ -26,6 +34,26 @@ type Entry struct {
 	// the same ID are names of one file.
 	ID FileID
 }
+
+// ReparseKind is the kind of reparse point a path is, as its tag says.
+type ReparseKind uint8
+
+const (
+	// NotReparse is a path that is no reparse point.
+	NotReparse ReparseKind = iota
+	// NameSurrogate is a link that stands for another path, such as a
+	// symbolic link or a junction.
+	NameSurrogate
+	// CloudFile is a file or folder a cloud service keeps in sync, such as
+	// a OneDrive placeholder.
+	CloudFile
+	// Deduplicated is a file whose data deduplication keeps in a store it
+	// shares with other files on the volume. It leads nowhere else: the
+	// system reads it as the file it was.
+	Deduplicated
+	// OtherReparse is a reparse point of a kind Loadline does not know.
+	OtherReparse
+)
 
 // FileID is a file's identity: the volume it is on and its number there. On
 // Windows that number is the file's 128-bit ID, or on a volume that cannot

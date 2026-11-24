@@ -194,10 +194,11 @@ or is narrow.
   - *Mitigation:* use the default `~/.claude` in a standard profile, and keep the folders above a
     custom config folder unlinked.
 - **Cloud and deduplicated files.**
-  - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, or on a volume
-    with data deduplication, where Loadline's own files can be reparse points.
-  - *Impact:* install and the server take every reparse point among Loadline's files for a link,
-    and refuse the data directory as holding one. This fails closed, but the message names a link.
+  - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, where
+    Loadline's own files can be reparse points.
+  - *Impact:* install and the server take a reparse point among Loadline's files for a link, and
+    refuse the data directory as holding one. This fails closed, but the message names a link. A
+    volume with data deduplication works: they take a deduplicated file for the ordinary file it is.
   - *Mitigation:* use the default, which is outside OneDrive, or keep `LOADLINE_HOME` inside your
     profile and out of such folders.
 - **Volumes without a drive-letter name.**

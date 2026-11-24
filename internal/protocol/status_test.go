@@ -287,6 +287,7 @@ func TestStatusEvent_UltraFixture(t *testing.T) {
 		At:         envelopeTime,
 		Dir:        domain.ConfigDir(env.ConfigDir),
 		Session:    demoSession,
+		PID:        4242,
 		Name:       "demo-session",
 		ProjectDir: demoProjectDir,
 		Metrics: domain.Metrics{

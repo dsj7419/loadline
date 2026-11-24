@@ -434,6 +434,9 @@ func (t *Tracker) applyToSession(e domain.Event, id domain.SessionID, dir domain
 	if after.State == domain.StateEnded && before.State != domain.StateEnded {
 		entry.responses.ended()
 	}
+	if h, ok := e.(domain.Hook); ok && startsProcess(h) {
+		entry.responses.started(h.PID)
+	}
 	if !known {
 		for _, r := range t.pending.take(id, t.now().Add(-pendingFor)) {
 			t.attach(entry, r)
@@ -441,6 +444,14 @@ func (t *Tracker) applyToSession(e domain.Event, id domain.SessionID, dir domain
 	}
 	t.link(entry)
 	return entry
+}
+
+// startsProcess reports whether h is the session's own SessionStart from a
+// process that has just begun it, starting up or resuming it. Claude Code also
+// fires SessionStart when a process clears or compacts its session, and goes
+// on as the same process.
+func startsProcess(h domain.Hook) bool {
+	return h.Name == "SessionStart" && h.AgentID == "" && (h.Source == "startup" || h.Source == "resume")
 }
 
 // subjectOf returns the session, account and time an event is about, and
@@ -498,13 +509,14 @@ func appendTransition(timeline []domain.Transition, tr domain.Transition) []doma
 }
 
 // observeStatus applies what a status line reports of its account: the rate
-// limits, as fresh as the newest response its session, nil when it has none,
-// is known to have got on that account, and the spend limit.
+// limits, as fresh as the newest response the line's process is known to
+// have got on that account, and the spend limit. session is the line's
+// session, nil when it has none, and then no response is known.
 func (t *Tracker) observeStatus(st domain.Status, session *sessionEntry) {
 	var freshAs time.Time
 	if session != nil {
-		session.responses.line(st.Dir, st.APIDurationMS, st.At)
-		freshAs = session.responses.freshAs(st.Dir)
+		session.responses.line(st.Dir, st.PID, st.APIDurationMS, st.At)
+		freshAs = session.responses.freshAs(st.Dir, st.PID)
 	}
 	t.observeLimits(st.Dir, st.Limits, freshAs)
 	t.account(st.Dir).credits.observe(st.SpendLimit, st.At)
