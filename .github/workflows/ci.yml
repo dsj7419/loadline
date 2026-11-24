@@ -133,6 +133,51 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -count=1 -v -run 'TestSyncRoot_|InsideASyncRoot$|IntoASyncRoot$' ./internal/fsperm/ ./internal/datadir/
+      - name: Make a second local account
+        # The TestIntegration_ tests give a data directory to this account.
+        # It has no password, so the log holds nothing secret. The runner is
+        # an administrator, whose SeRestorePrivilege lets the tests give a
+        # folder to another account, and back again. The tests need only its
+        # SID, so it is disabled: nobody can sign in to it. Windows PowerShell
+        # has the LocalAccounts cmdlets built in, which some builds of
+        # PowerShell 7 fail to load.
+        id: second-account
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: New-LocalUser -Name loadline-it -NoPassword -Disabled
+      - name: Make a folder another account owns
+        # The TestIntegration_ test on Linux and macOS takes this folder as its
+        # data directory. Its config names a port the system has just given
+        # out, so that doctor asks no server that may listen on the default
+        # one. The runner, which owns neither the folder nor its config, could
+        # not clear them out of RUNNER_TEMP, so a step below removes them.
+        id: foreign-folder
+        if: runner.os != 'Windows'
+        run: |
+          dir="$RUNNER_TEMP/loadline-it"
+          sudo install -d -o nobody -m 0755 "$dir"
+          port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+          printf '{"port":%s}\n' "$port" | sudo tee "$dir/config.json" > /dev/null
+          sudo chown nobody "$dir/config.json"
+          sudo chmod 0644 "$dir/config.json"
+      - name: Test the refusal of a data directory another account owns
+        # Each test skips unless its variable is set, and fails when what that
+        # names cannot be used. The log lists each test as run, so none of
+        # them passed by being skipped.
+        env:
+          CGO_ENABLED: "1"
+          LOADLINE_IT_OTHER_ACCOUNT: loadline-it
+          LOADLINE_IT_FOREIGN_DIR: ${{ runner.temp }}/loadline-it
+        run: go test -race -count=1 -v -run TestIntegration_ ./internal/cli/
+      - name: Remove the second local account
+        # Whatever came of the tests, once the step that makes it has run.
+        if: always() && steps.second-account.outcome != 'skipped'
+        shell: powershell
+        run: Remove-LocalUser -Name loadline-it
+      - name: Remove the folder another account owns
+        # Whatever came of the tests, once the step that makes it has run.
+        if: always() && runner.os != 'Windows' && steps.foreign-folder.outcome != 'skipped'
+        run: sudo rm -rf "$RUNNER_TEMP/loadline-it"
       - name: Test the full generated cases and the real tap under every shell
         # Under the race detector these tests run a reduced set of cases, or
         # one shell, to stay inside CI time; without it they run every case

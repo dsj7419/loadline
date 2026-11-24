@@ -58,6 +58,41 @@ build.
 - One Windows test binds a wildcard address, which raises a firewall prompt on a developer machine,
   so it runs only when `CI=true`, as it is on GitHub Actions.
 
+### Data directories another account owns
+
+Install, the server and doctor refuse a data directory that belongs to another account. The
+`TestIntegration_` tests in `internal/cli` check this against a real second account, which a
+developer machine seldom has set up, so each skips unless its variable is set, and fails when the
+variable names something it cannot use. CI runs them on every platform. To run them yourself:
+
+- **Windows:** from an elevated PowerShell. The tests give a temporary folder to the account you
+  name, and to one this computer no longer has, which takes the SeRestorePrivilege an elevated
+  shell holds, and give it back at their end.
+
+  ```powershell
+  $env:LOADLINE_IT_OTHER_ACCOUNT = '<name>'
+  go test -race -count=1 -v -run TestIntegration_ ./internal/cli/
+  ```
+
+  Name a local account other than your own. To make one for the purpose, which nobody can sign in
+  to, run `New-LocalUser -Name loadline-it -NoPassword -Disabled` in an elevated Windows
+  PowerShell first, and `Remove-LocalUser -Name loadline-it` there once you are done. Windows
+  PowerShell has these cmdlets built in; some builds of PowerShell 7 load them only after
+  `Import-Module Microsoft.PowerShell.LocalAccounts -UseWindowsPowerShell`.
+
+- **Linux and macOS:** name a folder that another account owns. It must hold a `config.json` that
+  names a free port, so that doctor never asks a Loadline you may be running on the default one.
+
+  ```sh
+  sudo install -d -o nobody -m 0755 /tmp/loadline-it
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  printf '{"port":%s}\n' "$port" | sudo tee /tmp/loadline-it/config.json > /dev/null
+  sudo chown nobody /tmp/loadline-it/config.json
+  sudo chmod 0644 /tmp/loadline-it/config.json
+  LOADLINE_IT_FOREIGN_DIR=/tmp/loadline-it go test -race -count=1 -v -run TestIntegration_ ./internal/cli/
+  sudo rm -r /tmp/loadline-it
+  ```
+
 ## Dependencies
 
 Keep them few. When a change adds or removes a Go module linked into the binary, or a package
