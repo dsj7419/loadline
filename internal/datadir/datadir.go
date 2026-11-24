@@ -464,8 +464,9 @@ func takeBackDataDir(owner fsperm.Owner, dir, reported string) string {
 // The command names path as the system resolves it (fsperm.Resolved), every
 // link followed and each short name in full, which is where the profile is
 // asked about, and what takeown then takes, whatever link or short name the
-// path as given holds. A path that cannot be resolved or placed is offered
-// nothing, and the report stands as it is.
+// path as given holds, and the offer calls it a folder or a file, as it is.
+// A path that cannot be resolved, placed or looked at is offered nothing,
+// and the report stands as it is.
 func takeBack(owner fsperm.Owner, path string, recursive bool) string {
 	if !owner.Gone {
 		return ""
@@ -477,8 +478,31 @@ func takeBack(owner fsperm.Owner, path string, recursive bool) string {
 	if in, err := inProfile(held); err != nil || !in {
 		return ""
 	}
-	return takeBackAdvice(held, recursive)
+	what := aFolderAndAllItHolds
+	if !recursive {
+		entry, err := inspect(held)
+		if err != nil {
+			return ""
+		}
+		what = aFolder
+		if !entry.Folder {
+			what = aFile
+		}
+	}
+	return takeBackAdvice(held, what)
 }
+
+// taken is what a take-back command takes, which its offer names.
+type taken uint8
+
+const (
+	// aFolder is a folder alone.
+	aFolder taken = iota
+	// aFolderAndAllItHolds is a folder and everything below it (/r).
+	aFolderAndAllItHolds
+	// aFile is a file.
+	aFile
+)
 
 // holdsOnlyLoadlines reports whether takeown /r, given dir, the data
 // directory, would take nothing but what dir holds. takeown /r goes into
@@ -491,8 +515,9 @@ func takeBack(owner fsperm.Owner, path string, recursive bool) string {
 // browser keeps in its profile and the files Loadline is still writing,
 // which the checks of Loadline's own files pass over (ownPaths). A folder
 // the user may not list could hold either, and so could whatever cannot be
-// read, so each of those counts as one too. It only reads: it opens nothing
-// to change it.
+// read, so each of those counts as one too. It lists folders and looks at
+// each entry's attributes alone: it reads no file's content and changes
+// nothing.
 func holdsOnlyLoadlines(dir string) bool {
 	if foreign, err := foreignEntry(dir); err != nil || foreign != "" {
 		return false
@@ -543,27 +568,38 @@ func (n fileNames) walk(folder string) bool {
 
 // takeBackAdvice ends the report of path, a folder that an account this
 // computer no longer has owns, or whose files it owns, or such a file
-// itself, with what takes it back for the user, and when recursive is set,
-// all it holds too: the command to paste into Command Prompt or PowerShell.
+// itself, with what takes back what, which the offer names a folder or a
+// file as it is: the command to paste into Command Prompt or PowerShell.
 // Each takes a path in double quotes as it is written, but for a few
 // characters: a double quote ends it, Command Prompt expands % and, with
 // delayed expansion, !, and PowerShell expands $, reads a backtick as an
-// escape, and reads a typographic double quote as a plain one. A control
-// character can also hide in a path a terminal shows. A path that holds any
-// of them is given the tool's name instead, and no command that would act on
-// something other than what it names.
-func takeBackAdvice(path string, recursive bool) string {
-	const lead = "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the folder is yours, "
-	if strings.ContainsAny(path, "\"%$!`\u201c\u201d\u201e") || strings.ContainsFunc(path, unicode.IsControl) {
-		what := path
-		if recursive {
-			what += " and all it holds"
+// escape, and reads a typographic double quote as a plain one. A path can
+// also hold characters a terminal does not show as they are (hidden). A
+// path that holds any of them is given the tool's name instead, and no
+// command that would act on something other than what it seems to name.
+func takeBackAdvice(path string, what taken) string {
+	noun := "folder"
+	if what == aFile {
+		noun = "file"
+	}
+	lead := "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the " + noun + " is yours, "
+	if strings.ContainsAny(path, "\"%$!`\u201c\u201d\u201e") || strings.ContainsFunc(path, hidden) {
+		which := path
+		if what == aFolderAndAllItHolds {
+			which += " and all it holds"
 		}
-		return lead + "take ownership of " + what + " with takeown and then run loadline install"
+		return lead + "take ownership of " + which + " with takeown and then run loadline install"
 	}
 	command := `takeown /f "` + path + `"`
-	if recursive {
+	if what == aFolderAndAllItHolds {
 		command += " /r"
 	}
 	return lead + "run " + command + " and then loadline install"
+}
+
+// hidden reports whether r is a character a terminal does not show as it
+// is: a control character, or a format character, such as a zero-width
+// space, or one that reverses or isolates the text around it.
+func hidden(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }

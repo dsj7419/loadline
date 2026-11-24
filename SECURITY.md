@@ -68,12 +68,15 @@ What it defends against:
   and whatever else the browser stores. Loadline creates it private before the browser first
   launches: on Windows with an access list of its own, which the data directory's list, passed
   down, does not reach, and on macOS and Linux with mode 0700. What the browser writes there is
-  its own, and Loadline never looks inside the profile or changes anything in it: the browser
-  gives files there access lists of its own on Windows, for its network sandbox, and keeps symbolic
-  links there on macOS and Linux, for its process lock. Install, the server and `loadline doctor`
-  judge the folder itself as they judge Loadline's own, and refuse a `browser` folder that is not
-  private as Loadline makes it, since the files in it may have inherited other users' access:
-  remove it, and Loadline makes it again.
+  its own, and Loadline changes nothing in the profile and reads no file's content there: the
+  browser gives files there access lists of its own on Windows, for its network sandbox, and keeps
+  symbolic links there on macOS and Linux, for its process lock. Only on Windows, when Loadline
+  offers to take back a data directory that an account this computer no longer has owns, does it
+  list what the profile holds and look at each entry's attributes, to tell whether `takeown /r`
+  may be offered (see "Folders owned by an old account or a group" below). Install, the server
+  and `loadline doctor` judge the folder itself as they judge Loadline's own, and refuse a
+  `browser` folder that is not private as Loadline makes it, since the files in it may have
+  inherited other users' access: remove it, and Loadline makes it again.
   `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
   it did before, they may have read the token, so change it as described below. On macOS and Linux
   install also takes group and other permissions off the settings files it edits, which hold the
@@ -248,12 +251,15 @@ or is narrow.
       still writing included, may be a reparse point of any kind, such as a junction or a symbolic
       link, or a file with a name outside the data directory, a hard link: `takeown /r` would
       follow either out of it. Nor may any folder below it be one you may not list, or anything in
-      it be one Loadline cannot look at, since either could hide one. Loadline only reads the tree
-      to tell. Otherwise the command names what the message reports alone, the data directory or
-      the file or folder in it, without `/r`. A folder above the data directory never gets `/r`.
-    - A folder whose path holds `"`, `%`, `$`, `!`, a backtick, a typographic double quote or a
-      control character, which Command Prompt or PowerShell would not take as written, or a
-      terminal could hide, gets the tool's name instead of a command to paste.
+      it be one Loadline cannot look at, since either could hide one. To tell, Loadline lists the
+      tree and looks at each entry's attributes, reading no file's content and changing nothing.
+      Otherwise the command names what the message reports alone, the data directory or the file
+      or folder in it, without `/r`, and calls a file a file: "if the file is yours, run takeown /f
+      "<file>" and then loadline install". A folder above the data directory never gets `/r`.
+    - A path that holds `"`, `%`, `$`, `!`, a backtick or a typographic double quote, which
+      Command Prompt or PowerShell would not take as written, or a control or format character
+      (such as a zero-width space or a right-to-left override), which a terminal would not show as
+      it is, gets the tool's name instead of a command to paste.
     - An account counts as gone only when Windows is sure: it reports the account deleted, or it
       names no account for a SID of this computer's own accounts. A SID of another domain that it
       cannot name, as when no domain controller answers, may be an account that still exists: the

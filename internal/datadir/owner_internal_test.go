@@ -114,17 +114,26 @@ const goneSID = "S-1-5-21-111-222-333-4242"
 var gone = fsperm.Owner{Name: goneSID, Gone: true}
 
 // takeBackLead starts the offer to take a folder back, which ends either in
-// the command or in the tool's name.
-const takeBackLead = "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the folder is yours, "
+// the command or in the tool's name, and fileLead the offer to take a file
+// back.
+const (
+	takeBackLead = "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the folder is yours, "
+	fileLead     = "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the file is yours, "
+)
 
-// offered is the offer of the command that takes path back, with all it
-// holds when recursive is set.
+// offered is the offer of the command that takes path, a folder, back, with
+// all it holds when recursive is set.
 func offered(path string, recursive bool) string {
 	command := `takeown /f "` + path + `"`
 	if recursive {
 		command += " /r"
 	}
 	return takeBackLead + "run " + command + " and then loadline install"
+}
+
+// offeredFile is the offer of the command that takes path, a file, back.
+func offeredFile(path string) string {
+	return fileLead + `run takeown /f "` + path + `" and then loadline install`
 }
 
 // onDisk is path as the system resolves it, every link followed and each
@@ -273,7 +282,7 @@ func TestOwnerProblem_OffersWhatItReportsAloneWhenTheDataDirectoryHoldsMore(t *t
 		ownedBy(t, token, gone)
 		linkOutOf(t, filepath.Join(dir, "spool", ".put-1.tmp"))
 		profileHolds(t, onDisk(t, token))
-		want := ownFileReport(token, gone) + offered(onDisk(t, token), false)
+		want := ownFileReport(token, gone) + offeredFile(onDisk(t, token))
 
 		for step, err := range map[string]error{"Make": Make(dir), "Secure": Secure(dir, filepath.Dir(dir))} {
 			if err == nil || err.Error() != want {
@@ -493,21 +502,31 @@ func TestOwnerProblem_NeverOffersItOutsideTheProfile(t *testing.T) {
 
 // The command is pasted into Command Prompt or PowerShell, which take a path
 // in double quotes as it is, spaces, &, ' and letters of any script among it,
-// but for a few characters, and a control character can hide in a path
-// that a terminal shows. A path that holds one of those is given no
-// command, but the tool's name.
+// but for a few characters, and a control or format character can hide in a
+// path, or reorder it, as a terminal shows it. A path that holds one of
+// those is given no command, but the tool's name. Each offer calls what it
+// takes back a folder or a file, as it is.
 func TestTakeBackAdvice_QuotesThePathOrNamesTheTool(t *testing.T) {
-	quoted := offered
-	named := func(path string, recursive bool) string {
-		what := path
-		if recursive {
-			what += " and all it holds"
+	quoted := func(path string, what taken) string {
+		if what == aFile {
+			return offeredFile(path)
 		}
-		return takeBackLead + "take ownership of " + what + " with takeown and then run loadline install"
+		return offered(path, what == aFolderAndAllItHolds)
+	}
+	named := func(path string, what taken) string {
+		lead, which := takeBackLead, path
+		switch what {
+		case aFolder:
+		case aFile:
+			lead = fileLead
+		case aFolderAndAllItHolds:
+			which += " and all it holds"
+		}
+		return lead + "take ownership of " + which + " with takeown and then run loadline install"
 	}
 	for _, tt := range []struct {
 		name, path string
-		want       func(path string, recursive bool) string
+		want       func(path string, what taken) string
 	}{
 		{"spaces", `C:\Users\Jo Smith\AppData\Local\loadline`, quoted},
 		{"&", `C:\Users\R&D\AppData\Local\loadline`, quoted},
@@ -523,10 +542,13 @@ func TestTakeBackAdvice_QuotesThePathOrNamesTheTool(t *testing.T) {
 		{"a tab", "C:\\Users\\a\tb\\AppData\\Local\\loadline", named},
 		{"a delete", "C:\\Users\\a\x7fb\\AppData\\Local\\loadline", named},
 		{"a next line", "C:\\Users\\a\u0085b\\AppData\\Local\\loadline", named},
+		{"a right-to-left override", "C:\\Users\\a\u202eb\\AppData\\Local\\loadline", named},
+		{"a zero-width space", "C:\\Users\\a\u200bb\\AppData\\Local\\loadline", named},
+		{"a left-to-right isolate", "C:\\Users\\a\u2066b\u2069\\AppData\\Local\\loadline", named},
 	} {
-		for _, recursive := range []bool{false, true} {
-			if got, want := takeBackAdvice(tt.path, recursive), tt.want(tt.path, recursive); got != want {
-				t.Errorf("takeBackAdvice(%s, %t), with %s = %q;\nwant %q", tt.path, recursive, tt.name, got, want)
+		for _, what := range []taken{aFolder, aFolderAndAllItHolds, aFile} {
+			if got, want := takeBackAdvice(tt.path, what), tt.want(tt.path, what); got != want {
+				t.Errorf("takeBackAdvice(%s, %d), with %s = %q;\nwant %q", tt.path, what, tt.name, got, want)
 			}
 		}
 	}
