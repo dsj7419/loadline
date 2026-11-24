@@ -205,6 +205,26 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		{"blanks ahead of the PowerShell form", ` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
 		{"blanks after the PowerShell call", `&  "C:/x/loadline.exe" tap --print`, skipped, ""},
 		{"no blank after the PowerShell call", `&"C:/x/loadline.exe" tap --print`, skipped, ""},
+		// Install quotes the program only in ASCII double quotes.
+		{"single quotes, no blank after the PowerShell call", `&'C:/x/loadline.exe' tap --print`, skipped, ""},
+		{"single quotes in the PowerShell form", `& 'C:/x/loadline.exe' tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
+		{"single quotes in the bash form", `'C:/x/loadline.exe' tap | cat`, skipped, ""},
+		{"typographic single quotes", `& ‘C:/x/loadline.exe’ tap --print`, skipped, ""},
+		{"typographic double quotes", `& “C:/x/loadline.exe” tap --print`, skipped, ""},
+		{"a doubled single quote in the path", `& 'C:/Users/O''Brien/loadline.exe' tap --print`, skipped, ""},
+		// A quote left open, closed elsewhere or around part of the path
+		// still leaves a command that bash or PowerShell can read as starting
+		// with Loadline.
+		{"a typographic single quote left open", `& ‘C:/x/loadline.exe tap --print`, skipped, ""},
+		{"a single quote left open", `'C:/x/loadline.exe tap | foo`, skipped, ""},
+		{"a single quote that closes inside the PowerShell form", `& 'C:/x/loadline.exe tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
+		{"single quotes around part of the path", `'C:/x'/loadline.exe tap | foo`, skipped, ""},
+		{"double quotes around part of the path", `"C:/x"/loadline.exe tap | foo`, skipped, ""},
+		{"an ASCII double quote closed by a typographic one", `& "C:/x/loadline.exe” tap --print`, skipped, ""},
+		{"the same with an ASCII double quote further on", `"C:/x/loadline.exe” tap | echo "hi"`, skipped, ""},
+		{"a typographic apostrophe in a single-quoted path", `'C:/Users/Dan’s/loadline.exe' tap | foo`, skipped, ""},
+		{"another program in typographic quotes", `& ‘C:/x/other.exe’ --print`, untouched, ""},
+		{"another program in single quotes", `'C:/x/other.exe' --flag`, untouched, ""},
 		{"a PowerShell call of the user's own", `&"C:/x/other.exe" --print`, untouched, ""},
 		{"a command of the user's own that starts with a blank", ` cat ~/notes/loadline`, untouched, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},
