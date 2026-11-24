@@ -54,7 +54,9 @@ const (
 	// which reads its command line again and acts on an & or ^ that Go
 	// quotes only in an argument that also holds a blank. So it gets no
 	// profile folder, whose path may hold either: it opens the dashboard as
-	// it did before the dashboard had a profile of its own.
+	// it did before the dashboard had a profile of its own. cmd.exe also
+	// expands a %NAME%, inside quotes too, so the URL it gets must hold no
+	// percent sign: Loadline's hold none, their login code being hex.
 	batchFileKind
 	// firefoxKind is Firefox, which has no app window.
 	firefoxKind
@@ -122,14 +124,31 @@ func resolve(b Browser, find func(name string) (string, bool)) (program string, 
 
 // fileRun returns the file that Windows takes program to name when it starts
 // it: the one exec.LookPath finds, as exec.Command does, which for a name
-// without an extension is the first that PATHEXT names, without the dots and
-// blanks that Windows drops from the end of a name. A program that is not
-// found stays as it is named.
+// without an extension is the first that PATHEXT names, read as Windows reads
+// a path (asWindowsReads). A program that is not found stays as it is named.
 func fileRun(program string) string {
 	if found, err := exec.LookPath(program); err == nil {
 		program = found
 	}
-	return strings.TrimRight(program, ". ")
+	return asWindowsReads(program)
+}
+
+// asWindowsReads returns path as Windows reads it before it opens a file:
+// with its "." and ".." folders resolved and the dots and blanks at its end
+// dropped. Dropping them can leave a separator at the end, as it does of
+// browser.cmd\... and of browser.cmd\. with a blank after it, which only a
+// second pass takes off, so it repeats both until nothing changes.
+// Where Windows would stop sooner, the name it reads ends in a separator and
+// is no file it can run; taking more there can only find a batch file where
+// Windows runs none, which then gets no profile it would not have used.
+func asWindowsReads(path string) string {
+	for {
+		read := strings.TrimRight(filepath.Clean(path), ". ")
+		if read == path {
+			return read
+		}
+		path = read
+	}
 }
 
 // isBatchFile reports whether path names a batch file, which Windows runs

@@ -75,6 +75,44 @@ func TestFirstInstalled_FindsTheInstalledCopy(t *testing.T) {
 	}
 }
 
+// Windows reads a program's name as it reads any path: it drops the dots and
+// blanks at the end of a name and resolves "." and ".." folders, so a name
+// with any of them after a batch file's runs the batch file, and one after
+// an executable's runs the executable.
+func TestResolve_KnowsABatchFileByItsNameAsWindowsReadsIt(t *testing.T) {
+	dir := t.TempDir()
+	for _, file := range []string{"browser.cmd", "chrome.exe"} {
+		if err := os.WriteFile(filepath.Join(dir, file), nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		pref string
+		want browserKind
+	}{
+		{pref: `browser.cmd\.`, want: batchFileKind},
+		{pref: `browser.cmd/.`, want: batchFileKind},
+		{pref: `browser.cmd\.\.`, want: batchFileKind},
+		{pref: `browser.cmd\. `, want: batchFileKind},
+		{pref: `browser.cmd \.`, want: batchFileKind},
+		{pref: `browser.cmd. \.`, want: batchFileKind},
+		{pref: `browser.cmd\...`, want: batchFileKind},
+		{pref: `browser.cmd\sub\..`, want: batchFileKind},
+		{pref: `chrome.exe\.`, want: chromiumKind},
+		{pref: `browser.cmd\..\chrome.exe`, want: chromiumKind},
+	} {
+		t.Run(tc.pref, func(t *testing.T) {
+			pref := dir + `\` + tc.pref
+
+			program, kind := resolve(Browser{Pref: pref, AppWindow: true}, func(string) (string, bool) { return "", false })
+
+			if program != pref || kind != tc.want {
+				t.Errorf("resolve(%q) = %q, %v; want %q, %v", pref, program, kind, pref, tc.want)
+			}
+		})
+	}
+}
+
 // A browser path named without its extension runs the file that PATHEXT
 // finds for it first, as exec.LookPath and Windows find it, so it is a batch
 // file only when that file is one.

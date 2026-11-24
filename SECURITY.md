@@ -32,7 +32,11 @@ What it defends against:
   that holds it, with the binary every hook runs, the spool and the history, admits only you: on
   Windows Loadline creates it, and each folder it creates on the way to it, with an access list of
   its own that admits only you, SYSTEM and Administrators and takes nothing from the folder above;
-  on macOS and Linux with mode 0700. Install, the server and the creation of the token make an
+  on macOS and Linux with mode 0700. It also holds `server.lock`, which the running server keeps
+  locked and in which it records only its port, its process ID and whether `serve --port` gave it
+  that port, nothing secret; a server that ends without clearing that record, as one that crashes
+  or is ended does, leaves it behind, so Loadline takes it for the running server's only while the
+  lock is held. Install, the server and the creation of the token make an
   existing data directory private the same way, and refuse a data directory that is itself a
   symbolic link or junction, naming where it leads, which is the folder to set `LOADLINE_HOME` to:
   making the link private would leave that folder as open as it is. Install and the server also

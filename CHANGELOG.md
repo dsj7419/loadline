@@ -90,6 +90,9 @@ All notable changes to Loadline are recorded here. The format follows
   under any of its other names is. (#17)
 - On ReFS volumes, such as a Dev Drive, files are told apart by their full 128-bit file ID, so
   another file there can no longer be taken for the token's leftover temporary file. (#18)
+- Whatever answers on Loadline's port, `loadline open` takes only a sign-in code of the form
+  Loadline issues, and install and `loadline stop` show a server's version and refusals without
+  its control characters.
 
 ### Notes
 

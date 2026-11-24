@@ -75,12 +75,22 @@ type StatusError struct {
 	Path   string
 	// Code is the status code, such as 401.
 	Code int
-	// Status is the status line, such as "401 Unauthorized".
-	Status string
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("%s %s: the server answered %s", strings.ToLower(e.Method), e.Path, e.Status)
+	return fmt.Sprintf("%s %s: the server answered %s", strings.ToLower(e.Method), e.Path, statusText(e.Code))
+}
+
+// statusText names a status by its code alone, in net/http's words for it,
+// such as "401 Unauthorized", or by the number where it has none. The reason
+// phrase of the status line is the answering process's own text, and the
+// commands print a refusal: escape sequences there would act on the
+// terminal.
+func statusText(code int) string {
+	if text := http.StatusText(code); text != "" {
+		return strconv.Itoa(code) + " " + text
+	}
+	return strconv.Itoa(code)
 }
 
 // LoopbackURL returns the base URL of a server listening on port of the
@@ -109,7 +119,7 @@ func (c Client) Send(ctx context.Context, path string, env protocol.Envelope) er
 	}
 	defer closeAnswer(resp)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("post envelope to %s: the server answered %s", path, resp.Status)
+		return fmt.Errorf("post envelope to %s: the server answered %s", path, statusText(resp.StatusCode))
 	}
 	return nil
 }
@@ -142,7 +152,7 @@ func (c Client) call(ctx context.Context, method, path string, limit int64) ([]b
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, &StatusError{Method: method, Path: path, Code: resp.StatusCode, Status: resp.Status}
+		return nil, &StatusError{Method: method, Path: path, Code: resp.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {

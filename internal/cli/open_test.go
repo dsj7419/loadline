@@ -3,9 +3,13 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/fsperm"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/launch"
 )
 
@@ -261,6 +266,92 @@ func assertNoProfile(t *testing.T, profile string) {
 	t.Helper()
 	if _, err := os.Lstat(profile); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Lstat(%s) = %v, want no profile made", profile, err)
+	}
+}
+
+// answerAsLoadline serves a free port as a Loadline server answers there,
+// but for the login code, which is code: a process that took Loadline's port
+// first chooses what it answers. It returns the port.
+func answerAsLoadline(t *testing.T, code string) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"app":"loadline","version":"0.1.1"}`)
+	})
+	mux.HandleFunc("POST /api/login-code", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": code})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return portOf(t, server.Listener.Addr())
+}
+
+// The login code goes into the URL the browser opens, and a batch file given
+// as the browser gets that URL through cmd.exe, which expands a %NAME% in it,
+// inside quotes too. Whatever answers on the port chooses the code: one whose
+// escapes spell a variable's name, such as U+00AC then CESS_TOKEN%, which
+// escapes to %C2%ACCESS_TOKEN%25, would put that variable's value in the URL
+// the browser then requests from it. So open takes only a code of the form a
+// Loadline server mints, 32 lower-case hex digits, which escapes to itself,
+// and opens nothing for any other.
+func TestOpen_OpensNothingForALoginCodeNotOfLoadlinesForm(t *testing.T) {
+	hex := strings.Repeat("0123456789abcdef", 2)
+	for name, code := range map[string]string{
+		"escapes that spell a variable's name": "\u00acCESS_TOKEN%",
+		"a percent sign":                       hex[:31] + "%",
+		"an ampersand":                         hex[:31] + "&",
+		"a caret":                              hex[:31] + "^",
+		"a double quote":                       hex[:31] + `"`,
+		"a slash, just before 0":               hex[:31] + "/",
+		"a colon, just after 9":                hex[:31] + ":",
+		"a backtick, just before a":            hex[:31] + "`",
+		"a g, just after f":                    hex[:31] + "g",
+		"a hex digit too many":                 hex + "0",
+		"a hex digit too few":                  hex[:31],
+		"upper-case hex":                       strings.ToUpper(hex),
+		"none":                                 "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOpenFixture(t)
+			port := answerAsLoadline(t, code)
+			hermetictest.WriteConfig(t, f.paths.ConfigFile, fmt.Sprintf(`{"browser":%q,"appWindow":true}`, f.browser), port)
+
+			got := runOpen(t.Context(), f.options(func(string, ...string) error {
+				t.Error("open started a server while one answered on the port")
+				return nil
+			}))
+
+			want := fmt.Sprintf("loadline: get a login code: the server on port %d did not answer as Loadline does, "+
+				"so the dashboard was not opened; run loadline doctor to check the server\n", port)
+			if got.code != 1 || got.stdout != "" || got.stderr != want {
+				t.Errorf("open = %d, stdout %q, stderr %q; want 1 and %q", got.code, got.stdout, got.stderr, want)
+			}
+			if urls, _ := f.opens.opened(); len(urls) != 0 {
+				t.Errorf("open opened %q, want nothing opened", urls)
+			}
+		})
+	}
+}
+
+// Every hex digit a Loadline server's code may hold is taken, and the code
+// goes into the URL as it is.
+func TestOpen_TakesALoginCodeOfLoadlinesForm(t *testing.T) {
+	const code = "0123456789abcdef0123456789abcdef"
+	f := newOpenFixture(t)
+	port := answerAsLoadline(t, code)
+	hermetictest.WriteConfig(t, f.paths.ConfigFile, fmt.Sprintf(`{"browser":%q,"appWindow":true}`, f.browser), port)
+
+	got := runOpen(t.Context(), f.options(func(string, ...string) error {
+		t.Error("open started a server while one answered on the port")
+		return nil
+	}))
+
+	if got.code != 0 || got.stdout != "" || got.stderr != "" {
+		t.Fatalf("open = %d, stdout %q, stderr %q; want 0 and nothing written", got.code, got.stdout, got.stderr)
+	}
+	want := fmt.Sprintf("http://127.0.0.1:%d/login?code=%s", port, code)
+	if urls, _ := f.opens.opened(); !slices.Equal(urls, []string{want}) {
+		t.Errorf("open opened %q, want %q", urls, want)
 	}
 }
 

@@ -1,10 +1,10 @@
 package install_test
 
-// Attacks on the data directory from the security re-check: the folders
-// above it, the moment it is created, and what an existing one holds. Each
-// builds the folder LOADLINE_HOME would sit in from a temporary directory
-// that, like the root of a second drive, lets every signed-in user modify
-// what is created below it.
+// Attacks on the data directory by another user of the computer: through
+// the folders above it, in the moment it is created, and through what an
+// existing one holds. Each builds the folder LOADLINE_HOME would sit in from
+// a temporary directory that, like the root of a second drive, lets every
+// signed-in user modify what is created below it.
 
 import (
 	"os"

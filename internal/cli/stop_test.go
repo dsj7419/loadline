@@ -1,9 +1,12 @@
 package cli_test
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -92,7 +95,7 @@ func (f *fakeLoadline) serve(listener net.Listener) {
 			version = f.successor
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, version)
+		_ = json.NewEncoder(w).Encode(map[string]string{"app": "loadline", "version": version})
 	})
 	mux.HandleFunc("POST /api/stop", f.handleStop)
 	f.server = &http.Server{Handler: mux, ReadHeaderTimeout: hangBound}
@@ -514,6 +517,62 @@ func TestRunStop_ExitCodes(t *testing.T) {
 	}
 }
 
+// Stop prints the status a refusal came with, and the reason phrase of its
+// status line is whatever answers on the port's own text: escape sequences
+// there would retitle the terminal, erase stop's line and write another in
+// its place. Stop names the status by its code alone.
+func TestRunStop_NamesARefusalByItsCodeAlone(t *testing.T) {
+	home := stopHome(t)
+	installToken(t, home)
+	port := refuseStopWith(t, "HTTP/1.1 500 \x1b]0;title set by the port's holder\a\x1b[2K\x1b[1GStopped the Loadline server.")
+	writeConfigPort(t, home, port)
+
+	got := run(t, "stop")
+
+	want := fmt.Sprintf("loadline: stop the server on port %d: post /api/stop: the server answered 500 Internal Server Error; "+
+		"run loadline doctor to check the server\n", port)
+	if got.code != 1 || got.stdout != "" || got.stderr != want {
+		t.Errorf("stop = %d, stdout %q, stderr %q; want 1 and %q", got.code, got.stdout, got.stderr, want)
+	}
+}
+
+// refuseStopWith serves a free port that answers health as Loadline does,
+// and every other request with statusLine, as a process that took the port
+// may: Go's own server writes a reason phrase of its own. It returns the
+// port.
+func refuseStopWith(t *testing.T, statusLine string) int {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	const health = `{"app":"loadline","version":"0.1.1"}`
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, req.Body)
+				if req.URL.Path == "/healthz" {
+					_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+						len(health), health)
+					return
+				}
+				_, _ = io.WriteString(conn, statusLine+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			}()
+		}
+	}()
+	return portOf(t, listener.Addr())
+}
+
 // A server busy shutting down or starting may be slow to answer, so stop
 // gives its health check 2 s, longer than a hook can wait, before it says
 // that no server runs. The server times the wait, from the request's
@@ -617,7 +676,10 @@ func TestOldServerInstruction(t *testing.T) {
 	t.Run("unix", func(t *testing.T) {
 		text := cli.OldServerInstruction("linux", 8289)
 
-		for _, want := range []string{"port 8289", "this ends every loadline serve that runs as you", "Nothing was ended", "loadline open"} {
+		for _, want := range []string{
+			"port 8289", "this ends every loadline serve that runs as you",
+			"and may also end another process of yours whose command line names loadline serve", "Nothing was ended", "loadline open",
+		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("instruction %q lacks %q", text, want)
 			}
@@ -642,15 +704,29 @@ func TestOldServerInstruction(t *testing.T) {
 				}
 			}
 		}
-		if !pattern.MatchString("loadline serve --port 9000") {
-			t.Errorf("pattern %q misses a loadline serve started from PATH", m[1])
+		for _, command := range []string{"loadline serve --port 9000", "./loadline serve", "bin/loadline serve --no-open"} {
+			if !pattern.MatchString(command) {
+				t.Errorf("pattern %q misses %s, a loadline serve started from PATH or a folder", m[1], command)
+			}
 		}
+		// pkill -f matches the whole command line, so a program that names a
+		// loadline folder and serve among its arguments is no server, and is
+		// left alone when it was run from PATH.
 		for _, command := range []string{
 			"/home/u/bin/loadline install", "/home/u/bin/loadline servers", "/home/u/bin/myloadline serve",
-			"grep loadline serve",
+			"grep loadline serve", "make -C /home/u/src/loadline serve", "npm --prefix /home/u/src/loadline serve",
+			"vim /home/u/notes/loadline serve", "sh -c /home/u/bin/loadline serve --no-open",
 		} {
 			if pattern.MatchString(command) {
 				t.Errorf("pattern %q matches %s", m[1], command)
+			}
+		}
+		// pkill sees no boundary between arguments, so one run by an absolute
+		// path, as a script is through its shebang, that names .../loadline
+		// serve later on is ended too, as the line says it may be.
+		for _, command := range []string{"/usr/bin/vim notes/loadline serve", "/bin/sh /home/u/bin/start /home/u/bin/loadline serve"} {
+			if !pattern.MatchString(command) {
+				t.Errorf("pattern %q no longer matches %s: the line's warning needs another look", m[1], command)
 			}
 		}
 	})

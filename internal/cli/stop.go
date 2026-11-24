@@ -262,7 +262,16 @@ func stillRunningError(port int, outcome stopOutcome) error {
 // command line, and ends every loadline serve of the user's, as it says:
 // not every Linux comes with a tool that tells which process listens on a
 // port. It keeps to the user's own processes, which pkill run as root would
-// not.
+// not. pkill matches the arguments joined by blanks, with no boundary
+// between them, and an absolute path may hold blanks, so the pattern takes
+// a command line that is loadline serve, one whose first word is a path
+// ending in /loadline followed by serve, and any that starts with a / and
+// has /loadline serve further on. A command run from PATH or by a relative
+// path is therefore taken only when it is loadline serve itself, and make -C
+// ~/src/loadline serve is left alone; but one run by an absolute path, as a
+// script is through its shebang, is taken when a later argument ends in
+// /loadline and the next is serve, as /usr/bin/vim notes/loadline serve is.
+// The line says it may end such a process.
 func oldServerInstruction(goos string, port int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The Loadline server on port %d is from an earlier version, which cannot be asked to stop.\n", port)
@@ -273,8 +282,9 @@ func oldServerInstruction(goos string, port int) string {
 			"if ($server) { $server | Stop-Process -PassThru } else { 'Nothing was ended: no Loadline server listens on port %d.' }\n",
 			port, port)
 	} else {
-		b.WriteString("End it once; this ends every loadline serve that runs as you, wherever it was started from:\n" +
-			"  pkill -u \"$(id -u)\" -f '(^|/)loadline serve( |$)' && echo 'Ended the Loadline server.' || echo 'Nothing was ended: no loadline serve runs as you.'\n")
+		b.WriteString("End it once; this ends every loadline serve that runs as you, wherever it was started from, " +
+			"and may also end another process of yours whose command line names loadline serve:\n" +
+			"  pkill -u \"$(id -u)\" -f '^([^ ]*/|/.*/)?loadline serve( |$)' && echo 'Ended the Loadline server.' || echo 'Nothing was ended: no loadline serve runs as you.'\n")
 	}
 	b.WriteString("Then start the new one:\n  loadline open\n")
 	return b.String()

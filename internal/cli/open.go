@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,6 +25,8 @@ const (
 	// maxLoginCodeAnswer is far more than the server's answer, a code of 32
 	// hex digits in a small JSON object.
 	maxLoginCodeAnswer = 1 << 10
+	// loginCodeLength is the length of a login code a Loadline server mints.
+	loginCodeLength = 32
 )
 
 // OpenOptions is what OpenDashboard needs.
@@ -92,7 +93,7 @@ func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stdio.Err, "loadline: warning: opening the dashboard in the browser's default profile: %v\n", err)
 	}
-	code, err := loginCode(ctx, client)
+	code, err := loginCode(ctx, client, cfg.Port)
 	if err != nil {
 		return fail(stdio, err)
 	}
@@ -148,8 +149,9 @@ func startServer(ctx context.Context, client forward.Client, port int, start ser
 	return nil
 }
 
-// loginCode asks the server for a login code.
-func loginCode(ctx context.Context, client forward.Client) (string, error) {
+// loginCode asks the server on port for a login code, and takes only one of
+// the form a Loadline server mints (isLoginCode).
+func loginCode(ctx context.Context, client forward.Client, port int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginCodeTimeout)
 	defer cancel()
 	body, err := client.Post(ctx, loginCodePath, maxLoginCodeAnswer)
@@ -162,8 +164,29 @@ func loginCode(ctx context.Context, client forward.Client) (string, error) {
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return "", fmt.Errorf("get a login code: read the server's answer: %w", err)
 	}
-	if answer.Code == "" {
-		return "", errors.New("get a login code: the server's answer holds none")
+	if !isLoginCode(answer.Code) {
+		return "", fmt.Errorf("get a login code: the server on port %d did not answer as Loadline does, "+
+			"so the dashboard was not opened; run loadline doctor to check the server", port)
 	}
 	return answer.Code, nil
+}
+
+// isLoginCode reports whether code has the form a Loadline server mints its
+// login codes in: 16 random bytes in lower-case hex. The code goes into the
+// URL the browser opens, and a batch file given as the browser gets that URL
+// through cmd.exe, which expands a %NAME% in it, inside quotes too. Whatever
+// answers on the port chooses the code, and a code whose escapes spelled a
+// variable's name would put its value in the URL, for the browser to send
+// to whatever answers; a hex code escapes to itself.
+func isLoginCode(code string) bool {
+	if len(code) != loginCodeLength {
+		return false
+	}
+	for _, c := range []byte(code) {
+		digit, letter := '0' <= c && c <= '9', 'a' <= c && c <= 'f'
+		if !digit && !letter {
+			return false
+		}
+	}
+	return true
 }
