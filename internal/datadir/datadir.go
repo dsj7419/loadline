@@ -511,13 +511,15 @@ const (
 // its names, which a hard link can put anywhere else. So dir must hold
 // nothing at its top but Loadline's own entries and the files the system
 // leaves (foreignEntry), and nothing anywhere below it may be a reparse
-// point of any kind or a file with a name outside dir: that covers what the
-// browser keeps in its profile and the files Loadline is still writing,
-// which the checks of Loadline's own files pass over (ownPaths). A folder
-// the user may not list could hold either, and so could whatever cannot be
-// read, so each of those counts as one too. It lists folders and looks at
-// each entry's attributes alone: it reads no file's content and changes
-// nothing.
+// point of any kind or a file with a name outside dir. That covers what the
+// browser keeps in its profile, which the checks of Loadline's own files do
+// not go into (ownPaths), and the files Loadline is still writing, which
+// they judge by their names in their own folder alone (judgeTemporary), and
+// only after the check of the folders above, which offers to take back the
+// data directory itself, has reported. A folder the user may not list could
+// hold either, and so could whatever cannot be read, so each of those counts
+// as one too. It lists folders and looks at each entry's attributes alone:
+// it reads no file's content and changes nothing.
 func holdsOnlyLoadlines(dir string) bool {
 	if foreign, err := foreignEntry(dir); err != nil || foreign != "" {
 		return false

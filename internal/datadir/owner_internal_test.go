@@ -271,16 +271,66 @@ func TestPrepareBrowserProfile_OffersToTakeBackAProfileOfAGoneAccount(t *testing
 	}
 }
 
+// The walk of Loadline's own files judges each temporary name by its names
+// before any owner is judged. One for a file elsewhere is refused as the
+// hard link it is, and nothing is offered: there is nothing to take back
+// until it is gone. The token beside its own leftover temporary name is in
+// place, and every name of it is in the data directory, so the data
+// directory is offered with all it holds.
+func TestOwnerProblem_AgreesWithTheJudgementOfTemporaryNames(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		plant func(t *testing.T, dir string) (want string)
+	}{
+		{
+			name: "a temporary name for a file elsewhere",
+			plant: func(t *testing.T, dir string) string {
+				t.Helper()
+				put := filepath.Join(dir, "spool", ".put-1.tmp")
+				linkOutOf(t, put)
+				return moreNamesProblem(put)
+			},
+		},
+		{
+			name: "the token beside its own leftover temporary name",
+			plant: func(t *testing.T, dir string) string {
+				t.Helper()
+				token := filepath.Join(dir, "token")
+				if err := os.Link(token, filepath.Join(dir, ".token-5678")); err != nil {
+					t.Fatal(err)
+				}
+				return ownFileReport(token, gone) + offered(onDisk(t, dir), true)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := home(t)
+			ownedBy(t, filepath.Join(dir, "token"), gone)
+			profileHolds(t, onDisk(t, dir))
+			want := tt.plant(t, dir)
+
+			for step, err := range map[string]error{"Make": Make(dir), "Secure": Secure(dir, filepath.Dir(dir))} {
+				if err == nil || err.Error() != want {
+					t.Errorf("%s = %v;\nwant %s", step, err, want)
+				}
+			}
+			if got, err := Check(dir, filepath.Dir(dir)); err != nil || got != want {
+				t.Errorf("Check = %q, %v;\nwant %q", got, err, want)
+			}
+		})
+	}
+}
+
 // When takeown /r could reach beyond the data directory, the data directory
 // is not offered, and what the report names is offered alone: that is what
 // a gone account owns, and taking the data directory without what it holds
 // would change nothing.
 func TestOwnerProblem_OffersWhatItReportsAloneWhenTheDataDirectoryHoldsMore(t *testing.T) {
-	t.Run("one of Loadline's files, beside a temporary name for a file elsewhere", func(t *testing.T) {
+	t.Run("one of Loadline's files, beside a file in the browser profile with a name elsewhere", func(t *testing.T) {
 		dir := home(t)
 		token := filepath.Join(dir, "token")
 		ownedBy(t, token, gone)
-		linkOutOf(t, filepath.Join(dir, "spool", ".put-1.tmp"))
+		linkOutOf(t, filepath.Join(dir, browserProfile, "Default", "Cookies"))
 		profileHolds(t, onDisk(t, token))
 		want := ownFileReport(token, gone) + offeredFile(onDisk(t, token))
 
