@@ -421,7 +421,7 @@ func TestSecure_LeavesATemporaryFileBeingDeleted(t *testing.T) {
 			begun := map[string]fspermtest.List{}
 			for _, path := range []string{
 				filepath.Join(filepath.Dir(going), strings.Replace(filepath.Base(going), "1234", "5678", 1)),
-				filepath.Join(dir, ".token-5678"),
+				filepath.Join(dir, ".token-9012"),
 			} {
 				writeFile(t, path)
 				if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {

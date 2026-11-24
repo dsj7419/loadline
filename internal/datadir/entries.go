@@ -479,7 +479,9 @@ func (t *tree) walk(path string, typ fs.FileMode, fix *repair) error {
 	}
 	// The folder's list, once put right, reaches what the folder holds, as
 	// the data directory's does (Make): a name below that went unjudged
-	// keeps it as it is, private but not put right, for the next run.
+	// keeps it as it is, private with the list of its own it was given to be
+	// listed, as a refused run leaves it. Later runs find it private, and
+	// leave it so.
 	unjudgedBefore := t.unjudged
 	t.unjudged = false
 	defer func() { t.unjudged = t.unjudged || unjudgedBefore }()

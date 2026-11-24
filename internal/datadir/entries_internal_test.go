@@ -72,11 +72,32 @@ func TestLeftovers_DoNotMatchAnotherFilesTemporaryNameThatSharesTheLow64Bits(t *
 	}
 }
 
+// The token's own leftover temporary name excuses itself alone: a token with
+// a third name, elsewhere, is refused for it. The walk comes to such a
+// leftover before the token and refuses it there (judgeTemporary), so only
+// judgeNames itself shows that the token is refused too.
+func TestJudgeNames_RefusesANameElsewhereBesideTheTokensOwnLeftover(t *testing.T) {
+	dir := t.TempDir()
+	token, leftover := filepath.Join(dir, "token"), filepath.Join(dir, ".token-9")
+	for _, path := range []string{token, leftover} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tokens := fsperm.FullFileID(7, [16]byte{0: 0x2a})
+	inspectAs(t, map[string]fsperm.Entry{token: {Names: 3, ID: tokens}, leftover: {Names: 3, ID: tokens}})
+
+	if _, err := judgeNames(token, false); !errors.Is(err, errMoreNames) {
+		t.Errorf("judgeNames = %v; want the token's name elsewhere refused beside its own leftover", err)
+	}
+}
+
 // The token's writer removes a name of the token's, or links one into place,
 // whenever it likes: here the token's own name goes between the look at its
 // temporary name, which found two names, and the count of them in its
 // folder, which finds one. The count is no longer what the look saw, which
-// tells of no name elsewhere: the temporary name is judged again, and taken.
+// tells of no name elsewhere: the temporary name is judged again, and taken
+// as in place, neither refused nor left unjudged.
 func TestMake_JudgesATemporaryNameAgainWhenItsNamesChangeMeanwhile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "loadline")
 	if err := fsperm.MkdirAll(dir); err != nil {
@@ -85,9 +106,6 @@ func TestMake_JudgesATemporaryNameAgainWhenItsNamesChangeMeanwhile(t *testing.T)
 	token, temporary := filepath.Join(dir, "token"), filepath.Join(dir, ".token-7")
 	if err := os.WriteFile(token, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if err := os.Link(token, temporary); err != nil {
-		t.Skipf("cannot make a hard link here: %v", err)
 	}
 	removed := false
 	previous := betweenLookAndCount
@@ -101,6 +119,25 @@ func TestMake_JudgesATemporaryNameAgainWhenItsNamesChangeMeanwhile(t *testing.T)
 		}
 	}
 	t.Cleanup(func() { betweenLookAndCount = previous })
+	// twin gives the file at from its second name, to, and arms the seam
+	// again: the next look at the temporary name sees two names, of which
+	// the count then finds one.
+	twin := func(from, to string) {
+		t.Helper()
+		if err := os.Link(from, to); err != nil {
+			t.Skipf("cannot make a hard link here: %v", err)
+		}
+		removed = false
+	}
+	twin(token, temporary)
+
+	_, verdict, err := judgeTemporary(temporary)
+
+	if err != nil || verdict != inPlace || !removed {
+		t.Errorf("judgeTemporary = %s, %v (seam ran: %t); want %s once %s went", verdictName(verdict), err, removed, verdictName(inPlace), token)
+	}
+
+	twin(temporary, token)
 
 	if err := Make(dir); err != nil {
 		t.Errorf("Make = %v; want %s judged again once %s went, and taken", err, temporary, token)
@@ -108,6 +145,17 @@ func TestMake_JudgesATemporaryNameAgainWhenItsNamesChangeMeanwhile(t *testing.T)
 	if !removed {
 		t.Errorf("nothing came between the look at %s and the count of its names, so the test proves nothing", temporary)
 	}
+}
+
+// verdictName names verdict as the code does.
+func verdictName(verdict temporaryVerdict) string {
+	names := map[temporaryVerdict]string{
+		inPlace: "inPlace", linkedElsewhere: "linkedElsewhere", goneOrGoing: "goneOrGoing", aLink: "aLink",
+	}
+	if name, ok := names[verdict]; ok {
+		return name
+	}
+	return fmt.Sprintf("no verdict (%d)", verdict)
 }
 
 // lookAs makes the walk take path for what look returns, for the rest of the
@@ -157,12 +205,12 @@ func TestJudgeTemporary_TellsWhatItFindsUnderTheName(t *testing.T) {
 
 			if tt.fails {
 				if !errors.Is(err, tt.lookErr) {
-					t.Errorf("judgeTemporary = %d, %v; want the look's error", verdict, err)
+					t.Errorf("judgeTemporary = %s, %v; want the look's error", verdictName(verdict), err)
 				}
 				return
 			}
 			if err != nil || verdict != tt.want {
-				t.Errorf("judgeTemporary = %d, %v; want %d", verdict, err, tt.want)
+				t.Errorf("judgeTemporary = %s, %v; want %s", verdictName(verdict), err, verdictName(tt.want))
 			}
 		})
 	}

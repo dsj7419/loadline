@@ -184,11 +184,13 @@ or is narrow.
     temporary file that another Loadline process began there before, whose name starts with
     `.token-`, `.put-` or `.loadline-`. The other is something install or the server refuses,
     such as a hard link, a link or a file that belongs to someone else, inside a folder of
-    Loadline's that kept you out, or another such temporary file that is being deleted while they
-    run, which they cannot judge.
+    Loadline's that kept you out, or another such temporary name that they cannot judge while they
+    run, because its file goes, as a spooled event's does when it is put in place, or is being
+    deleted.
   - *Impact:* the run makes the data directory private and puts right what it has judged, but it
     passes the directory's list down only when it refuses nothing and has judged every temporary
-    name. That temporary file keeps what it inherited before, which can let others read it. Later
+    name, and puts a folder of Loadline's right only when it has judged every temporary name in
+    it. That temporary file keeps what it inherited before, which can let others read it. Later
     runs find the directory private and leave such a file to its writer.
   - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default. Otherwise delete
     the file and run `loadline install`.
