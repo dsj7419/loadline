@@ -137,18 +137,21 @@ jobs:
         # The TestIntegration_ tests give a data directory to this account.
         # It has no password, so the log holds nothing secret. The runner is
         # an administrator, whose SeRestorePrivilege lets the tests give a
-        # folder to another account, and back again. Windows PowerShell has
-        # the LocalAccounts cmdlets built in, which some builds of PowerShell 7
-        # fail to load.
+        # folder to another account, and back again. The tests need only its
+        # SID, so it is disabled: nobody can sign in to it. Windows PowerShell
+        # has the LocalAccounts cmdlets built in, which some builds of
+        # PowerShell 7 fail to load.
         id: second-account
         if: runner.os == 'Windows'
         shell: powershell
-        run: New-LocalUser -Name loadline-it -NoPassword
+        run: New-LocalUser -Name loadline-it -NoPassword -Disabled
       - name: Make a folder another account owns
         # The TestIntegration_ test on Linux and macOS takes this folder as its
         # data directory. Its config names a port the system has just given
         # out, so that doctor asks no server that may listen on the default
-        # one. The runner empties RUNNER_TEMP when the job ends.
+        # one. The runner, which owns neither the folder nor its config, could
+        # not clear them out of RUNNER_TEMP, so a step below removes them.
+        id: foreign-folder
         if: runner.os != 'Windows'
         run: |
           dir="$RUNNER_TEMP/loadline-it"
@@ -171,6 +174,10 @@ jobs:
         if: always() && steps.second-account.outcome != 'skipped'
         shell: powershell
         run: Remove-LocalUser -Name loadline-it
+      - name: Remove the folder another account owns
+        # Whatever came of the tests, once the step that makes it has run.
+        if: always() && runner.os != 'Windows' && steps.foreign-folder.outcome != 'skipped'
+        run: sudo rm -rf "$RUNNER_TEMP/loadline-it"
       - name: Test the full generated cases and the real tap under every shell
         # Under the race detector these tests run a reduced set of cases, or
         # one shell, to stay inside CI time; without it they run every case
