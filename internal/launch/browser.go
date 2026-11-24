@@ -194,16 +194,31 @@ func isFirefox(path string) bool {
 }
 
 // chromiumArgs are the arguments that open url in a Chromium-family
-// browser: in an app window, in b.ProfileDir when it is set, or in a tab of
-// the browser as it runs.
+// browser: in an app window, in b.ProfileDir with extensions kept out when it
+// is set, or in a tab of the browser as it runs.
 func chromiumArgs(url string, b Browser) []string {
 	switch {
 	case b.AppWindow && b.ProfileDir != "":
 		// A profile folder the browser has not used yet is a new profile,
 		// which would first show the browser's welcome page and ask to make
-		// it the default browser.
-		return []string{"--user-data-dir=" + b.ProfileDir, "--no-first-run", "--no-default-browser-check", "--app=" + url}
+		// it the default browser. It would also take in the browser's
+		// default apps and the extensions installed machine-wide, which
+		// Chromium loads even with --disable-extensions: --disable-default-apps
+		// keeps those out, and --disable-extensions any other. The browser's
+		// built-in components still run, and so does an extension that an
+		// organization installs by policy.
+		return []string{
+			"--user-data-dir=" + b.ProfileDir,
+			"--no-first-run",
+			"--no-default-browser-check",
+			"--disable-extensions",
+			"--disable-default-apps",
+			"--app=" + url,
+		}
 	case b.AppWindow:
+		// The browser's default profile keeps the user's own extensions: a
+		// browser this starts with them turned off would keep them off for
+		// all of the user's browsing until it exits.
 		return []string{"--app=" + url}
 	default:
 		return []string{url}

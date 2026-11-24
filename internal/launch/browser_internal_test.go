@@ -111,7 +111,10 @@ func TestTakesProfile(t *testing.T) {
 
 // Whoever asks TakesProfile before opening must get the answer Command acts
 // on: a profile folder made for a window that ignores it is one too many,
-// and a window started in one that was never made private is worse.
+// and a window started in one that was never made private is worse. The
+// flags that keep extensions out go with that profile and nowhere else: in
+// the browser's default profile they would start the user's own browser,
+// when it is not running yet, with every extension of theirs turned off.
 func TestTakesProfile_AgreesWithCommand(t *testing.T) {
 	prefs := []string{
 		"auto", "brave", "Chrome", "edge", "firefox",
@@ -140,6 +143,11 @@ func TestTakesProfile_AgreesWithCommand(t *testing.T) {
 				inProfile := slices.ContainsFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "--user-data-dir=") })
 				if takes := takesProfile(b, foundAt(installed)); takes != inProfile {
 					t.Errorf("with %s, takesProfile(%+v) = %v, but Command gives %q", setup, b, takes, args)
+				}
+				for _, flag := range []string{"--disable-extensions", "--disable-default-apps"} {
+					if slices.Contains(args, flag) != inProfile {
+						t.Errorf("with %s, Command(%+v) gives %q, want %s only with the dashboard's own profile", setup, b, args, flag)
+					}
 				}
 			}
 		}

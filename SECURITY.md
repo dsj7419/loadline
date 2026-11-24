@@ -182,7 +182,12 @@ What it defends against:
 - **The dashboard cookie's scope.** Browsers do not separate cookies by port, so the `loadline_ui`
   cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits in the
   profile that holds it. In the dashboard's own profile, which a Chromium app window opens in by
-  default, that is only Loadline's own pages, unless you browse elsewhere in that window. In your
+  default, that is only Loadline's own pages, unless you browse elsewhere in that window. The
+  browser starts there with `--disable-extensions` and `--disable-default-apps`, which keep your
+  own extensions, extensions installed machine-wide and the browser's default apps out of that
+  profile. The browser's built-in components still run there, and so does any extension that an
+  organization installs by policy, which Chromium applies even with `--disable-extensions`. Such an
+  extension may read the dashboard and its cookie, as it may any page it has access to. In your
   normal profile, with `browser: auto`, Firefox, a batch file, a tab or `browserProfile: default`,
   it is every local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or
   by an open that fell back to it, stays valid there until it expires 30 days after it was set, or
