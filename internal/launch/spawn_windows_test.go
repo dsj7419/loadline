@@ -20,6 +20,15 @@ import (
 // console window flashes.
 const wantServerHidden = true
 
+// batchURL is the URL a batch file given as the browser gets in these tests:
+// a login URL of the shape Loadline opens, its code in hex, on dashboardURL's
+// port, which browsers refuse to fetch from. Unlike dashboardURL it holds
+// nothing cmd.exe acts on. Go quotes an argument that holds a blank, and
+// cmd.exe strips the first and the last quote of a command line that holds
+// more than two, which leaves the & of dashboardURL bare once the batch
+// file's own name is quoted too.
+const batchURL = "http://127.0.0.1:1/login?code=0123456789abcdef"
+
 var getConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
 
 // inspect reports whether this process has no console at all, whether it
@@ -134,7 +143,6 @@ func TestChildRead_WaitsOutTheRenameThatPublishedTheReport(t *testing.T) {
 // That holds however the config names it: by the file Windows runs, not by
 // how the name is written.
 func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *testing.T) {
-	const url = "http://127.0.0.1:8289/login?code=0123456789abcdef"
 	profile := filepath.Join(t.TempDir(), "R&D", "loadline", "browser")
 	for _, tc := range []struct {
 		name string
@@ -156,12 +164,12 @@ func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *te
 				t.Fatal(err)
 			}
 
-			if err := c.open(url, launch.Browser{Pref: filepath.Join(dir, tc.pref), AppWindow: true, ProfileDir: profile}); err != nil {
+			if err := c.open(batchURL, launch.Browser{Pref: filepath.Join(dir, tc.pref), AppWindow: true, ProfileDir: profile}); err != nil {
 				t.Fatalf("Open: %v", err)
 			}
 
 			report := c.read(t)
-			if want := []string{"--app=" + url}; !slices.Equal(report.Args, want) {
+			if want := []string{"--app=" + batchURL}; !slices.Equal(report.Args, want) {
 				t.Errorf("the browser got arguments %q, want %q", report.Args, want)
 			}
 		})
@@ -255,7 +263,7 @@ func TestOpen_ABatchFileHoweverItIsNamedGetsNoProfile(t *testing.T) {
 			profile := filepath.Join(dir, "R&D", "loadline", "browser")
 			pref := tc.pref(t, batch)
 
-			reaped, err := launch.OpenBrowser(dashboardURL, launch.Browser{Pref: pref, AppWindow: true, ProfileDir: profile})
+			reaped, err := launch.OpenBrowser(batchURL, launch.Browser{Pref: pref, AppWindow: true, ProfileDir: profile})
 
 			if err != nil {
 				t.Logf("Open(%q) started nothing: %v", pref, err)
