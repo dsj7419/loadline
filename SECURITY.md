@@ -201,14 +201,18 @@ or is narrow.
     volume with data deduplication works: they take a deduplicated file for the ordinary file it is.
   - *Mitigation:* use the default, which is outside OneDrive, or keep `LOADLINE_HOME` inside your
     profile and out of such folders.
-- **Volumes without a drive-letter name.**
-  - *What it takes:* a `LOADLINE_HOME` on a volume that Windows cannot name through a drive letter
-    when it follows the links on the way. Examples are some RAM-disk drivers, container bind mounts
-    and some network redirectors.
-  - *Impact:* install and the server cannot find the folders that really hold the data directory,
-    and refuse it: "find the folders that hold …; set LOADLINE_HOME to a folder in your user
-    profile". This fails closed.
-  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default.
+- **Volumes without a drive letter.**
+  - *What it takes:* a `LOADLINE_HOME` on a volume that Windows gives no drive letter to, whether
+    its path names that volume or a link on the way leads there. Examples are some RAM disks,
+    container mounts and network redirectors.
+  - *Impact:* Windows names the folders that really hold the data directory there only by the
+    volume's GUID name (`\\?\Volume{…}\`), which Loadline judges no folder by. Install, the server
+    and `loadline doctor` refuse it, and say why: "<folder> is on a volume Windows gives no drive
+    letter to, as some RAM disks, container mounts and network redirectors are, so Loadline cannot
+    check the folders that hold it: set LOADLINE_HOME to a folder on a disk with a drive letter,
+    such as one in your user profile". This fails closed.
+  - *Mitigation:* use the default, or set `LOADLINE_HOME` to a folder on a disk with a drive
+    letter, such as one in your user profile.
 - **Folders owned by an old account or a group.**
   - *What it takes:* the data directory, one of Loadline's files, or a folder above the data
     directory, that belongs to anyone but you, SYSTEM, Administrators or TrustedInstaller. One case

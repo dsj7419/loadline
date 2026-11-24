@@ -39,17 +39,27 @@ jobs:
           go-version-file: go.mod
       - name: Vet
         run: go vet ./...
-      - name: Make a ReFS volume
+      - name: Make a ReFS volume, and a volume without a drive letter
         # ReFS, which a Dev Drive uses, does not keep a file's 64-bit index
         # unique, so file identity is tested on it too: TestInspect_OnReFS
         # finds the volume through LOADLINE_TEST_REFS_DIR, and fails unless
         # that names a folder there, which this step makes. The disk is
         # expandable, so it takes only what is written to it, though ReFS
         # needs a few gigabytes to format.
+        #
+        # The second disk, a small NTFS one, gets no drive letter, as some
+        # RAM disks, container mounts and network redirectors get none; one
+        # that Windows gives it on its own is taken away again.
+        # TestSecure_RefusesADataDirectoryOnAVolumeWithoutADriveLetter finds
+        # it through LOADLINE_TEST_NOLETTER_DIR, a folder there reached by the
+        # volume's GUID name, and fails unless that names a folder on a volume
+        # without a drive letter, which this step makes.
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $vhd = Join-Path $env:RUNNER_TEMP 'refs.vhdx'
+          $noLetterVhd = Join-Path $env:RUNNER_TEMP 'noletter.vhdx'
+          $noLetterLabel = 'loadline-noletter'
           $script = Join-Path $env:RUNNER_TEMP 'refs.diskpart'
           $testDir = 'R:\loadline-test'
           Set-Content -LiteralPath $script -Encoding ascii -Value @(
@@ -59,6 +69,12 @@ jobs:
             'create partition primary'
             'format fs=refs quick'
             'assign letter=R'
+            "create vdisk file=`"$noLetterVhd`" maximum=64 type=expandable"
+            "select vdisk file=`"$noLetterVhd`""
+            'attach vdisk'
+            'create partition primary'
+            "format fs=ntfs label=$noLetterLabel quick"
+            'remove all noerr'
           )
           diskpart /s $script
           if ($LASTEXITCODE -ne 0) { throw "diskpart exited with $LASTEXITCODE" }
@@ -66,6 +82,13 @@ jobs:
           if ($fileSystem -ne 'ReFS') { throw "R: is $fileSystem, not ReFS" }
           New-Item -ItemType Directory -Path $testDir | Out-Null
           "LOADLINE_TEST_REFS_DIR=$testDir" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+          $noLetter = Get-Volume -FileSystemLabel $noLetterLabel
+          if ($noLetter.DriveLetter) { throw "$noLetterLabel has the drive letter $($noLetter.DriveLetter)" }
+          # Path is the volume's GUID name, \\?\Volume{…}\, whose ? PowerShell's
+          # own path cmdlets would read as a wildcard.
+          $noLetterDir = $noLetter.Path + 'loadline-test'
+          [IO.Directory]::CreateDirectory($noLetterDir) | Out-Null
+          "LOADLINE_TEST_NOLETTER_DIR=$noLetterDir" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Test
         # The race detector needs cgo, so a runner without a C compiler fails
         # here rather than testing without it. GitHub sets CI=true, which also
@@ -93,6 +116,13 @@ jobs:
             throw "the temporary folder is $temp, not on the ReFS volume R:"
           }
           go test -race -count=1 -v -run 'TestInspect_OnReFS$|TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne$' ./internal/fsperm/ ./internal/datadir/
+      - name: Test the refusal of a data directory on a volume without a drive letter
+        # The test makes its data directory in LOADLINE_TEST_NOLETTER_DIR. The
+        # log lists it as run, so it did not pass by being skipped.
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -v -run 'TestSecure_RefusesADataDirectoryOnAVolumeWithoutADriveLetter$' ./internal/datadir/
       - name: Test the refusal of a data directory a cloud service syncs
         # These tests register a sync root of their own, as a cloud service
         # registers the folder it keeps in sync, and skip, naming the HRESULT,
