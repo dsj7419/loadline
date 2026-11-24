@@ -32,7 +32,7 @@ function focusFell(): boolean {
  * row, or on fallback when the session has gone, without scrolling. Focus the
  * user moved off the rows stays where it is.
  */
-export function useKeepRowFocus(fallback: RefObject<HTMLElement>): void {
+export function useKeepRowFocus(fallback: RefObject<HTMLElement | null>): void {
   const before = focusedSession();
   useLayoutEffect(() => {
     if (before === null || !focusFell()) {
@@ -46,7 +46,7 @@ export function useKeepRowFocus(fallback: RefObject<HTMLElement>): void {
  * Once the details close, puts focus back on the row they were opened from,
  * or on fallback when the session has left the view.
  */
-export function useReturnFocus(openId: string | null, fallback: RefObject<HTMLElement>): void {
+export function useReturnFocus(openId: string | null, fallback: RefObject<HTMLElement | null>): void {
   const opened = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (openId !== null) {
