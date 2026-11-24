@@ -36,7 +36,9 @@ Loadline needs Claude Code 2.1.300 or later, on Windows, macOS or Linux.
    can delete the downloaded copy afterwards. Installing over a running server hands it over to
    the new binary: install asks the server to stop, waits until it has, and starts the new one. A
    server from 0.1.0 cannot be asked, so install prints how to end it once. Reload an open
-   dashboard afterwards. An upgrade on Windows while Loadline runs leaves the old binary as
+   dashboard afterwards. Run from an administrator's shell, or as root, install stops the old
+   server but starts none, so that no server keeps those rights; run `loadline open` from a normal
+   shell then. An upgrade on Windows while Loadline runs leaves the old binary as
    `bin\loadline.exe.old`; install removes it once nothing runs it.
 
 3. Start a new Claude Code session. Its first hook starts the Loadline server, which opens the
@@ -216,9 +218,10 @@ place: once the server has stopped, which `loadline stop` does at once and the s
   `CLAUDE_*` but `CLAUDE_CODE_GIT_BASH_PATH`, `CLAUDECODE` and `OTEL_*` is removed, so one
   account's API key or token never reaches another account's `claude`. They keep the rest of your
   environment.
-- **Token.** Every ingest request needs the `x-loadline-token` header, whose value is the token in
-  the data directory. The token is also in the `env` of each settings file install edits, so on
-  macOS and Linux install takes group and other permissions off those files and their backups.
+- **Token.** Every ingest request, and the request `loadline stop` sends, needs the
+  `x-loadline-token` header, whose value is the token in the data directory. The token is also in
+  the `env` of each settings file install edits, so on macOS and Linux install takes group and
+  other permissions off those files and their backups.
 - **Dashboard sign-in.** To open the dashboard, Loadline gets a one-time code from the server,
   valid once and for 60 seconds, and opens `/login?code=…`. That sets the `loadline_ui` cookie
   (`HttpOnly`, `SameSite=Strict`, derived from the token, kept for 30 days) and redirects to the
@@ -280,8 +283,11 @@ polls to find the sessions that ended meanwhile. Until the restore is done it re
 and the hooks spool those too.
 
 The data directory holds the installed binary, the token, the history (`loadline.db`), the server's
-log (`loadline.log`, rotated at 5 MB), the spool, and `server.lock`, which a server holds locked
-while it has the history open, so that one starting while another stops waits for it:
+log (`loadline.log`, rotated at 5 MB), the spool, the dashboard's browser profile (`browser`), and
+`server.lock`, which a server holds locked while it has the history open, so that one starting
+while another stops waits for it. The server that holds it records there its port, its process
+ID and whether it was started with `serve --port`, so that a server that cannot start, and
+install, can name it:
 
 | System | Data directory |
 | --- | --- |
@@ -296,9 +302,11 @@ Wherever it is, Loadline keeps the data directory private: on Windows it gives t
 access list of its own that admits only you, SYSTEM and Administrators, and on macOS and Linux mode
 0700. It refuses one below a folder that other users can delete or rename, or take over, or that
 belongs to someone else, which would let them put a binary of their own where the hooks look. It
-judges the folders a link in the path leads to as well. `D:\loadline` you created is fine,
-`D:\tools\loadline` on a drive every user can modify is not. Keep `LOADLINE_HOME` in your user
-profile. [SECURITY.md](SECURITY.md) lists exactly what is checked.
+judges the folders a link in the path leads to as well. On Windows it also refuses one in a folder
+that a cloud service, such as OneDrive, keeps in sync, which would copy the token and the binary
+to the cloud. `D:\loadline` you created is fine, `D:\tools\loadline` on a drive every user can
+modify is not. Keep `LOADLINE_HOME` in your user profile. [SECURITY.md](SECURITY.md) lists exactly
+what is checked.
 
 ## Multiple accounts
 
@@ -362,7 +370,8 @@ Run `loadline doctor`. It checks, and marks each line ✔, ! or ✖:
 - **config:** the config file can be read.
 - **claude:** `claude` runs and is 2.1.300 or later.
 - **data directory:** the data directory and Loadline's files in it admit only you, none of those
-  files is a link, and no folder above the directory can be deleted or renamed by anyone else.
+  files is a link, no folder above the directory can be deleted or renamed by anyone else, and on
+  Windows no cloud service keeps it in sync.
   `loadline install` fixes files that let others in; a link is yours to remove, and a folder above
   the directory yours to fix, or `LOADLINE_HOME` to move.
 - **token:** the token file exists and holds a valid token.
@@ -418,15 +427,18 @@ It exits 1 when any check fails. Common fixes:
 
 ## Roadmap
 
-Planned releases are tracked as milestones:
+Releases are tracked as milestones:
 
-- [**0.1.1**](https://github.com/dsj7419/loadline/milestone/1): polish and hardening. It covers the
-  dashboard window's own browser profile, a clean hand-over when an upgrade replaces a running
-  server, Windows data-directory edge cases, and the Preact 11 and TypeScript 7 upgrades.
+- [**0.1.1**](https://github.com/dsj7419/loadline/milestone/1): polish and hardening. Its changes
+  are listed under Unreleased in the [CHANGELOG](CHANGELOG.md).
 - [**0.2.0**](https://github.com/dsj7419/loadline/milestone/2): accounts by purpose. Each account gets
-  a purpose, project folders are assigned to accounts in the config, `loadline start` (and an
-  opt-in `claude` wrapper) launches the account a folder is assigned to, and
-  `loadline accounts add` sets up a new account.
+  a purpose, and project folders are assigned to accounts in the config. `loadline start`, or an
+  opt-in `claude` wrapper, launches the account a folder is assigned to; `loadline accounts` adds,
+  lists and removes accounts; and the dashboard shows each account's purpose and the API value of
+  1% of its weekly limit. Beside that: `loadline token rotate`, an attested SBOM with each release,
+  what a session that needs you is waiting on, a warning when a server from an earlier install is
+  still running, and fixes for Snap and Flatpak browsers, Ctrl+C while a server waits to start, and
+  failed background sessions.
 
 Ideas that are not scheduled yet carry the
 [`idea`](https://github.com/dsj7419/loadline/labels/idea) label; comments on them are welcome.
