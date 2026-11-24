@@ -393,6 +393,54 @@ func TestInstall_HandsTheServerOnTheOldPortOverWhenThePortChanges(t *testing.T) 
 	})
 }
 
+// ownTelemetrySettings are settings whose OpenTelemetry setup is the user's
+// own, which install leaves alone: nothing in them names the port.
+const ownTelemetrySettings = `{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://collector.example:4318/v1/logs"
+  }
+}`
+
+// A port change gives install nothing to write when nothing in the settings
+// names the port, as when the OpenTelemetry setup is the user's own. Run
+// again, as the README says, install still moves the server from the old
+// port, which no server on the new one can start beside.
+func TestInstall_MovesTheServerAfterAPortChangeWhateverTheSettingsHold(t *testing.T) {
+	for name, settings := range map[string]string{
+		"telemetry is Loadline's": ownerSettings,
+		"telemetry is the user's": ownTelemetrySettings,
+	} {
+		t.Run(name, func(t *testing.T) {
+			setVersion(t, "0.1.1-test")
+			cli.SetElevated(t, false)
+			home, dir := sandbox(t, settings)
+			if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+				t.Fatalf("the first install: %s", got.stderr)
+			}
+			old := newFakeLoadline(t, ours(installToken(t, home)))
+			holdHistoryUntilGone(t, home, old)
+			port := freePort(t)
+			writeConfigPort(t, home, port)
+			cli.SetServerSpawn(t, func(string, ...string) error {
+				fakeAt(t, port, func(f *fakeLoadline) { f.version = "0.1.1-test" })
+				return nil
+			})
+
+			got := run(t, "install", "--config-dir", dir, "--yes")
+
+			want := fmt.Sprintf("Moved the Loadline server from port %d to port %d; run loadline open to see its dashboard.\n", old.port, port)
+			if got.code != 0 || !strings.Contains(got.stdout, want) {
+				t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and %q", got.code, got.stderr, got.stdout, want)
+			}
+			if n := old.stopsAsked(); n != 1 {
+				t.Errorf("the old port's server was asked to stop %d times, want once", n)
+			}
+		})
+	}
+}
+
 // By the time the hand-over fails, the settings and the binary are in
 // place: install says what happened and what to run, and exits 1.
 func TestInstall_SaysWhatToDoWhenTheHandOverFails(t *testing.T) {

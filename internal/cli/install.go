@@ -28,9 +28,10 @@ const (
 // runInstall wires Loadline into each settings file and puts the running
 // binary where the settings point. It shows the changes first and asks
 // unless --yes; --dry-run writes nothing at all: not the settings, not the
-// binary, not the token. Once it has written them, it hands the running
-// server over to the one the hooks start (handOver): a server on another
-// port than the configured one, or one whose binary it replaced.
+// binary, not the token. Otherwise it then hands the running server over to
+// the one the hooks start (handOver): a server on another port than the
+// configured one, even when there was nothing else to do, or one whose
+// binary it has just replaced.
 func runInstall(ctx context.Context, args []string, stdio IO) int {
 	flags := newFlagSet("install", stdio)
 	edit := addEditFlags(flags)
@@ -99,8 +100,12 @@ func runInstall(ctx context.Context, args []string, stdio IO) int {
 		noteAside(out, stdio, paths.DataDir)
 		return out.exit(stdio, exitOK)
 	case !proceed:
-		// Already installed.
-		removeAsideAndSay(out, stdio, paths.DataDir)
+		// Already installed. A port change leaves nothing to write when
+		// nothing in the settings names the port, as when the OpenTelemetry
+		// setup is the user's own, and the server still to move.
+		if err := handOverAndTidy(ctx, out, stdio, paths, opts, false); err != nil {
+			return out.exit(stdio, fail(stdio, err))
+		}
 		return out.exit(stdio, exitOK)
 	}
 
@@ -120,24 +125,38 @@ func runInstall(ctx context.Context, args []string, stdio IO) int {
 	if err := writeEdits(out, edits); err != nil {
 		return fail(stdio, err)
 	}
-	// The port the hooks start the server on. Without a home directory, the
-	// config's port and the defaults' are the same.
-	home, _ := os.UserHomeDir()
-	stoppedOld, handoverErr := handOver(ctx, out, handoverOptions{
-		port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
-		lockPath: paths.ServerLock, replaced: install.HasEdits(binary),
-		spawn: spawnServer, elevated: isElevated(),
-	})
-	if stoppedOld {
-		removeAsideSettlingAndSay(out, stdio, paths.DataDir)
-	} else {
-		removeAsideAndSay(out, stdio, paths.DataDir)
-	}
+	handoverErr := handOverAndTidy(ctx, out, stdio, paths, opts, install.HasEdits(binary))
 	out.printf("%s\n", restartNotice)
 	if handoverErr != nil {
 		return out.exit(stdio, fail(stdio, handoverErr))
 	}
 	return out.exit(stdio, exitOK)
+}
+
+// handOverAndTidy hands the running server over to the one the hooks start
+// (handOver), replaced saying that install has just replaced the binary at
+// opts.Exe, and then removes the binaries earlier upgrades moved aside,
+// trying again for a while once the old server has stopped. Without a token
+// yet, no server of the installation's can be running. It returns what the
+// hand-over could not do, saying what to run.
+func handOverAndTidy(ctx context.Context, out *printer, stdio IO, paths config.Paths, opts install.Options, replaced bool) error {
+	var stoppedOld bool
+	var err error
+	if opts.Token != tokenPlaceholder {
+		// The port the hooks start the server on. Without a home directory,
+		// the config's port and the defaults' are the same.
+		home, _ := os.UserHomeDir()
+		stoppedOld, err = handOver(ctx, out, handoverOptions{
+			port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
+			lockPath: paths.ServerLock, replaced: replaced, spawn: spawnServer, elevated: isElevated(),
+		})
+	}
+	if stoppedOld {
+		removeAsideSettlingAndSay(out, stdio, paths.DataDir)
+	} else {
+		removeAsideAndSay(out, stdio, paths.DataDir)
+	}
+	return err
 }
 
 // asideBinaries and removeAside are install's. Tests replace them, since
