@@ -101,9 +101,19 @@ func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld 
 		return true, nil
 	}
 	client := forward.Client{BaseURL: forward.LoopbackURL(o.port), Token: o.token, HealthTimeout: serverHealthTimeout}
-	start := serverStart{exe: o.exe, spawn: o.spawn, after: o.after, wait: handoverStartWait}
-	if err := startServer(ctx, client, o.port, start); err != nil {
-		return true, fmt.Errorf("the old server stopped, but the new one did not start: %w; run loadline open", err)
+	// A session's hook or status line may have started the next server the
+	// moment the port was free, and one started now would find it taken.
+	version, answers := client.ServerVersion(ctx)
+	switch {
+	case !answers:
+		start := serverStart{exe: o.exe, spawn: o.spawn, after: o.after, wait: handoverStartWait}
+		if err := startServer(ctx, client, o.port, start); err != nil {
+			return true, fmt.Errorf("the old server stopped, but the new one did not start: %w; run loadline open", err)
+		}
+	case version != Version:
+		out.printf("Stopped the old server, but the server that now answers on port %d runs %s, not %s; "+
+			"run loadline stop, and a running session starts the new one.\n", o.port, version, Version)
+		return true, nil
 	}
 	if from != o.port {
 		out.printf("Moved the Loadline server from port %d to port %d; run loadline open to see its dashboard.\n", from, o.port)

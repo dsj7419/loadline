@@ -158,6 +158,13 @@ func (c Client) call(ctx context.Context, method, path string, limit int64) ([]b
 // after HealthTimeout, or sooner when ctx ends, and anything but a 200 whose
 // body, within its first 4 KiB, names the app counts as no.
 func (c Client) Healthy(ctx context.Context) bool {
+	_, ok := c.ServerVersion(ctx)
+	return ok
+}
+
+// ServerVersion returns the version the Loadline server at BaseURL names in
+// its health answer, and whether one answers, as Healthy finds it.
+func (c Client) ServerVersion(ctx context.Context) (string, bool) {
 	timeout := c.HealthTimeout
 	if timeout <= 0 {
 		timeout = defaultHealthTimeout
@@ -166,27 +173,28 @@ func (c Client) Healthy(ctx context.Context) bool {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+healthPath, http.NoBody)
 	if err != nil {
-		return false
+		return "", false
 	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return "", false
 	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if err != nil {
-		return false
+		return "", false
 	}
 	var health struct {
-		App string `json:"app"`
+		App     string `json:"app"`
+		Version string `json:"version"`
 	}
-	if err := json.Unmarshal(answer, &health); err != nil {
-		return false
+	if err := json.Unmarshal(answer, &health); err != nil || health.App != appName {
+		return "", false
 	}
-	return health.App == appName
+	return health.Version, true
 }
 
 func (c Client) httpClient() *http.Client {

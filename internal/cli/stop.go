@@ -52,14 +52,14 @@ type stopKind int
 const (
 	// noServer: nothing answered as a Loadline server.
 	noServer stopKind = iota
-	// stopped: the server no longer answers, and its process has exited.
+	// stopped: the server's process has exited.
 	stopped
 	// cannotAsk: the server has no stop route, as one from before 0.1.1.
 	cannotAsk
 	// notOurs: the server did not take this installation's token.
 	notOurs
-	// stillRunning: the server took the request, but answered on, or its
-	// process ran on, past the wait.
+	// stillRunning: the server took the request, but its process ran on, or,
+	// one that cannot be watched, answered on, past the wait.
 	stillRunning
 	// unwatched: the server stopped answering, but its process could not
 	// be watched to see it exit.
@@ -80,11 +80,11 @@ type stopOutcome struct {
 }
 
 // stopServer asks the server at client's address to stop, with client's
-// token, and waits, up to wait on after, until it no longer answers and the
-// process its answer named has exited: a server stops answering well before
-// it has written the history and let go of its binary. It goes by what the
-// server answers, never by its version: one without the route refuses the
-// request with 404 or 405, and one of another installation with 401.
+// token, and waits, up to wait on after, until the process its answer named
+// has exited (awaitStop): a server stops answering well before it has
+// written the history and let go of its binary. It goes by what the server
+// answers, never by its version: one without the route refuses the request
+// with 404 or 405, and one of another installation with 401.
 func stopServer(ctx context.Context, client forward.Client, after timer.AfterFunc, wait time.Duration) stopOutcome {
 	if !client.Healthy(ctx) {
 		return stopOutcome{kind: noServer}
@@ -121,12 +121,14 @@ func askToStop(ctx context.Context, client forward.Client) (int, error) {
 	return answer.PID, nil
 }
 
-// awaitStop waits, up to wait on after, until the server no longer answers
-// and the process pid has exited. The process is watched from the start,
-// while it surely runs, so that no other process that takes its ID later is
-// taken for it. One the system will not let be watched is taken to run on,
-// as one that may not be signaled is on Unix: once the server is silent,
-// there is nothing more to learn of it.
+// awaitStop waits, up to wait on after, until the process pid has exited:
+// with it, the server has written the history and let go of its binary and
+// its lock, and whatever answers on the port then is another server, as one
+// a status line starts the moment the port is free. The process is watched
+// from the start, while it surely runs, so that no other process that takes
+// its ID later is taken for it. One the system will not let be watched is
+// taken to run on, as one that may not be signaled is on Unix: once the
+// server is silent, there is nothing more to learn of it.
 func awaitStop(ctx context.Context, client forward.Client, pid int, after timer.AfterFunc, wait time.Duration) stopOutcome {
 	process, err := watchProcess(pid)
 	switch {
@@ -143,18 +145,19 @@ func awaitStop(ctx context.Context, client forward.Client, pid int, after timer.
 	defer stop()
 	answering := true
 	for {
+		if process != nil {
+			exited, err := process.exited()
+			if err != nil {
+				return stopOutcome{kind: failed, pid: pid, err: fmt.Errorf("watch the server's process %d: %w", pid, err)}
+			}
+			if exited {
+				return stopOutcome{kind: stopped, pid: pid}
+			}
+		}
 		// Once silent, the server is not asked again: a server a hook starts
 		// meanwhile may answer on the port.
 		answering = answering && client.Healthy(ctx)
-		exited := false
-		if process != nil {
-			if exited, err = process.exited(); err != nil {
-				return stopOutcome{kind: failed, pid: pid, err: fmt.Errorf("watch the server's process %d: %w", pid, err)}
-			}
-		}
 		switch {
-		case !answering && exited:
-			return stopOutcome{kind: stopped, pid: pid}
 		case !answering && process == nil:
 			return stopOutcome{kind: unwatched, pid: pid}
 		case after.Sleep(waiting, serverPollEvery):

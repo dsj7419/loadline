@@ -221,6 +221,45 @@ func TestInstall_HandsOverAServerWhoseProcessCannotBeWatched(t *testing.T) {
 	}
 }
 
+// The old server stops and its process exits, and a server a status line
+// started has the port before install looks again. The hand-over is done:
+// install starts no spare, and says the server restarted when the one that
+// answers runs the binary it put in place.
+func TestInstall_HandsOverWhenTheNextServerAnswersAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name, successor, says string
+	}{
+		{
+			name: "the new binary's", successor: "0.1.1-test",
+			says: "Restarted the Loadline server on 0.1.1-test; reload an open dashboard.\n",
+		},
+		{
+			name: "another version's", successor: "0.1.0",
+			says: "Stopped the old server, but the server that now answers on port %d runs 0.1.0, not 0.1.1-test; " +
+				"run loadline stop, and a running session starts the new one.\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setVersion(t, "0.1.1-test")
+			_, dir, fake := handOverHome(t, func(f *fakeLoadline) { f.successor = tc.successor })
+			noStarts(t)
+			says := tc.says
+			if strings.Contains(says, "%d") {
+				says = fmt.Sprintf(says, fake.port)
+			}
+
+			got := run(t, "install", "--config-dir", dir, "--yes")
+
+			if got.code != 0 || got.stderr != "" || !strings.HasSuffix(got.stdout, says+restartNotice+"\n") {
+				t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and %q", got.code, got.stderr, got.stdout, says)
+			}
+			if n := fake.stopsAsked(); n != 1 {
+				t.Errorf("%d stop requests reached the port, want the one: the next server was asked to stop too", n)
+			}
+		})
+	}
+}
+
 // What triggers the hand-over is a binary that install replaced, not a
 // version: with the binary as it was, the running server runs it already.
 func TestInstall_DoesNotHandOverWhenTheBinaryIsUnchanged(t *testing.T) {

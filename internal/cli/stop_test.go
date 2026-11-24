@@ -52,6 +52,11 @@ type fakeLoadline struct {
 	// keepsProcess, when set, stops the fake answering once it has answered a
 	// stop request, but leaves its process running.
 	keepsProcess bool
+	// successor, when set, is the version of a server that has the port the
+	// moment the fake has answered a stop request, as one a status line
+	// starts may: the fake answers health as that server from then on, while
+	// its own process ends.
+	successor string
 
 	port     int
 	server   *http.Server
@@ -82,8 +87,12 @@ func newFakeLoadline(t *testing.T, edit ...func(*fakeLoadline)) *fakeLoadline {
 func (f *fakeLoadline) serve(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		version := f.version
+		if f.successor != "" && f.stopsAsked() > 0 {
+			version = f.successor
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, f.version)
+		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, version)
 	})
 	mux.HandleFunc("POST /api/stop", f.handleStop)
 	f.server = &http.Server{Handler: mux, ReadHeaderTimeout: hangBound}
@@ -108,6 +117,13 @@ func (f *fakeLoadline) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = fmt.Fprint(w, answer)
 	if f.lingers {
+		return
+	}
+	if f.successor != "" {
+		go func() {
+			f.process.End()
+			close(f.gone)
+		}()
 		return
 	}
 	// Once the answer is out, as a real server shuts down: its listener
@@ -277,10 +293,38 @@ func TestStopServer_Outcomes(t *testing.T) {
 		}
 	})
 
-	t.Run("a server that answers on though its process exited", func(t *testing.T) {
+	// Once the process the answer named has exited, the server is gone, its
+	// history closed and its lock let go of: what answers on the port is
+	// another server, as one a status line starts the moment the port is
+	// free.
+	t.Run("a port that answers on though the server's process exited", func(t *testing.T) {
 		gone := exetest.Start(t)
 		gone.End()
 		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.process, f.lingers = gone, true })
+
+		if got, err := ask(t, fake.client(token)); got != "stopped" || err != nil {
+			t.Errorf("StopServer = %s, %v; want stopped", got, err)
+		}
+	})
+
+	// The next server has the port before the asked one is ever seen
+	// silent. It is not asked to stop in its turn.
+	t.Run("the next server has the port at once", func(t *testing.T) {
+		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.successor = "0.1.1-next" })
+
+		if got, err := ask(t, fake.client(token)); got != "stopped" || err != nil {
+			t.Errorf("StopServer = %s, %v; want stopped", got, err)
+		}
+		if n := fake.stopsAsked(); n != 1 {
+			t.Errorf("%d stop requests reached the port, want the one: the next server was asked to stop too", n)
+		}
+	})
+
+	// A process that cannot be watched is gone, as far as can be told, only
+	// once nothing answers.
+	t.Run("a server whose process cannot be watched answers past the wait", func(t *testing.T) {
+		cli.CannotWatchProcesses(t)
+		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.lingers = true })
 		clock := clocktest.New(t0)
 		done := make(chan string, 1)
 		go func() {
