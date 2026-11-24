@@ -124,14 +124,30 @@ func resolve(b Browser, find func(name string) (string, bool)) (program string, 
 
 // fileRun returns the file that Windows takes program to name when it starts
 // it: the one exec.LookPath finds, as exec.Command does, which for a name
-// without an extension is the first that PATHEXT names, without the dots and
-// blanks that Windows drops from the end of a name. A program that is not
-// found stays as it is named.
+// without an extension is the first that PATHEXT names, read as Windows reads
+// a path (asWindowsReads). A program that is not found stays as it is named.
 func fileRun(program string) string {
 	if found, err := exec.LookPath(program); err == nil {
 		program = found
 	}
-	return strings.TrimRight(program, ". ")
+	return asWindowsReads(program)
+}
+
+// asWindowsReads returns path as Windows reads it before it opens a file:
+// with its "." and ".." folders resolved and the dots and blanks at its end
+// dropped. Each can leave another to take, as browser.cmd\. leaves a
+// separator and browser.cmd \. a blank, so it takes them until none is left.
+// Where Windows would stop sooner, the name it reads ends in a separator and
+// is no file it can run; taking more there can only find a batch file where
+// Windows runs none, which then gets no profile it would not have used.
+func asWindowsReads(path string) string {
+	for {
+		read := strings.TrimRight(filepath.Clean(path), ". ")
+		if read == path {
+			return read
+		}
+		path = read
+	}
 }
 
 // isBatchFile reports whether path names a batch file, which Windows runs

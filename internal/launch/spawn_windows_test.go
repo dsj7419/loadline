@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -167,43 +168,110 @@ func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *te
 	}
 }
 
-// A batch file named with a dot after it is still started through cmd.exe,
-// which then cannot find it under that name, so it never runs. Whatever
-// followed an & cut from a profile path on its command line would run all
-// the same, from the home directory. Such a name gets no profile either, so
-// nothing runs.
-func TestOpen_ABatchFileNamedWithADotAfterItStartsNothingElse(t *testing.T) {
-	dir := t.TempDir()
-	batch := filepath.Join(dir, "browser.cmd")
-	if err := os.WriteFile(batch, []byte("@echo off\r\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// The text after the & in the profile path below names D\loadline\browser,
-	// from the home directory the browser starts in: a stand-in there leaves
-	// a mark if cmd.exe runs it.
-	home, marker := filepath.Join(dir, "home"), filepath.Join(dir, "marker.txt")
-	standIn := filepath.Join(home, "D", "loadline")
-	if err := os.MkdirAll(standIn, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(standIn, "browser.cmd"), []byte("@>\""+marker+"\" echo ran\r\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("USERPROFILE", home)
-	profile := filepath.Join(dir, "R&D", "loadline", "browser")
+// Windows reads a program's name as it reads any path, without the dots and
+// blanks at its end and without a "." folder after it, so browser.cmd\. runs
+// browser.cmd, through cmd.exe. That cuts a profile path such as
+// C:\Users\R&D\... at the & and runs the rest as a command of its own, from
+// the home directory, even where cmd.exe then cannot find the batch file
+// under the name it was given. So a batch file gets no profile however the
+// config names it. Each row names one batch file another way, with a profile
+// under R&D; a stand-in where the text after the & leads leaves a mark if
+// cmd.exe runs it. Some names start nothing at all.
+func TestOpen_ABatchFileHoweverItIsNamedGetsNoProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// file is the batch file's name on disk: a name longer than 8.3 has
+		// a short name too, on a volume that keeps them.
+		file string
+		// pref names the batch file at path as the config does.
+		pref func(t *testing.T, path string) string
+	}{
+		{name: "as it is", pref: func(_ *testing.T, path string) string { return path }},
+		{name: "with a dot after it", pref: func(_ *testing.T, path string) string { return path + "." }},
+		{name: `with \. after it`, pref: func(_ *testing.T, path string) string { return path + `\.` }},
+		{name: `with /. after it`, pref: func(_ *testing.T, path string) string { return path + `/.` }},
+		{name: `with \.\. after it`, pref: func(_ *testing.T, path string) string { return path + `\.\.` }},
+		{name: `with \. and a blank after it`, pref: func(_ *testing.T, path string) string { return path + `\. ` }},
+		{name: `with a blank and \. after it`, pref: func(_ *testing.T, path string) string { return path + ` \.` }},
+		{name: `with \... after it`, pref: func(_ *testing.T, path string) string { return path + `\...` }},
+		{name: `with a folder and .. after it`, pref: func(_ *testing.T, path string) string { return path + `\sub\..` }},
+		{name: "with its data stream named", pref: func(_ *testing.T, path string) string { return path + "::$DATA" }},
+		{name: "with forward slashes", pref: func(_ *testing.T, path string) string { return filepath.ToSlash(path) }},
+		{name: `through \\?\`, pref: func(_ *testing.T, path string) string { return `\\?\` + path }},
+		{name: "by a folder and .. on the way", pref: func(_ *testing.T, path string) string {
+			return filepath.Dir(path) + `\sub\..\` + filepath.Base(path)
+		}},
+		{name: "by its short name", file: "browser launcher.cmd", pref: func(t *testing.T, path string) string {
+			t.Helper()
+			long, err := windows.UTF16PtrFromString(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			short := make([]uint16, windows.MAX_PATH)
+			n, err := windows.GetShortPathName(long, &short[0], windows.MAX_PATH)
+			if err != nil || n == 0 {
+				t.Skipf("no short name for %s: %v", path, err)
+			}
+			name := windows.UTF16ToString(short[:n])
+			if strings.EqualFold(name, path) {
+				t.Skip("this volume keeps no short names")
+			}
+			return name
+		}},
+		{name: "by a hard link named .exe", pref: func(t *testing.T, path string) string {
+			t.Helper()
+			link := filepath.Join(filepath.Dir(path), "linked.exe")
+			if err := os.Link(path, link); err != nil {
+				t.Skipf("link: %v", err)
+			}
+			return link
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			file := tc.file
+			if file == "" {
+				file = "browser.cmd"
+			}
+			batch, ran := filepath.Join(dir, file), filepath.Join(dir, "ran.txt")
+			if err := os.WriteFile(batch, []byte("@>\""+ran+"\" echo %*\r\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// The text after the & in the profile path below names
+			// D\loadline\browser, from the home directory the browser starts
+			// in: a stand-in there leaves a mark if cmd.exe runs it.
+			home, marker := filepath.Join(dir, "home"), filepath.Join(dir, "marker.txt")
+			standIn := filepath.Join(home, "D", "loadline")
+			if err := os.MkdirAll(standIn, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(standIn, "browser.cmd"), []byte("@>\""+marker+"\" echo ran\r\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("USERPROFILE", home)
+			profile := filepath.Join(dir, "R&D", "loadline", "browser")
+			pref := tc.pref(t, batch)
 
-	reaped, err := launch.OpenBrowser("http://127.0.0.1:8289/login?code=0123456789abcdef",
-		launch.Browser{Pref: batch + ".", AppWindow: true, ProfileDir: profile})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+			reaped, err := launch.OpenBrowser(dashboardURL, launch.Browser{Pref: pref, AppWindow: true, ProfileDir: profile})
 
-	select {
-	case <-reaped:
-	case <-time.After(reapLimit()):
-		t.Fatalf("cmd.exe still ran %v after it was started", reapLimit())
-	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Error("cmd.exe ran the text after the ampersand in the profile path as a command of its own")
+			if err != nil {
+				t.Logf("Open(%q) started nothing: %v", pref, err)
+			} else {
+				select {
+				case <-reaped:
+				case <-time.After(reapLimit()):
+					t.Fatalf("what Open(%q) started still ran %v later", pref, reapLimit())
+				}
+			}
+			if args, err := os.ReadFile(ran); err == nil && strings.Contains(string(args), "--user-data-dir") {
+				t.Errorf("the batch file named %q got a profile through cmd.exe: %s", pref, args)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Errorf("with the batch file named %q, cmd.exe ran the text after the ampersand in the profile path as a command of its own", pref)
+			}
+		})
 	}
 }
