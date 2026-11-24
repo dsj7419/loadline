@@ -878,13 +878,20 @@ func samePath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
-// finalPathFlags are FILE_NAME_NORMALIZED and VOLUME_NAME_DOS, both zero:
-// the path with every link and subst drive resolved, on its drive letter.
-const finalPathFlags = 0
+// The forms GetFinalPathNameByHandle can name a path in (winbase.h).
+const (
+	// volumeNameDOS is FILE_NAME_NORMALIZED and VOLUME_NAME_DOS, both zero:
+	// the path with every link and subst drive resolved, on its drive letter.
+	volumeNameDOS = 0
+	// volumeNameGUID is VOLUME_NAME_GUID: the same path on the volume's
+	// \\?\Volume{…} name, which every volume has.
+	volumeNameGUID = 0x1
+)
 
 // finalPath returns the path the system opens for path, each junction,
-// symbolic link and subst drive in it resolved. Tests replace it: no file
-// system at hand fails to say.
+// symbolic link and subst drive in it resolved. On a volume that has no
+// drive letter, and so no such path, it fails with ErrNoDriveLetter. Tests
+// replace it: no file system at hand fails to say.
 var finalPath = func(path string) (string, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -897,18 +904,46 @@ var finalPath = func(path string) (string, error) {
 		return "", fmt.Errorf("open %s: %w", path, err)
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
-	buf := make([]uint16, windows.MAX_PATH)
+	final, dosErr := finalPathName(handle, volumeNameDOS)
+	if dosErr == nil {
+		return dosPath(final), nil
+	}
+	// The path on the GUID name only tells why there is none on a drive
+	// letter: no folder is judged by it. The DOS query's error is left out,
+	// since ERROR_PATH_NOT_FOUND, its answer then, reads as a path that does
+	// not exist.
+	if _, guidErr := finalPathName(handle, volumeNameGUID); noDriveLetter(dosErr, guidErr) {
+		return "", fmt.Errorf("resolve %s: %w", path, ErrNoDriveLetter)
+	}
+	return "", fmt.Errorf("resolve %s: %w", path, dosErr)
+}
+
+// finalPathName asks GetFinalPathNameByHandle for the path of the file handle
+// is open on, in the form flags names.
+func finalPathName(handle windows.Handle, flags uint32) (string, error) {
+	size := uint32(windows.MAX_PATH)
 	for {
-		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), finalPathFlags)
+		buf := make([]uint16, size)
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], size, flags)
 		if err != nil {
-			return "", fmt.Errorf("resolve %s: %w", path, err)
+			return "", err
 		}
-		if int(n) < len(buf) {
-			return dosPath(windows.UTF16ToString(buf[:n])), nil
+		if n < size {
+			return windows.UTF16ToString(buf[:n]), nil
 		}
 		// Too small: n is the size it needs, its terminating null included.
-		buf = make([]uint16, n)
+		size = n
 	}
+}
+
+// noDriveLetter reports whether the volume a path is on has no drive letter,
+// from what GetFinalPathNameByHandle answered when asked for the path on the
+// volume's DOS name (dosErr) and on its GUID name (guidErr). Every volume has
+// a GUID name, but only one with a drive letter, or a folder it is mounted
+// in, has a DOS name. When neither could be had, the file system cannot say
+// where the path leads at all.
+func noDriveLetter(dosErr, guidErr error) bool {
+	return dosErr != nil && guidErr == nil
 }
 
 // dosPath takes the \\?\ prefix, which GetFinalPathNameByHandle puts on what

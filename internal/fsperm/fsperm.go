@@ -6,11 +6,17 @@ package fsperm
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrNoDriveLetter is why the folders that really hold a path cannot be found
+// on a volume that Windows gives no drive letter to: it names them on such a
+// volume only by the volume's GUID name, which Loadline judges no folder by.
+var ErrNoDriveLetter = errors.New("the volume has no drive letter")
 
 // Entry is what Inspect tells of a path itself.
 type Entry struct {
@@ -130,12 +136,9 @@ func MovableAncestor(dir, top string) (string, error) {
 	if found, err := movableChain(dir, top); err != nil || found != "" {
 		return found, err
 	}
-	// The folders that really hold it go unjudged when they cannot be found,
-	// so such a path is refused; one in the user's profile resolves.
-	const unresolved = "find the folders that hold %s: %w; set LOADLINE_HOME to a folder in your user profile"
 	held, err := resolved(dir)
 	if err != nil {
-		return "", fmt.Errorf(unresolved, dir, err)
+		return "", unresolved(dir, err)
 	}
 	if samePath(held, dir) {
 		return "", nil
@@ -143,7 +146,7 @@ func MovableAncestor(dir, top string) (string, error) {
 	heldTop := top
 	if top != "" {
 		if heldTop, err = resolved(top); err != nil {
-			return "", fmt.Errorf(unresolved, top, err)
+			return "", unresolved(top, err)
 		}
 	}
 	found, err := movableChain(held, heldTop)
@@ -157,6 +160,32 @@ func MovableAncestor(dir, top string) (string, error) {
 	// name in its long form, whatever short 8.3 name dir gave.
 	return dir + " is really " + held + ", and " + found, nil
 }
+
+// unresolved says why the folders that really hold path cannot be found,
+// err, and what to do. They go unjudged then, so such a path is refused; one
+// in the user's profile resolves.
+func unresolved(path string, err error) error {
+	if errors.Is(err, ErrNoDriveLetter) {
+		return &sentenceError{
+			sentence: path + " is on a volume Windows gives no drive letter to, as some RAM disks, container mounts and network redirectors are, " +
+				"so Loadline cannot check the folders that hold it: set LOADLINE_HOME to a folder on a disk with a drive letter, such as one in your user profile",
+			cause: err,
+		}
+	}
+	return fmt.Errorf("find the folders that hold %s: %w; set LOADLINE_HOME to a folder in your user profile", path, err)
+}
+
+// sentenceError says in a sentence of its own what went wrong and what to do,
+// in place of its cause's message. errors.Is and errors.As still find the
+// cause.
+type sentenceError struct {
+	sentence string
+	cause    error
+}
+
+func (e *sentenceError) Error() string { return e.sentence }
+
+func (e *sentenceError) Unwrap() error { return e.cause }
 
 // movableChain judges dir and the folders above it, as MovableAncestor
 // does, by the names in dir alone.
