@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -92,10 +93,143 @@ func TestMovableAncestor_RefusesAFolderThatBelongsToSomeoneElse(t *testing.T) {
 
 			got, err := MovableAncestor(dir, top)
 
-			if want := owned + " belongs to " + accountName(users) + ", who"; err != nil || !strings.HasPrefix(got, want) {
-				t.Errorf("MovableAncestor = %q, %v; want it to start %q", got, err, want)
+			if want := owned + " belongs to " + accountName(users) + ", who"; err != nil || !strings.HasPrefix(got.Problem, want) {
+				t.Errorf("MovableAncestor = %+v, %v; want it to start %q", got, err, want)
+			}
+			if want := (Owner{Name: accountName(users)}); got.Folder != owned || got.Owner != want {
+				t.Errorf("MovableAncestor = %+v; want the folder %s, and its owner %+v", got, owned, want)
 			}
 		})
+	}
+}
+
+// sidOf parses text, a SID in its S-1-… form.
+func sidOf(t *testing.T, text string) *windows.SID {
+	t.Helper()
+	sid, err := windows.StringToSid(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sid
+}
+
+// After a profile was moved or restored, its folders can keep as their owner
+// the SID of an account this computer no longer has. ForeignOwner says an
+// owner is gone only when that is sure. This computer names its own accounts
+// itself, and never gives a new one an old one's RID, so a SID of its own
+// account domain, plus one RID, that it cannot name is gone. One of another
+// domain may be an account whose domain controller does not answer right
+// now, and an account it can name may still sign in.
+func TestForeignOwner_TellsAnAccountThisComputerNoLongerHas(t *testing.T) {
+	domain, err := machineDomain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := domain.String() + "-4242"
+	for _, tt := range []struct {
+		name, sid string
+		want      Owner
+	}{
+		{"an account of this computer's own that it no longer has", gone, Owner{Name: gone, Gone: true}},
+		{"an account of another domain", "S-1-5-21-1-2-3-4242", Owner{Name: "S-1-5-21-1-2-3-4242 (an account this computer cannot name right now)"}},
+		{"Guests", "S-1-5-32-546", Owner{Name: accountName(sidOf(t, "S-1-5-32-546"))}},
+		{"a SID below this computer's domain that is none of its accounts", gone + "-1", Owner{Name: gone + "-1 (an account this computer cannot name right now)"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ownedBySID(t, dir, sidOf(t, tt.sid))
+
+			got, err := ForeignOwner(dir)
+
+			if err != nil || got != tt.want {
+				t.Errorf("ForeignOwner of a folder %s owns = %+v, %v; want %+v", tt.sid, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// lookUpAs makes ForeignOwner name each owner with lookup, for the rest of
+// the test.
+func lookUpAs(t *testing.T, lookup func(*windows.SID) (account, domain string, use uint32, err error)) {
+	t.Helper()
+	previous := lookupAccount
+	lookupAccount = lookup
+	t.Cleanup(func() { lookupAccount = previous })
+}
+
+// The answers no computer at hand gives on cue. An account Windows says was
+// deleted is gone, of whichever domain, and named by its SID when Windows
+// gives it no name. One of this computer's own that it cannot look up for
+// another reason than that no account answers to it, or any whose
+// computer's own account domain cannot be told, may still exist.
+func TestForeignOwner_SaysAnAccountIsGoneOnlyWhenWindowsIsSure(t *testing.T) {
+	domain, err := machineDomain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := domain.String() + "-4242"
+	const elsewhere = "S-1-5-21-1-2-3-4242"
+	cannotName := Owner{Name: gone + " (an account this computer cannot name right now)"}
+	for _, tt := range []struct {
+		name            string
+		sid             string
+		account, domain string
+		use             uint32
+		lookupErr       error
+		domainFailed    bool
+		want            Owner
+	}{
+		{name: "a deleted account of this computer's", sid: gone, account: "former", domain: "OLD-PC", use: windows.SidTypeDeletedAccount, want: Owner{Name: `OLD-PC\former`, Gone: true}},
+		{name: "a deleted account of another domain", sid: elsewhere, account: "former", domain: "OLD-DOMAIN", use: windows.SidTypeDeletedAccount, want: Owner{Name: `OLD-DOMAIN\former`, Gone: true}},
+		{name: "a deleted account Windows gives no name", sid: elsewhere, use: windows.SidTypeDeletedAccount, want: Owner{Name: elsewhere, Gone: true}},
+		{name: "a user account", sid: gone, account: "former", domain: "OLD-PC", use: windows.SidTypeUser, want: Owner{Name: `OLD-PC\former`}},
+		{name: "an account of its own it cannot look up right now", sid: gone, lookupErr: windows.ERROR_TRUSTED_RELATIONSHIP_FAILURE, want: cannotName},
+		{name: "an account no account answers to, when its own domain cannot be told", sid: gone, lookupErr: windows.ERROR_NONE_MAPPED, domainFailed: true, want: cannotName},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lookUpAs(t, func(*windows.SID) (string, string, uint32, error) {
+				if tt.lookupErr != nil {
+					return "", "", 0, tt.lookupErr
+				}
+				return tt.account, tt.domain, tt.use, nil
+			})
+			if tt.domainFailed {
+				previous := machineDomain
+				machineDomain = func() (*windows.SID, error) { return nil, errors.New("this computer cannot be named") }
+				t.Cleanup(func() { machineDomain = previous })
+			}
+			dir := t.TempDir()
+			ownedBySID(t, dir, sidOf(t, tt.sid))
+
+			got, err := ForeignOwner(dir)
+
+			if err != nil || got != tt.want {
+				t.Errorf("ForeignOwner = %+v, %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+// An account of this computer's own is its account domain's SID with one
+// RID after it, and nothing else: not one more, nor a SID whose parts only
+// start the same.
+func TestAccountOfThisComputer_IsItsDomainPlusOneRID(t *testing.T) {
+	previous := machineDomain
+	machineDomain = func() (*windows.SID, error) { return windows.StringToSid("S-1-5-21-1-2-3") }
+	t.Cleanup(func() { machineDomain = previous })
+	for sid, want := range map[string]bool{
+		"S-1-5-21-1-2-3-5":          true,
+		"S-1-5-21-1-2-3-4294967295": true,
+		"S-1-5-21-1-2-3":            false,
+		"S-1-5-21-1-2-3-5-6":        false,
+		"S-1-5-21-1-2-34-5":         false,
+		"S-1-5-21-1-2-30":           false,
+		"S-1-5-22-1-2-3-5":          false,
+		"S-1-5-21-0-1-2-3-5":        false,
+	} {
+		if got := accountOfThisComputer(sidOf(t, sid)); got != want {
+			t.Errorf("accountOfThisComputer(%s), of S-1-5-21-1-2-3 = %t; want %t", sid, got, want)
+		}
 	}
 }
 
@@ -121,11 +255,67 @@ func TestMovableAncestor_TakesTheOwnersThatMayTakeAnyFolderAnyway(t *testing.T) 
 			ownedBySID(t, dir, owner)
 			ownedBySID(t, filepath.Dir(dir), owner)
 
-			if got, err := MovableAncestor(dir, top); err != nil || got != "" {
-				t.Errorf("MovableAncestor = %q, %v; want \"\" for folders %s owns", got, err, name)
+			if got, err := MovableAncestor(dir, top); err != nil || got != (Movable{}) {
+				t.Errorf("MovableAncestor = %+v, %v; want none for folders %s owns", got, err, name)
 			}
 		})
 	}
+}
+
+// junction makes link a directory junction to target, as any user may in a
+// folder they can create directories in.
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	//nolint:gosec // G204: the paths are the test's own temporary folders
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+}
+
+// A folder found among those that really hold the directory, through a
+// junction, is named as the system resolves it, as is its owner, and the
+// report says where the directory really is.
+func TestMovableAncestor_NamesAFolderThatReallyHoldsTheDirectory(t *testing.T) {
+	top := t.TempDir()
+	if err := Private(top); err != nil {
+		t.Fatal(err)
+	}
+	holder := filepath.Join(top, "real")
+	target := filepath.Join(holder, "Local")
+	profile := filepath.Join(top, "profile")
+	for _, folder := range []string{target, profile} {
+		if err := MkdirAll(folder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := filepath.Join(profile, "Local")
+	junction(t, local, target)
+	dir := filepath.Join(local, "loadline")
+	users := wellKnown(t, windows.WinAuthenticatedUserSid)
+	ownedBySID(t, holder, users)
+
+	got, err := MovableAncestor(dir, top)
+
+	heldHolder, heldTarget := mustFinalPath(t, holder), mustFinalPath(t, target)
+	want := Movable{
+		Folder: heldHolder,
+		Problem: dir + " is really " + filepath.Join(heldTarget, "loadline") + ", and " + heldHolder + " belongs to " + accountName(users) +
+			", who can give themselves the right to delete or rename it, or what it holds",
+		Owner: Owner{Name: accountName(users)},
+	}
+	if err != nil || got != want {
+		t.Errorf("MovableAncestor = %+v, %v;\nwant %+v", got, err, want)
+	}
+}
+
+func mustFinalPath(t *testing.T, path string) string {
+	t.Helper()
+	final, err := finalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return final
 }
 
 // The folder the walk is told to trust is not judged, its owner included.
@@ -137,8 +327,8 @@ func TestMovableAncestor_DoesNotJudgeTheOwnerOfTheFolderItTrusts(t *testing.T) {
 	dir := filepath.Join(top, "loadline")
 	ownedBySID(t, top, wellKnown(t, windows.WinAuthenticatedUserSid))
 
-	if got, err := MovableAncestor(dir, top); err != nil || got != "" {
-		t.Errorf("MovableAncestor = %q, %v; want \"\"", got, err)
+	if got, err := MovableAncestor(dir, top); err != nil || got != (Movable{}) {
+		t.Errorf("MovableAncestor = %+v, %v; want none", got, err)
 	}
 }
 
@@ -195,8 +385,8 @@ func TestMovableAncestor_SaysWhenTheVolumeHasNoDriveLetter(t *testing.T) {
 
 	want := dir + " is on a volume Windows gives no drive letter to, as some RAM disks, container mounts and network redirectors are, " +
 		"so Loadline cannot check the folders that hold it: set LOADLINE_HOME to a folder on a disk with a drive letter, such as one in your user profile"
-	if got != "" || err == nil || err.Error() != want || !errors.Is(err, ErrNoDriveLetter) {
-		t.Errorf("MovableAncestor = %q, %v; want the error %q, which wraps ErrNoDriveLetter", got, err, want)
+	if got != (Movable{}) || err == nil || err.Error() != want || !errors.Is(err, ErrNoDriveLetter) {
+		t.Errorf("MovableAncestor = %+v, %v; want the error %q, which wraps ErrNoDriveLetter", got, err, want)
 	}
 }
 

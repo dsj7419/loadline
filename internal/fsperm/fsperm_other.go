@@ -122,24 +122,35 @@ var ownerOf = func(path string) (uint32, error) {
 	return stat.Uid, nil
 }
 
-// ForeignOwner names the owner of path when that is anyone but the user or
-// root, or returns "" when it is one of them. The owner may always change
-// path's mode.
-func ForeignOwner(path string) (string, error) {
+// ForeignOwner tells who owns path when that is anyone but the user or root,
+// or returns the zero Owner when it is one of them. The owner may always
+// change path's mode.
+//
+// It never says an account is gone. The user database it reads,
+// /etc/passwd, does not hold the accounts of LDAP, SSSD or systemd-homed,
+// so a user ID that it cannot name may be an account that signs in all the
+// same.
+func ForeignOwner(path string) (Owner, error) {
 	uid, err := ownerOf(path)
 	if err != nil {
-		return "", err
+		return Owner{}, err
 	}
 	if uid == 0 || int64(uid) == int64(os.Getuid()) {
-		return "", nil
+		return Owner{}, nil
 	}
 	id := strconv.FormatUint(uint64(uid), 10)
 	name := "the account with user ID " + id
 	if account, err := user.LookupId(id); err == nil {
 		name = account.Username
 	}
-	return name, nil
+	return Owner{Name: name}, nil
 }
+
+// InProfile never says a path is in the user's profile here. It tells only
+// where Loadline may offer to take back a folder that an account this
+// computer no longer has owns, and only Windows tells that an account is
+// gone.
+func InProfile(string) (bool, error) { return false, nil }
 
 // samePath reports whether a and b name the same folder.
 func samePath(a, b string) bool {

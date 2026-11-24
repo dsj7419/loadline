@@ -381,8 +381,8 @@ func TestMovableAncestor_CountsEveryKindOfAllowEntry(t *testing.T) {
 
 			got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
 
-			if want := tools + " lets " + fspermtest.AuthenticatedUsers(t) + " delete or rename it"; err != nil || got != want {
-				t.Errorf("MovableAncestor = %q, %v; want %q", got, err, want)
+			if want := tools + " lets " + fspermtest.AuthenticatedUsers(t) + " delete or rename it"; err != nil || got.Problem != want {
+				t.Errorf("MovableAncestor = %+v, %v; want %q", got, err, want)
 			}
 		})
 	}
@@ -645,8 +645,11 @@ func TestMovableAncestor_NamesTheNearestFolderOthersCanDeleteOrRename(t *testing
 	got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
 
 	users := fspermtest.AuthenticatedUsers(t)
-	if err != nil || !strings.HasPrefix(got, tools+" lets ") || !strings.Contains(got, users) || !strings.HasSuffix(got, " delete or rename it") {
-		t.Errorf("MovableAncestor = %q, %v; want %s named, as one %s can delete or rename", got, err, tools, users)
+	if err != nil || !strings.HasPrefix(got.Problem, tools+" lets ") || !strings.Contains(got.Problem, users) || !strings.HasSuffix(got.Problem, " delete or rename it") {
+		t.Errorf("MovableAncestor = %+v, %v; want %s named, as one %s can delete or rename", got, err, tools, users)
+	}
+	if got.Folder != tools || got.Owner != (fsperm.Owner{}) {
+		t.Errorf("MovableAncestor = %+v; want the folder %s, for its access list rather than its owner", got, tools)
 	}
 }
 
@@ -660,8 +663,8 @@ func TestMovableAncestor_DeletingWhatAFolderHoldsCounts(t *testing.T) {
 
 	got, err := fsperm.MovableAncestor(filepath.Join(shared, "loadline"), top)
 
-	if err != nil || !strings.HasPrefix(got, shared+" lets ") || !strings.HasSuffix(got, " delete or rename the folders in it") {
-		t.Errorf("MovableAncestor = %q, %v; want %s named, as a folder whose entries others can delete or rename", got, err, shared)
+	if err != nil || !strings.HasPrefix(got.Problem, shared+" lets ") || !strings.HasSuffix(got.Problem, " delete or rename the folders in it") {
+		t.Errorf("MovableAncestor = %+v, %v; want %s named, as a folder whose entries others can delete or rename", got, err, shared)
 	}
 }
 
@@ -675,8 +678,8 @@ func TestMovableAncestor_FullControlCounts(t *testing.T) {
 
 	got, err := fsperm.MovableAncestor(filepath.Join(tools, "loadline"), top)
 
-	if err != nil || !strings.HasPrefix(got, tools+" lets ") {
-		t.Errorf("MovableAncestor = %q, %v; want %s named: GENERIC_ALL includes DELETE", got, err, tools)
+	if err != nil || !strings.HasPrefix(got.Problem, tools+" lets ") {
+		t.Errorf("MovableAncestor = %+v, %v; want %s named: GENERIC_ALL includes DELETE", got, err, tools)
 	}
 }
 
@@ -692,8 +695,8 @@ func TestMovableAncestor_AnEntryForChildrenOnlyDoesNotCount(t *testing.T) {
 
 	got, err := fsperm.MovableAncestor(filepath.Join(root, "loadline"), top)
 
-	if err != nil || got != "" {
-		t.Errorf("MovableAncestor = %q, %v; want \"\": the entry applies only below %s", got, err, root)
+	if err != nil || got != (fsperm.Movable{}) {
+		t.Errorf("MovableAncestor = %+v, %v; want none: the entry applies only below %s", got, err, root)
 	}
 }
 
@@ -707,8 +710,8 @@ func TestMovableAncestor_FoldersLoadlineCreatesPass(t *testing.T) {
 
 	got, err := fsperm.MovableAncestor(filepath.Join(home, "bin"), top)
 
-	if err != nil || got != "" {
-		t.Errorf("MovableAncestor = %q, %v; want \"\" for folders Loadline made private", got, err)
+	if err != nil || got != (fsperm.Movable{}) {
+		t.Errorf("MovableAncestor = %+v, %v; want none for folders Loadline made private", got, err)
 	}
 }
 
@@ -723,8 +726,8 @@ func TestMovableAncestor_TheDefaultDataDirectoryPasses(t *testing.T) {
 
 	got, err := fsperm.MovableAncestor(filepath.Join(local, "loadline"), "")
 
-	if err != nil || got != "" {
-		t.Errorf("MovableAncestor of the default data directory = %q, %v; want \"\"", got, err)
+	if err != nil || got != (fsperm.Movable{}) {
+		t.Errorf("MovableAncestor of the default data directory = %+v, %v; want none", got, err)
 	}
 }
 

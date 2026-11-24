@@ -15,13 +15,17 @@ import (
 // Loadline makes it private, with an access list of its own on Windows,
 // before the browser first launches, and takes no browser folder it did not
 // make so. What the folder holds is then written by the user's own browser
-// under that list, and Loadline never looks below it: the browser sets
-// access lists of its own there (for its network sandbox, on Windows) and
-// makes symbolic links (for its process lock, on Linux and macOS), which
-// Loadline refuses among its own files. The data directory's list, passed
-// down, stops at the folder's own on Windows, so it never rewrites them
-// either; on Linux and macOS the data directory's mode keeps everyone else
-// out of the folder.
+// under that list, and Loadline changes none of it and reads no file's
+// content there: the browser sets access lists of its own there (for its
+// network sandbox, on Windows) and makes symbolic links (for its process
+// lock, on Linux and macOS), which Loadline refuses among its own files, so
+// the checks of those files do not go below the folder. The data
+// directory's list, passed down, stops at the folder's own on Windows, so
+// it never rewrites them either; on Linux and macOS the data directory's
+// mode keeps everyone else out of the folder. Only the offer to take back a
+// data directory that an account this computer no longer has owns lists
+// what the folder holds, and looks at each entry's attributes, to tell
+// whether takeown /r may be offered (holdsOnlyLoadlines).
 const browserProfile = "browser"
 
 // PrepareBrowserProfile makes dir, the dashboard's browser profile
@@ -40,7 +44,9 @@ func PrepareBrowserProfile(dir string) error {
 	if err := CheckLink(dir); err != nil {
 		return err
 	}
-	if err := problemError(ownerProblem(dir)); err != nil {
+	// The profile is in the data directory, which a refusal for its owner
+	// may offer to take back.
+	if err := problemError(ownerProblem(filepath.Dir(dir), dir)); err != nil {
 		return err
 	}
 	// MkdirAll fails on a file in words that say nothing of what to do.
