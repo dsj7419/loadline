@@ -171,8 +171,28 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 	if relaxed != nil {
 		log.Warn("data directory check relaxed for the demo", "problem", relaxed)
 	}
+	if !o.Demo {
+		// A demo serves a made-up machine and leaves the real one's files
+		// alone.
+		removeAsideAndLog(log, o.Paths.DataDir)
+	}
 	s := newInstance(ctx, o, cfg, port, token, log)
 	return s.run(ctx, listener)
+}
+
+// removeAsideAndLog removes the binaries earlier upgrades moved aside in
+// dataDir that nothing runs any more, and logs which went. One that still
+// runs, such as that of a previous server still shutting down, goes on a
+// later start. What fails is a warning in the log: it never keeps the server
+// from starting.
+func removeAsideAndLog(log *slog.Logger, dataDir string) {
+	removed, err := removeAside(dataDir)
+	for _, path := range removed {
+		log.Info("removed a binary an earlier upgrade replaced", "path", path)
+	}
+	if err != nil {
+		log.Warn("could not remove the binaries earlier upgrades replaced", "err", err)
+	}
 }
 
 // secureServedDataDir prepares the data directory as datadir.Secure does.

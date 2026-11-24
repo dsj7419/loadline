@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/datadir"
@@ -47,7 +48,8 @@ func installTarget(dataDir string) string {
 // one is whenever a hook or the server is, but it will rename one, so then
 // the running binary is moved aside to loadline.exe.old, replacing any older
 // one, or to the first free loadline.exe.old-<n> when the older one is still
-// running too, and the rename is tried again.
+// running too, and the rename is tried again. RemoveAside removes what was
+// moved aside once nothing runs it.
 func SelfInstall(src, dataDir string) (string, error) {
 	target := installTarget(dataDir)
 	same, err := sameContent(src, target)
@@ -221,12 +223,21 @@ func replaceFile(temp, target string) error {
 // maxAsideNames bounds the search for a free name to move a binary aside to.
 const maxAsideNames = 100
 
+// asideName returns the name moveAside tries n-th for target: target.old for
+// n = 0, and target.old-<n> for n from 1 to maxAsideNames.
+func asideName(target string, n int) string {
+	if n == 0 {
+		return target + ".old"
+	}
+	return target + ".old-" + strconv.Itoa(n)
+}
+
 // moveAside renames target to target.old, replacing an older one, and when
 // that older one is running too, to the first name target.old-<n> not yet
 // taken. It returns the new name. It waits until deadline for another
 // process to let go of target.
 func moveAside(target string, deadline time.Time) (string, error) {
-	aside := target + ".old"
+	aside := asideName(target, 0)
 	// A running .old refuses to be replaced for good, so only a sharing or
 	// lock violation, which comes from a hold on target, is worth waiting out.
 	err := renameRetrying(target, aside, deadline, isSharingViolation)
@@ -234,7 +245,7 @@ func moveAside(target string, deadline time.Time) (string, error) {
 		return aside, nil
 	}
 	for n := 1; n <= maxAsideNames; n++ {
-		candidate := fmt.Sprintf("%s.old-%d", target, n)
+		candidate := asideName(target, n)
 		if _, statErr := os.Lstat(candidate); !errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
@@ -245,7 +256,7 @@ func moveAside(target string, deadline time.Time) (string, error) {
 		}
 		return candidate, nil
 	}
-	return "", fmt.Errorf("%w; %s.old-1 to -%d are taken too", err, target, maxAsideNames)
+	return "", fmt.Errorf("%w; %s to -%d are taken too", err, asideName(target, 1), maxAsideNames)
 }
 
 // renameRetrying renames from to to, trying again after a growing pause
@@ -260,4 +271,57 @@ func renameRetrying(from, to string, deadline time.Time, retryable func(error) b
 		time.Sleep(delay)
 		delay = min(2*delay, maxRenameDelay)
 	}
+}
+
+// AsideBinaries returns the binaries that upgrades moved aside in the bin
+// folder of dataDir, in the order moveAside names them: each regular file
+// named as moveAside names one. It changes nothing. It refuses a bin folder
+// that is a link, since what it leads to is not Loadline's.
+func AsideBinaries(dataDir string) ([]string, error) {
+	target := installTarget(dataDir)
+	if err := datadir.CheckLink(filepath.Dir(target)); err != nil {
+		return nil, err
+	}
+	var found []string
+	for n := range maxAsideNames + 1 {
+		path := asideName(target, n)
+		info, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			// The names share one folder, so the rest would fail alike.
+			return found, fmt.Errorf("read %s: %w", path, err)
+		case info.Mode().IsRegular():
+			found = append(found, path)
+		}
+	}
+	return found, nil
+}
+
+// remove is os.Remove. Tests replace it to make a removal fail.
+var remove = os.Remove
+
+// RemoveAside removes the binaries AsideBinaries finds, and returns those it
+// removed. Windows refuses to delete a binary while it runs, as an old
+// server or hook may for long after the upgrade, so one held is left for a
+// later run without a word. Any other failure is returned, once the rest
+// are removed, for the caller to report: this is housekeeping, which never
+// makes an install or a server fail.
+func RemoveAside(dataDir string) ([]string, error) {
+	found, err := AsideBinaries(dataDir)
+	failures := []error{err}
+	var removed []string
+	for _, path := range found {
+		err := remove(path)
+		switch {
+		case err == nil:
+			removed = append(removed, path)
+		case isHeld(err), errors.Is(err, fs.ErrNotExist):
+			// Held, or gone already: an install and a server that start
+			// together both remove these, and one finds the other was first.
+		default:
+			failures = append(failures, fmt.Errorf("remove %s: %w", path, err))
+		}
+	}
+	return removed, errors.Join(failures...)
 }

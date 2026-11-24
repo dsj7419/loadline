@@ -23,6 +23,7 @@ import (
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
+	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/protocol"
 	"github.com/dsj7419/loadline/internal/server"
@@ -31,13 +32,15 @@ import (
 
 // The hook and tap start the server as "<executable> serve". In these tests
 // the executable is the test binary, which must then exit at once instead
-// of running the tests again. Otherwise every server a test starts must be
-// gone, goroutines and all, by the end of the run.
+// of running the tests again, and a copy of it standing in for a running
+// loadline waits until its test ends it. Otherwise every server a test
+// starts must be gone, goroutines and all, by the end of the run.
 //
 // The tests work below a private temporary folder of their own. The
 // system's may let other accounts in, as it does on some machines, and
 // install, serve and doctor refuse a data directory below such a folder.
 func TestMain(m *testing.M) {
+	exetest.Hold()
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		os.Exit(0)
 	}

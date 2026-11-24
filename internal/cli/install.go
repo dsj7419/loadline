@@ -81,11 +81,23 @@ func runInstall(args []string, stdio IO) int {
 	}
 
 	out := &printer{w: stdio.Out}
-	if code, proceed := review(out, stdio, edits, reviewOptions{
+	code, proceed := review(out, stdio, edits, reviewOptions{
 		dryRun: edit.dryRun, yes: edit.yes, nothingToDo: "Already installed.",
 		binary: binary, binaryPath: filepath.FromSlash(opts.Exe),
-	}); !proceed {
+	})
+	// The binaries earlier upgrades moved aside go as housekeeping, apart
+	// from the changes: the review neither shows nor counts them, so an
+	// install with nothing else to do neither asks nor claims to install.
+	switch {
+	case code != exitOK:
 		return code
+	case edit.dryRun:
+		noteAside(out, stdio, paths.DataDir)
+		return out.exit(stdio, exitOK)
+	case !proceed:
+		// Already installed.
+		removeAsideAndSay(out, stdio, paths.DataDir)
+		return out.exit(stdio, exitOK)
 	}
 
 	if opts, err = prepareInstall(src, paths, opts); err != nil {
@@ -104,8 +116,55 @@ func runInstall(args []string, stdio IO) int {
 	if err := writeEdits(out, edits); err != nil {
 		return fail(stdio, err)
 	}
+	removeAsideAndSay(out, stdio, paths.DataDir)
 	out.printf("%s\n", restartNotice)
 	return out.exit(stdio, exitOK)
+}
+
+// asideBinaries and removeAside are install's. Tests replace them, since
+// nothing on disk makes finding or removing those binaries fail on demand.
+var (
+	asideBinaries = install.AsideBinaries
+	removeAside   = install.RemoveAside
+)
+
+// removeAsideAndSay removes the binaries earlier upgrades moved aside in
+// dataDir that nothing runs any more, and says which went. One that still
+// runs goes on a later run, and needs no word. What fails is a warning: it
+// never fails the install.
+func removeAsideAndSay(out *printer, stdio IO, dataDir string) {
+	removed, err := removeAside(dataDir)
+	for _, path := range removed {
+		out.printf("Removed %s, which an earlier upgrade replaced.\n", dataDirName(dataDir, path))
+	}
+	warnAside(stdio, err)
+}
+
+// noteAside says, in a dry run, which binaries earlier upgrades moved aside
+// in dataDir an install would remove.
+func noteAside(out *printer, stdio IO, dataDir string) {
+	found, err := asideBinaries(dataDir)
+	for _, path := range found {
+		out.printf("Note: %s, left by an earlier upgrade, goes once nothing runs it.\n", dataDirName(dataDir, path))
+	}
+	warnAside(stdio, err)
+}
+
+// warnAside reports, as a warning, what finding or removing those binaries
+// could not do.
+func warnAside(stdio IO, err error) {
+	if err != nil {
+		_, _ = fmt.Fprintf(stdio.Err, "loadline: warning: %v\n", err)
+	}
+}
+
+// dataDirName is how path, in dataDir, is named to the user: from the data
+// directory, as the README names the binary's folder.
+func dataDirName(dataDir, path string) string {
+	if name, err := filepath.Rel(dataDir, path); err == nil {
+		return name
+	}
+	return path
 }
 
 func isSet(flags *flag.FlagSet, name string) bool {

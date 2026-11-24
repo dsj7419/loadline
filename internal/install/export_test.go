@@ -19,6 +19,16 @@ func SetRename(t *testing.T, f func(from, to string) error) {
 	t.Cleanup(func() { rename = previous })
 }
 
+// SetRemove replaces the removal RemoveAside uses for the rest of the test,
+// so a test can make one fail.
+func SetRemove(t *testing.T, f func(path string) error) {
+	t.Helper()
+
+	previous := remove
+	remove = f
+	t.Cleanup(func() { remove = previous })
+}
+
 // SetRenameBudget changes how long SelfInstall waits out a held file for
 // the rest of the test.
 func SetRenameBudget(t *testing.T, budget time.Duration) {

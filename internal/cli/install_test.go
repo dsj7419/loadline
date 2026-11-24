@@ -644,3 +644,150 @@ func TestInstall_MakesNoDataDirWithoutAYes(t *testing.T) {
 		t.Errorf("install made %s without a yes (%v)", home, err)
 	}
 }
+
+// asideBinary puts, beside the binary install copies into home, one that an
+// earlier upgrade moved aside, and returns its path.
+func asideBinary(t *testing.T, home string) string {
+	t.Helper()
+
+	path := filepath.FromSlash(installedExe(home)) + ".old"
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("a binary an upgrade replaced"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// removedLine is what install says once it has removed the binary at path,
+// which an upgrade moved aside.
+func removedLine(path string) string {
+	return "Removed " + filepath.Join("bin", filepath.Base(path)) + ", which an earlier upgrade replaced.\n"
+}
+
+// noteLine is what a dry run of install says of the binary at path, which
+// an upgrade moved aside.
+func noteLine(path string) string {
+	return "Note: " + filepath.Join("bin", filepath.Base(path)) + ", left by an earlier upgrade, goes once nothing runs it.\n"
+}
+
+// A binary an upgrade moved aside goes as housekeeping, never as a change.
+// With nothing else to do, install has nothing to install or to ask about.
+func TestInstall_DoesNotClaimToInstallWhenOnlyAsideBinariesGo(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+		t.Fatalf("install: %s", got.stderr)
+	}
+	aside := asideBinary(t, home)
+
+	got := run(t, "install", "--config-dir", dir)
+
+	want := "Already installed.\n" + removedLine(aside)
+	if got.code != 0 || got.stdout != want || got.stderr != "" {
+		t.Errorf("install = %d, stdout %q, stderr %q; want 0 and %q", got.code, got.stdout, got.stderr, want)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("%s is still there (%v)", aside, err)
+	}
+}
+
+// Once it has installed, install removes what earlier upgrades moved aside,
+// apart from the changes it showed, and says so before the restart notice.
+func TestInstall_RemovesAsideBinariesOnceItHasInstalled(t *testing.T) {
+	home, dir := sandbox(t, ownerSettings)
+	aside := asideBinary(t, home)
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 0 || got.stderr != "" {
+		t.Fatalf("install = %d, stderr %q; want 0 and nothing", got.code, got.stderr)
+	}
+	if want := removedLine(aside) + restartNotice + "\n"; !strings.HasSuffix(got.stdout, want) {
+		t.Errorf("stdout does not end with %q:\n%s", want, got.stdout)
+	}
+	if n := strings.Count(got.stdout, filepath.Base(aside)); n != 1 {
+		t.Errorf("stdout names %s %d times, want once, apart from the changes:\n%s", filepath.Base(aside), n, got.stdout)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("%s is still there (%v)", aside, err)
+	}
+}
+
+// A dry run removes nothing. It notes what earlier upgrades moved aside
+// after the changes, as none of them, whether or not anything else is to
+// change.
+func TestInstall_DryRunNotesAsideBinariesOutsideTheChanges(t *testing.T) {
+	for name, installed := range map[string]bool{"everything else up to date": true, "with changes": false} {
+		t.Run(name, func(t *testing.T) {
+			home, dir := sandbox(t, ownerSettings)
+			if installed {
+				if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+					t.Fatalf("install: %s", got.stderr)
+				}
+			}
+			aside := asideBinary(t, home)
+
+			got := run(t, "install", "--config-dir", dir, "--dry-run")
+
+			if got.code != 0 || got.stderr != "" {
+				t.Errorf("dry run = %d, stderr %q; want 0 and nothing", got.code, got.stderr)
+			}
+			if installed {
+				if want := "Already installed.\n" + noteLine(aside); got.stdout != want {
+					t.Errorf("stdout = %q, want %q", got.stdout, want)
+				}
+			} else {
+				if want := "Dry run: nothing was written.\n" + noteLine(aside); !strings.HasSuffix(got.stdout, want) {
+					t.Errorf("stdout does not end with %q:\n%s", want, got.stdout)
+				}
+				if n := strings.Count(got.stdout, filepath.Base(aside)); n != 1 {
+					t.Errorf("stdout names %s %d times, want once, apart from the changes:\n%s", filepath.Base(aside), n, got.stdout)
+				}
+			}
+			if _, err := os.Lstat(aside); err != nil {
+				t.Errorf("a dry run removed %s: %v", aside, err)
+			}
+		})
+	}
+}
+
+// Housekeeping never fails install. What it cannot do is a warning, and
+// install says and does all it would have otherwise.
+func TestInstall_WarnsOfAsideBinariesItCannotHandleAndSucceeds(t *testing.T) {
+	failure := errors.New("the disk is failing")
+	for _, tc := range []struct {
+		name      string
+		installed bool
+		args      []string
+		says      string
+		// tells is what install says of the binary an upgrade moved aside.
+		tells func(path string) string
+	}{
+		{"installing", false, []string{"--yes"}, restartNotice, removedLine},
+		{"already installed", true, nil, "Already installed.", removedLine},
+		{"dry run", false, []string{"--dry-run"}, "Dry run: nothing was written.", noteLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, dir := sandbox(t, ownerSettings)
+			if tc.installed {
+				if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+					t.Fatalf("install: %s", got.stderr)
+				}
+			}
+			aside := asideBinary(t, home)
+			cli.FailAsideHousekeeping(t, failure)
+
+			got := run(t, append([]string{"install", "--config-dir", dir}, tc.args...)...)
+
+			if want := "loadline: warning: " + failure.Error() + "\n"; got.code != 0 || got.stderr != want {
+				t.Errorf("install = %d, stderr %q; want 0 and %q", got.code, got.stderr, want)
+			}
+			for _, want := range []string{tc.says, tc.tells(aside)} {
+				if !strings.Contains(got.stdout, want) {
+					t.Errorf("stdout lacks %q:\n%s", want, got.stdout)
+				}
+			}
+		})
+	}
+}

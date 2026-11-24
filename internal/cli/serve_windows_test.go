@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/dsj7419/loadline/internal/cli"
+	"github.com/dsj7419/loadline/internal/exetest"
 )
 
 // soExclusiveAddrUse is Winsock's SO_EXCLUSIVEADDRUSE, the complement of
@@ -68,5 +70,27 @@ func TestServe_PortReservedOrHeldExclusivelyNamesThePort(t *testing.T) {
 				t.Errorf("Serve = %d, stdout %q, stderr %q; want 1 and %q", code, stdout.String(), stderr.String(), want)
 			}
 		})
+	}
+}
+
+// A hook or a server that outlived an upgrade still runs the binary it moved
+// aside, which Windows will not let anything delete. A server that starts
+// meanwhile leaves that binary for later, without a word, and serves.
+func TestServe_StartsWhileAnAsideBinaryStillRuns(t *testing.T) {
+	f := newServeFixture(t)
+	aside := filepath.FromSlash(installedExe(f.paths.DataDir)) + ".old"
+	exetest.Run(t, aside)
+
+	r := f.start()
+	f.snapshot()
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Serve = %d, want 0", code)
+	}
+
+	if _, err := os.Lstat(aside); err != nil {
+		t.Errorf("the server removed %s, which still runs: %v", aside, err)
+	}
+	if log := f.logText(); strings.Contains(log, removedMessage) || strings.Contains(log, "level=WARN") {
+		t.Errorf("log tells of the binary that still runs:\n%s", log)
 	}
 }

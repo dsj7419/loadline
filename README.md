@@ -33,7 +33,8 @@ Loadline needs Claude Code 2.1.300 or later, on Windows, macOS or Linux.
    It lists every change, shows the diff of your settings file with the ingest token masked, and
    asks before writing anything. `--dry-run` shows the changes and writes nothing; `--yes` applies
    them without asking. The installer copies the binary into the Loadline data directory, so you
-   can delete the downloaded copy afterwards.
+   can delete the downloaded copy afterwards. An upgrade on Windows while Loadline runs leaves the
+   old binary as `bin\loadline.exe.old`; install removes it once nothing runs it.
 
 3. Start a new Claude Code session. Its first hook starts the Loadline server, which opens the
    dashboard. Sessions that were already running show up fully once you restart them.
