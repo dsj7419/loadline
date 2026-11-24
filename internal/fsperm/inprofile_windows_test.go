@@ -85,6 +85,46 @@ func TestInProfile(t *testing.T) {
 	}
 }
 
+// Resolved gives a path as InProfile judges it: each link followed, each
+// short name in full, and the part that does not exist yet as written.
+func TestResolved(t *testing.T) {
+	root := t.TempDir()
+	long := filepath.Join(root, "a folder with a long name")
+	target := filepath.Join(root, "target")
+	for _, dir := range []string{long, target} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	short := shortName(t, long)
+	junction(t, filepath.Join(root, "link"), target)
+	heldRoot := mustFinalPath(t, root)
+
+	for _, tt := range []struct {
+		name, path, want string
+		short            bool
+	}{
+		{name: "a folder by its own names", path: long, want: filepath.Join(heldRoot, "a folder with a long name")},
+		{
+			name: "a path not made yet, by a short name", path: filepath.Join(short, "loadline"), short: true,
+			want: filepath.Join(heldRoot, "a folder with a long name", "loadline"),
+		},
+		{name: "a path not made yet, through a junction", path: filepath.Join(root, "link", "loadline"), want: filepath.Join(heldRoot, "target", "loadline")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.short && short == long {
+				t.Skipf("the volume of %s makes no 8.3 short names (fsutil 8dot3name query shows it)", root)
+			}
+
+			got, err := Resolved(tt.path)
+
+			if err != nil || got != tt.want {
+				t.Errorf("Resolved(%s) = %q, %v; want %q", tt.path, got, err, tt.want)
+			}
+		})
+	}
+}
+
 // Without a stand-in, InProfile asks Windows where the user's profile is.
 func TestInProfile_AsksWindowsWhereTheProfileIs(t *testing.T) {
 	profile, err := windows.GetCurrentProcessToken().GetUserProfileDirectory()

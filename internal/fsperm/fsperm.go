@@ -286,6 +286,21 @@ func exists(path string) bool {
 // junction on the way, which it takes for neither a folder nor a link.
 func FinalPath(path string) (string, error) { return finalPath(path) }
 
+// Resolved returns path, made absolute, as the system resolves it: every
+// link in it followed and, on Windows, each short 8.3 name in its long form,
+// as far as path exists, and the rest of it as written. It names the folder
+// that InProfile judges, and that a command given path would act on.
+func Resolved(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		abs, err = resolved(abs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return abs, nil
+}
+
 // resolved returns path with every link in it followed (finalPath), as far
 // as path exists, and the rest of it as written. The rest does not exist
 // yet, and Loadline creates it private.

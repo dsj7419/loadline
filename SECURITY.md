@@ -238,14 +238,22 @@ or is narrow.
     has, and the folder is in your user profile, the message ends with the command that takes it
     back: "…; it belongs to an account this computer no longer has, as after a profile was moved
     or restored: if the folder is yours, run takeown /f "<folder>" and then loadline install".
-    - For the data directory, or one of Loadline's files in it, the command names the data
-      directory and adds `/r`, which takes all it holds too. It does so only while the data
-      directory holds nothing but Loadline's own files: none of them a link or a file with another
-      name, which `takeown /r` would follow out of it, and no folder you may not list, which could
-      hold one. A folder above the data directory never gets `/r`.
-    - A folder whose path holds `"`, `%`, `$`, `!`, a backtick or a typographic double quote,
-      which Command Prompt or PowerShell would not take as written, gets the tool's name instead
-      of a command to paste.
+    - The command names the folder where it really is, every link followed and every short 8.3
+      name in full: the folder Loadline checks is in your profile, and the one `takeown` takes.
+    - For the data directory, or one of Loadline's files in it, the dashboard's browser profile
+      among them, the command names the data directory and adds `/r`, which takes all it holds
+      too. It does so only while `takeown /r` would reach nothing else. The data directory must
+      hold nothing at its top but Loadline's own entries and the files the system leaves there.
+      Nothing anywhere below it, the files the browser keeps in its profile and those Loadline is
+      still writing included, may be a reparse point of any kind, such as a junction or a symbolic
+      link, or a file with a name outside the data directory, a hard link: `takeown /r` would
+      follow either out of it. Nor may any folder below it be one you may not list, or anything in
+      it be one Loadline cannot look at, since either could hide one. Loadline only reads the tree
+      to tell. Otherwise the command names what the message reports alone, the data directory or
+      the file or folder in it, without `/r`. A folder above the data directory never gets `/r`.
+    - A folder whose path holds `"`, `%`, `$`, `!`, a backtick, a typographic double quote or a
+      control character, which Command Prompt or PowerShell would not take as written, or a
+      terminal could hide, gets the tool's name instead of a command to paste.
     - An account counts as gone only when Windows is sure: it reports the account deleted, or it
       names no account for a SID of this computer's own accounts. A SID of another domain that it
       cannot name, as when no domain controller answers, may be an account that still exists: the
