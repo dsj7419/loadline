@@ -54,7 +54,9 @@ const (
 	// which reads its command line again and acts on an & or ^ that Go
 	// quotes only in an argument that also holds a blank. So it gets no
 	// profile folder, whose path may hold either: it opens the dashboard as
-	// it did before the dashboard had a profile of its own.
+	// it did before the dashboard had a profile of its own. cmd.exe also
+	// expands a %NAME%, inside quotes too, so the URL it gets must hold no
+	// percent sign: Loadline's hold none, their login code being hex.
 	batchFileKind
 	// firefoxKind is Firefox, which has no app window.
 	firefoxKind
