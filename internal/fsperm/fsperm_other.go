@@ -288,11 +288,6 @@ func ResetAdvice(dir string) string {
 // gone.
 func InProfile(string) (bool, error) { return false, nil }
 
-// samePath reports whether a and b name the same folder.
-func samePath(a, b string) bool {
-	return filepath.Clean(a) == filepath.Clean(b)
-}
-
 // PrivateHere is Private here: a mode passes nothing down.
 func PrivateHere(dir string) error { return Private(dir) }
 

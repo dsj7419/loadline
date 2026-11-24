@@ -85,6 +85,57 @@ func TestInProfile(t *testing.T) {
 	}
 }
 
+// foldedNames are pairs of folder names that Unicode's case folding takes for
+// one, and NTFS, which compares names by its own table of upper case, keeps
+// apart. The characters are given by their code points, so that none of them
+// hides in this file.
+var foldedNames = map[string][2]string{
+	"the micro sign and the Greek mu":         {"\u00b5-user", "\u03bc-user"},
+	"Georgian Mkhedruli and Mtavruli letters": {"\u10d2\u10d8\u10dd", "\u1c92\u1c98\u1c9d"},
+	"two Cyrillic letters uk":                 {"\ua64b-user", "\u1c88-user"},
+	"the Kelvin sign and the letter K":        {"Kevin", "\u212aevin"},
+}
+
+// foldedFolders makes a folder by each name of pair, side by side in root,
+// and skips the test where the file system takes the two for one name.
+func foldedFolders(t *testing.T, root string, pair [2]string) (first, second string) {
+	t.Helper()
+	first, second = filepath.Join(root, pair[0]), filepath.Join(root, pair[1])
+	if err := os.Mkdir(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(second, 0o700); err != nil {
+		t.Skipf("the file system of %s takes %q and %q for one name: %v", root, pair[0], pair[1], err)
+	}
+	return first, second
+}
+
+// A folder beside the profile whose name differs from the profile's only in
+// letters that Unicode folds together, and NTFS keeps apart, is another
+// folder: neither it nor anything in it is in the profile, and it is not the
+// profile's folder.
+func TestInProfile_TellsTheProfileFromAFolderBesideItWhoseNameFoldsToItsName(t *testing.T) {
+	for name, pair := range foldedNames {
+		t.Run(name, func(t *testing.T) {
+			profile, beside := foldedFolders(t, t.TempDir(), pair)
+			local := filepath.Join(beside, "AppData", "Local")
+			if err := os.MkdirAll(local, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			profileAt(t, profile)
+
+			for _, path := range []string{beside, filepath.Join(local, "loadline")} {
+				if in, err := InProfile(path); err != nil || in {
+					t.Errorf("InProfile(%q), with the profile at %q = %t, %v; want false: it is beside the profile", path, profile, in, err)
+				}
+			}
+			if samePath(profile, beside) {
+				t.Errorf("samePath(%q, %q) = true; want false: they are two folders", profile, beside)
+			}
+		})
+	}
+}
+
 // Resolved gives a path as InProfile judges it: each link followed, each
 // short name in full, and the part that does not exist yet as written.
 func TestResolved(t *testing.T) {

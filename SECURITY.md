@@ -322,8 +322,25 @@ or is narrow.
       message names it as "an account this computer cannot name right now" and offers nothing.
       Nothing is offered for a group or any other account that exists, nor on macOS and Linux.
     - Nothing is offered for a folder outside your profile either. Loadline places each folder
-      where it really is, every link followed and every short 8.3 name in full, so neither can make
-      a folder outside the profile pass for one in it.
+      where it really is, every link followed and every short 8.3 name in full, and asks the file
+      system which folder is your profile rather than comparing names. So neither a link, a short
+      name, nor a folder beside the profile whose name differs from it only in letters that
+      Unicode folds together and Windows keeps apart, such as the micro sign and the Greek mu, can
+      make a folder outside the profile pass for one in it.
   - *Mitigation:* use the default on a standard profile. Otherwise, if the folder or file is yours,
     run the command the message offers, or take ownership of the folder or file it names yourself
     (for example `takeown /f <folder>`), and run `loadline install`.
+- **A folder above the data directory that you cannot look at.**
+  - *What it takes:* a `LOADLINE_HOME` below a folder that you may pass through but not look at:
+    its permissions deny you the right to read its attributes, and the folder that holds it does
+    not let you list it, as a shared folder set up by someone else can. This has been so since
+    v0.1.0.
+  - *Impact:* the check that nobody else can move the data directory aside takes such a folder
+    for one not made yet, and does not judge it, nor its owner. When it lets other users delete or
+    rename what it holds, they could move the data directory aside and put a folder of their own
+    in its place, and install, the server and `loadline doctor` do not say so. Loadline's own
+    files stay private.
+  - *Mitigation:* use the default, or keep `LOADLINE_HOME` in folders of your own, such as one in
+    your user profile. Elsewhere, make sure you can list every folder above it, up to the drive:
+    a folder in one you can list can always be looked at, and is checked. Where you cannot, ask
+    whoever set that folder up, or move `LOADLINE_HOME` elsewhere and run `loadline install`.

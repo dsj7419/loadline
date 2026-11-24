@@ -323,6 +323,16 @@ func byList(folder string, judge func(string) (string, error)) (Movable, error) 
 	return Movable{Folder: folder, Problem: problem}, nil
 }
 
+// samePath reports whether a and b are one path, letter for letter. Two
+// spellings of one folder, as in another case, are not: which names a volume
+// takes for one only its file system can tell, by its own table of upper
+// case, or by none in a folder set to be case sensitive. MovableAncestor,
+// which then takes two spellings of one folder for two, judges more folders
+// than it needs to, never fewer.
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
