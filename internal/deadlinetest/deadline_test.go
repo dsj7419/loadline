@@ -79,3 +79,35 @@ func TestAssertGaveUpAt(t *testing.T) {
 		})
 	}
 }
+
+func TestAssertHeldFor(t *testing.T) {
+	const deadline = 300 * ms
+	for _, tt := range []struct {
+		name  string
+		held  time.Duration
+		fails bool
+	}{
+		{name: "short of the margin", held: 150*ms - time.Nanosecond, fails: true},
+		{name: "as briefly as the margin allows", held: 150 * ms},
+		{name: "for the deadline", held: deadline},
+		{name: "as long as the margin allows", held: 450*ms - time.Nanosecond},
+		{name: "past the margin", held: 450 * ms, fails: true},
+		{name: "for the deadline waited out twice", held: 2 * deadline, fails: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var r recorder
+
+			deadlinetest.AssertHeldFor(&r, "the post", tt.held, deadline)
+
+			if !tt.fails {
+				if len(r.errors) != 0 {
+					t.Errorf("errors %q for a request held %v, want none", r.errors, tt.held)
+				}
+				return
+			}
+			if len(r.errors) != 1 || !strings.Contains(r.errors[0], "the post was held for "+tt.held.String()) {
+				t.Errorf("errors %q for a request held %v, want one naming the request and how long it was held", r.errors, tt.held)
+			}
+		})
+	}
+}

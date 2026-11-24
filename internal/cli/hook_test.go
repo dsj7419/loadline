@@ -163,8 +163,11 @@ func TestRunHook_FiftyMegabytesOfStdinStayWithinBoundedMemory(t *testing.T) {
 	}
 }
 
-// With the server down, the hook's check and its post fail at once, or at
-// their bounds at the latest. The bounds here are the test's own.
+// With the server down, the hook's check and its post fail, and the hook
+// spools the event and starts a server. The bounds here are the test's own.
+// The hook is timed only against a hang: a loaded machine can slow its work
+// around the check and the post without bound, and
+// TestRunHook_GivesUpOnAHungServer proves the bounds themselves.
 func TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart(t *testing.T) {
 	const check, send = 300 * time.Millisecond, 300 * time.Millisecond
 	cli.SetHookSendTimeout(t, send)
@@ -176,8 +179,8 @@ func TestRunHook_ServerDownSpoolsAndSpawnsOnSessionStart(t *testing.T) {
 
 	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 
-	if elapsed, limit := time.Since(start), deadlinetest.Limit(check, send); elapsed >= limit {
-		t.Errorf("hook took %v with the server down, want it to give up its %v check and %v send before %v", elapsed, check, send, limit)
+	if took, hang := time.Since(start), 10*(check+send); took >= hang {
+		t.Errorf("the hook returned after %v with the server down, want it well within %v", took, hang)
 	}
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -215,19 +218,28 @@ func TestRunHook_OtherEventsDoNotStartTheServer(t *testing.T) {
 // and spools the event. The bounds here are the test's own:
 // TestRunHook_CapsItsPostAt300ms pins the hook's on its post, and forward's
 // TestClient_DefaultHealthTimeoutIs150ms the one on its check.
+//
+// The server times each wait, so the hook's work around them, which a
+// loaded machine can slow without bound, does not count; the whole hook is
+// timed only against a hang. The server's start, between the check and the
+// post, is slow enough here to take the hook as a whole past both bounds
+// and their margin.
 func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
 	const check, send = 300 * time.Millisecond, 300 * time.Millisecond
 	cli.SetHookSendTimeout(t, send)
 	f := newFixture(t)
 	f.healthTimeout = check
+	f.spawns.delay = 200 * time.Millisecond
 	// The answers come, but long after the hook should have given up on them.
 	late := 2 * deadlinetest.Limit(check, send)
-	f.serve(func(s *ingestServer) { s.slowHealth, s.hold = late, late })
+	srv := f.serve(func(s *ingestServer) { s.slowHealth, s.hold = late, late })
 	start := time.Now()
 
 	code := f.hook(strings.NewReader(hookInput(t, "SessionStart", 16)))
 
-	deadlinetest.AssertGaveUpAt(t, "the hook", time.Since(start), check, send)
+	if took, hang := time.Since(start), 10*(check+send); took >= hang {
+		t.Errorf("the hook returned after %v, want it well within %v", took, hang)
+	}
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -237,6 +249,12 @@ func TestRunHook_GivesUpOnAHungServer(t *testing.T) {
 	if spooled := f.spooled(); len(spooled) != 1 {
 		t.Errorf("spooled %d events, want 1", len(spooled))
 	}
+	checks, posts := srv.heldFor("/healthz"), srv.heldFor("/ingest/hook")
+	if len(checks) != 1 || len(posts) != 1 {
+		t.Fatalf("the hook gave up on %d health checks and %d posts while the server held them, want one of each", len(checks), len(posts))
+	}
+	deadlinetest.AssertHeldFor(t, "the health check", checks[0], check)
+	deadlinetest.AssertHeldFor(t, "the post", posts[0], send)
 }
 
 // The spec caps the hook's post at 300 ms. Hooks run asynchronously, so the

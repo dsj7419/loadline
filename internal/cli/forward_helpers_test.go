@@ -109,11 +109,16 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // spawner records the processes the command under test starts.
 type spawner struct {
+	// delay, when set, is how long each start takes, as starting a process
+	// can on a loaded machine.
+	delay time.Duration
+
 	mu    sync.Mutex
 	calls []string
 }
 
 func (s *spawner) spawn(exe string, args ...string) error {
+	time.Sleep(s.delay)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, strings.Join(append([]string{exe}, args...), " "))
@@ -253,6 +258,14 @@ type arrival struct {
 	// afterEcho is what the server's echoComplete reported as the request
 	// arrived.
 	afterEcho bool
+	// at is when the request reached the server's handler.
+	at time.Time
+	// gaveUp is when the server, holding the request, saw its client give
+	// up on it. It stays zero for a request the server answered, or let go
+	// at the end of the test.
+	gaveUp time.Time
+	// done is closed once the server has finished with the request.
+	done chan struct{}
 }
 
 // post is one ingest request a test server received.
@@ -303,21 +316,23 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 	port := portOf(f.t, ts.Listener.Addr())
 	loadline := server.New(server.Deps{State: s.sink, Token: f.token(), Port: port}).Handler()
 	release := make(chan struct{})
-	// wait holds r for d, and reports false when its client or the test
-	// gave up first.
-	wait := func(r *http.Request, d time.Duration) bool {
+	// wait holds r, the arrival at index a, for d, and reports false when
+	// its client or the test gave up first.
+	wait := func(r *http.Request, a int, d time.Duration) bool {
 		select {
 		case <-time.After(d):
 			return true
 		case <-r.Context().Done():
+			s.gaveUp(a)
 		case <-release:
 		}
 		return false
 	}
 	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.arrive(r.URL.Path)
+		a := s.arrive(r.URL.Path)
+		defer s.finish(a)
 		if !strings.HasPrefix(r.URL.Path, "/ingest/") {
-			if s.slowHealth == 0 || wait(r, s.slowHealth) {
+			if s.slowHealth == 0 || wait(r, a, s.slowHealth) {
 				loadline.ServeHTTP(w, r)
 			}
 			return
@@ -330,7 +345,7 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 		i := s.record(r.URL.Path, raw)
 		switch {
 		case s.hold > 0:
-			if wait(r, s.hold) {
+			if wait(r, a, s.hold) {
 				s.answered(i)
 			}
 		case s.answer != 0:
@@ -349,12 +364,50 @@ func (f *fixture) serve(opts ...func(*ingestServer)) *ingestServer {
 }
 
 // arrive notes a request as it arrives, with whether the tap's echo was
-// complete by then.
-func (s *ingestServer) arrive(path string) {
+// complete by then, and returns its index among the arrivals.
+func (s *ingestServer) arrive(path string) int {
+	at := time.Now()
 	afterEcho := s.echoComplete != nil && s.echoComplete()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.arrivals = append(s.arrivals, arrival{path: path, afterEcho: afterEcho})
+	s.arrivals = append(s.arrivals, arrival{path: path, afterEcho: afterEcho, at: at, done: make(chan struct{})})
+	return len(s.arrivals) - 1
+}
+
+// gaveUp notes that the client of the held arrival at index i gave up on
+// it.
+func (s *ingestServer) gaveUp(i int) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.arrivals[i].gaveUp = now
+}
+
+// finish notes that the server has finished with the arrival at index i.
+func (s *ingestServer) finish(i int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.arrivals[i].done)
+}
+
+// heldFor returns how long the server held each request to path whose
+// client gave up on it, from its arrival until the server saw the client
+// go. It first waits until the server has finished with every request to
+// path so far, since a client that gave up can return before the server
+// notices.
+func (s *ingestServer) heldFor(path string) []time.Duration {
+	for _, a := range s.arrived() {
+		if a.path == path {
+			<-a.done
+		}
+	}
+	var held []time.Duration
+	for _, a := range s.arrived() {
+		if a.path == path && !a.gaveUp.IsZero() {
+			held = append(held, a.gaveUp.Sub(a.at))
+		}
+	}
+	return held
 }
 
 // arrived returns every request that has reached the server so far.
