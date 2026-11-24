@@ -773,6 +773,32 @@ func junction(t *testing.T, link, target string) {
 	t.Cleanup(func() { _ = os.Remove(link) })
 }
 
+// A settings file below a home folder linked into a dotfiles repository by a
+// junction is where the system opens it. filepath.EvalSymlinks cannot say
+// where that is: it fails at the junction, which it takes for neither a
+// folder nor a link.
+func TestFinalPath_FollowsAJunctionOnTheWay(t *testing.T) {
+	dir := t.TempDir()
+	dotfiles := filepath.Join(dir, "dotfiles", "home")
+	file := filepath.Join(dotfiles, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, file)
+	home := filepath.Join(dir, "home")
+	junction(t, home, dotfiles)
+	want, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fsperm.FinalPath(filepath.Join(home, ".claude", "settings.json"))
+
+	if err != nil || got != want {
+		t.Errorf("FinalPath = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestIsLink_TellsAJunctionFromAFolder(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")

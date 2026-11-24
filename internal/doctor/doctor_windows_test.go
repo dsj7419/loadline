@@ -53,6 +53,32 @@ func TestDoctor_ALinkedConfigDirWarnsLikeALinkedFile(t *testing.T) {
 	})
 }
 
+// A link at the settings file is followed to where install writes the token
+// even through a linked folder above it, such as a home folder linked by a
+// junction. A junction stands in for the file's symbolic link here, which
+// would take a privilege to make: both stand for another path, and the
+// doctor follows both alike.
+func TestSymlinked_FollowsTheFileThroughALinkedFolderAbove(t *testing.T) {
+	root := t.TempDir()
+	linkFolder(t, filepath.Join(root, "home"), filepath.Join(root, "dotfiles", "home"))
+	elsewhere := filepath.Join(root, "elsewhere", "settings")
+	settings := filepath.Join(root, "home", ".claude", "settings.json")
+	linkFolder(t, settings, elsewhere)
+	resolved, err := filepath.EvalSymlinks(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := doctor.Symlinked(settings)
+
+	assertChecks(t, got, []doctor.Check{{
+		Name:   "token in " + settings,
+		Status: doctor.Warn,
+		Detail: "the file is a symlink to " + resolved + ", so install writes the ingest token there; " +
+			"keep that file out of any repository you share",
+	}})
+}
+
 // Data deduplication keeps a file's data in a store that other files on the
 // volume share, and makes the file a reparse point that leads nowhere else:
 // the token install writes into it stays where its name says.

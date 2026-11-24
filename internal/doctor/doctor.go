@@ -335,7 +335,7 @@ func relativeGit(path string, settings []byte, d Deps) []Check {
 func symlinked(path string) []Check {
 	name := "token in " + path
 	if isLink(path) {
-		target, err := filepath.EvalSymlinks(path)
+		target, err := fsperm.FinalPath(path)
 		if err != nil {
 			return []Check{{Name: name, Status: Warn, Detail: "the file is a symlink that cannot be followed: " + err.Error()}}
 		}
