@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"runtime"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/serverlock"
-	"github.com/dsj7419/loadline/internal/termtext"
 	"github.com/dsj7419/loadline/internal/timer"
 )
 
@@ -16,6 +16,10 @@ import (
 // answer: it may first wait out the lock on the history, which the server
 // before it lets go of last. Tests shorten it.
 var handoverStartWait = lockWait + serverStartWait
+
+// versionForm is the form of a version a hand-over names, such as 0.1.1 or
+// 0.2.0-rc.1+build.7.
+var versionForm = regexp.MustCompile(`^[0-9A-Za-z.+-]{1,64}$`)
 
 const (
 	// asideSettleBudget bounds how long install keeps trying to remove the
@@ -120,11 +124,8 @@ func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld 
 			return true, fmt.Errorf("the old server stopped, but the new one did not start: %w; run loadline open", err)
 		}
 	case version != Version:
-		// Whatever answers on the port names its version, and may have
-		// taken the port first: what in it would act on the terminal is
-		// shown escaped.
 		out.printf("Stopped the old server, but the server that now answers on port %d runs %s, not %s; "+
-			"run loadline stop, and a running session starts the new one.\n", o.port, termtext.Escape(version), Version)
+			"run loadline stop, and a running session starts the new one.\n", o.port, versionShown(version), Version)
 		return true, nil
 	}
 	if from != o.port {
@@ -134,6 +135,18 @@ func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld 
 	// The page has no reload of its own for a new version.
 	out.printf("Restarted the Loadline server on %s; reload an open dashboard.\n", Version)
 	return true, nil
+}
+
+// versionShown is version as install names it: as it is when it has the
+// form of a version, and "another version" otherwise. Whatever answers on
+// the port names its version, and may have taken the port first: up to 4 KiB
+// of text of its own, words that read as install's or sequences that act on
+// the terminal, would otherwise reach install's line.
+func versionShown(version string) string {
+	if versionForm.MatchString(version) {
+		return version
+	}
+	return "another version"
 }
 
 // holderElsewhere returns what the server holding the history's lock at
