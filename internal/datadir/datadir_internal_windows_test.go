@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/fsperm/fspermtest"
 )
 
@@ -42,7 +43,39 @@ func TestEntryProblem_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
 func TestOwnerProblem_WaitsOutADeletionAndLeavesOutWhatHasGone(t *testing.T) {
 	path := going(t)
 
-	if got, err := ownerProblem(path); err != nil || got != "" {
+	if got, err := ownerProblem(filepath.Dir(path), path); err != nil || got != "" {
 		t.Errorf("ownerProblem(%s), deleted meanwhile = %q, %v; want \"\", nil", path, got, err)
+	}
+}
+
+// takeown /r follows a junction out of the folder it is given, and takes
+// what the junction leads to, and goes into folders whose contents the user
+// cannot see. So the data directory is taken back with what it holds only
+// while nothing in it is a link and every folder of it can be listed.
+func TestMovable_TakesBackOnlyTheDataDirectoryWhenTakeownCouldLeaveIt(t *testing.T) {
+	for name, plant := range map[string]func(t *testing.T, dir string){
+		"a junction among Loadline's files": func(t *testing.T, dir string) {
+			t.Helper()
+			junctionAt(t, filepath.Join(dir, "loadline.log"), t.TempDir())
+		},
+		"a folder of Loadline's that keeps the user out": func(t *testing.T, dir string) {
+			t.Helper()
+			spool := filepath.Join(dir, "spool")
+			fspermtest.SetAccessListAsIs(t, spool, "D:AI(A;OICIID;FA;;;SY)")
+			t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := home(t)
+			plant(t, dir)
+			found := ownedFolder(dir, gone)
+			movableAs(t, found)
+			profileHolds(t, dir)
+			want := folderReport(found) + takeBackLead + `run takeown /f "` + dir + `" and then loadline install`
+
+			if err := Verify(dir, filepath.Dir(dir)); err == nil || err.Error() != want {
+				t.Errorf("Verify = %v;\nwant %s", err, want)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
@@ -19,6 +20,15 @@ import (
 // register a sync root depends on the machine, and nothing at hand makes it
 // fail to answer.
 var syncRoot = fsperm.SyncRoot
+
+// movableAncestor is fsperm.MovableAncestor. Tests replace it: an account
+// that is not elevated cannot give a folder another owner, least of all an
+// account this computer no longer has.
+var movableAncestor = fsperm.MovableAncestor
+
+// inProfile is fsperm.InProfile. Tests replace it: the folders a test makes
+// are wherever its temporary folder is, which need not be in the profile.
+var inProfile = fsperm.InProfile
 
 // movableAdvice ends the report of a folder above the data directory that
 // someone else could move aside.
@@ -96,7 +106,7 @@ func Make(dir string) error {
 	unlocked := map[string]bool{}
 	found, err := ownPaths(dir, &repair{
 		before: func(path string, folder bool) error {
-			problem, err := ownerProblem(path)
+			problem, err := ownerProblem(dir, path)
 			if err != nil {
 				return err
 			}
@@ -304,7 +314,7 @@ func contentProblem(dir string) (string, error) {
 		return problem, nil
 	}
 	for _, path := range found.paths {
-		if problem, err := ownerProblem(path); err != nil || problem != "" {
+		if problem, err := ownerProblem(dir, path); err != nil || problem != "" {
 			return problem, err
 		}
 	}
@@ -375,11 +385,13 @@ func dirLinkProblem(dir string) (string, error) {
 	}
 }
 
-// ownerProblem reports path, one of Loadline's files or folders, as
-// belonging to someone else, who may always let anyone at it, whatever
-// Loadline makes of its access list, or "" when it does not. A path that is
-// being deleted is waited for (settle), and once gone, has no problem.
-func ownerProblem(path string) (string, error) {
+// ownerProblem reports path, one of Loadline's files or folders in dir, the
+// data directory, as belonging to someone else, who may always let anyone at
+// it, whatever Loadline makes of its access list, or "" when it does not. To
+// an account this computer no longer has, it offers to take dir back, with
+// all it holds (takeBack). A path that is being deleted is waited for
+// (settle), and once gone, has no problem.
+func ownerProblem(dir, path string) (string, error) {
 	var owner fsperm.Owner
 	err := settle(func() (err error) {
 		owner, err = foreignOwner(path)
@@ -392,7 +404,7 @@ func ownerProblem(path string) (string, error) {
 		return "", err
 	}
 	return path + " belongs to " + owner.Name + ", who can always change who may read or replace it, " +
-		"which Loadline's own files must not allow: remove it, then run loadline install", nil
+		"which Loadline's own files must not allow: remove it, then run loadline install" + takeBack(owner, dir, true), nil
 }
 
 // exposed reports path as not private when exposure finds someone else it
@@ -405,12 +417,81 @@ func exposed(path string, exposure func(string) (string, error)) (string, error)
 	return path + " is not private: " + found + "; run loadline install", nil
 }
 
-// movable reports a folder above dir that someone else could move aside,
-// and what to do about it, or "" when there is none.
+// movable reports dir, or a folder above it, that someone else could move
+// aside, and what to do about it, or "" when there is none. To an account
+// this computer no longer has, it offers to take that folder back
+// (takeBack), with all it holds only when it is dir itself.
 func movable(dir, top string) (string, error) {
-	found, err := fsperm.MovableAncestor(dir, top)
+	found, err := movableAncestor(dir, top)
 	if err != nil || found.Problem == "" {
 		return "", err
 	}
-	return found.Problem + movableAdvice, nil
+	// MovableAncestor names dir as given, made absolute, and every folder
+	// above it, or among those that really hold it, otherwise.
+	abs, err := filepath.Abs(dir)
+	itself := err == nil && found.Folder == abs
+	return found.Problem + movableAdvice + takeBack(found.Owner, found.Folder, itself), nil
+}
+
+// takeBack offers the command that takes folder back for the user
+// (takeBackAdvice) when owner, who owns it or what it holds, is an account
+// this computer no longer has, and folder is in the user's profile, or
+// returns "". Only then is the folder surely the user's: one that an account
+// that may still exist owns, or one outside the profile, may be someone
+// else's, which the user must not take. A folder that cannot be placed is
+// offered nothing, and the report stands as it is.
+//
+// withContents takes all that folder holds too. Only the data directory
+// itself is ever offered that, and only while takeown /r would reach
+// nothing in it but Loadline's own (holdsOnlyLoadlines).
+func takeBack(owner fsperm.Owner, folder string, withContents bool) string {
+	if !owner.Gone {
+		return ""
+	}
+	if in, err := inProfile(folder); err != nil || !in {
+		return ""
+	}
+	return takeBackAdvice(folder, withContents && holdsOnlyLoadlines(folder))
+}
+
+// holdsOnlyLoadlines reports whether takeown /r, given dir, the data
+// directory, would take nothing but Loadline's own. It goes through every
+// folder below the one it is given, through a junction or symbolic link to
+// wherever that leads, and through a file's other name to that file
+// wherever else it is. So dir must hold nothing but Loadline's files and
+// folders and the files the system leaves, none of them a link or a file
+// with another name, and no folder the user may not list, which could hold
+// one.
+func holdsOnlyLoadlines(dir string) bool {
+	if foreign, err := foreignEntry(dir); err != nil || foreign != "" {
+		return false
+	}
+	found, err := ownPaths(dir, nil)
+	return err == nil && found.link == "" && found.locked == ""
+}
+
+// takeBackAdvice ends the report of path, a folder that an account this
+// computer no longer has owns, or whose files it owns, with what takes it
+// back for the user, and when recursive is set, all it holds too: the
+// command to paste into Command Prompt or PowerShell. Each takes a path in
+// double quotes as it is written, but for a few characters: a double quote
+// ends it, Command Prompt expands % and, with delayed expansion, !, and
+// PowerShell expands $, reads a backtick as an escape, and reads a
+// typographic double quote as a plain one. A path that holds any of them is
+// given the tool's name instead, and no command that would change what it
+// names.
+func takeBackAdvice(path string, recursive bool) string {
+	const lead = "; it belongs to an account this computer no longer has, as after a profile was moved or restored: if the folder is yours, "
+	if strings.ContainsAny(path, "\"%$!`\u201c\u201d\u201e") {
+		what := path
+		if recursive {
+			what += " and all it holds"
+		}
+		return lead + "take ownership of " + what + " with takeown and then run loadline install"
+	}
+	command := `takeown /f "` + path + `"`
+	if recursive {
+		command += " /r"
+	}
+	return lead + "run " + command + " and then loadline install"
 }

@@ -231,8 +231,28 @@ or is narrow.
     directory, that belongs to anyone but you, SYSTEM, Administrators or TrustedInstaller. One case
     is the SID of an account that no longer exists, after a profile was migrated or restored.
     Another is a domain group.
-  - *Impact:* install and the server refuse the data directory, naming the folder and its owner,
-    since that owner can always change who may use it. On such a profile the default location can
-    be refused too.
-  - *Mitigation:* use the default on a standard profile. Otherwise take ownership of the folder it
-    names (for example `takeown /f <folder>`) and run `loadline install`.
+  - *Impact:* install, the server and `loadline doctor` refuse the data directory, naming the
+    folder and its owner, since that owner can always change who may use it. On such a profile the
+    default location can be refused too.
+  - *The repair Loadline offers (Windows):* when the owner is an account this computer no longer
+    has, and the folder is in your user profile, the message ends with the command that takes it
+    back: "…; it belongs to an account this computer no longer has, as after a profile was moved
+    or restored: if the folder is yours, run takeown /f "<folder>" and then loadline install".
+    - For the data directory, or one of Loadline's files in it, the command names the data
+      directory and adds `/r`, which takes all it holds too. It does so only while the data
+      directory holds nothing but Loadline's own files, none of them a link, a file with another
+      name or a folder you may not list, since `takeown /r` would follow those out of it. A folder
+      above the data directory never gets `/r`.
+    - A folder whose path holds `"`, `%`, `$`, `!`, a backtick or a typographic double quote,
+      which Command Prompt or PowerShell would not take as written, gets the tool's name instead
+      of a command to paste.
+    - An account counts as gone only when Windows is sure: it reports the account deleted, or it
+      names no account for a SID of this computer's own accounts. A SID of another domain that it
+      cannot name, as when no domain controller answers, may be an account that still exists: the
+      message names it as "an account this computer cannot name right now" and offers nothing.
+      Nothing is offered for a group or any other account that exists, for a folder outside your
+      profile, which Loadline judges where it really is, links followed and short names in full,
+      or on macOS and Linux.
+  - *Mitigation:* use the default on a standard profile. Otherwise, if the folder is yours, run the
+    command the message offers, or take ownership of the folder it names yourself (for example
+    `takeown /f <folder>`), and run `loadline install`.
