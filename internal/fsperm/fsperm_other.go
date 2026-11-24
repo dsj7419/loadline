@@ -162,11 +162,8 @@ func Inspect(path string) (Entry, error) {
 	return Entry{
 		Link:   info.Mode()&fs.ModeSymlink != 0,
 		Folder: info.IsDir(),
-		Names:  uint64(stat.Nlink), //nolint:unconvert,nolintlint // Nlink is uint16 on macOS and uint64 on Linux
-		ID: FileID{
-			volume: uint64(stat.Dev), //nolint:gosec,unconvert,nolintlint // Dev is int32 on macOS and uint64 on Linux; a device number is never negative
-			index:  stat.Ino,
-		},
+		Names:  uint64(stat.Nlink),                      //nolint:unconvert,nolintlint // Nlink is uint16 on macOS and uint64 on Linux
+		ID:     indexFileID(uint64(stat.Dev), stat.Ino), //nolint:gosec,unconvert,nolintlint // Dev is int32 on macOS and uint64 on Linux; a device number is never negative
 	}, nil
 }
 

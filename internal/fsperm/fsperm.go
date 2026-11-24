@@ -5,6 +5,7 @@
 package fsperm
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,9 +27,44 @@ type Entry struct {
 	ID FileID
 }
 
-// FileID is a file's identity: the volume it is on and its number there.
+// FileID is a file's identity: the volume it is on and its number there. On
+// Windows that number is the file's 128-bit ID, or on a volume that cannot
+// give it, the 64-bit file index, which ReFS does not keep unique. form says
+// which: a volume serial number has 64 bits beside the full ID and 32 beside
+// the index, so numbers of the two forms can match for two different files.
+// The zero FileID is of neither form, and no file's.
 type FileID struct {
-	volume, index uint64
+	form   idForm
+	volume uint64
+	id     [16]byte
+}
+
+// idForm is the form of a FileID's numbers.
+type idForm uint8
+
+const (
+	// fullID is Windows's 128-bit file ID beside its volume's 64-bit
+	// serial number.
+	fullID idForm = iota + 1
+	// indexID is a 64-bit number in the low 8 bytes beside its volume's:
+	// Windows's file index and 32-bit volume serial number, or the inode
+	// and device numbers of Unix.
+	indexID
+)
+
+// FullFileID is the ID of a file as Windows gives it in FILE_ID_INFO: the
+// 64-bit serial number of its volume and its 128-bit ID there. Inspect makes
+// each full ID with it, and a test that stands in for Inspect can too.
+func FullFileID(volume uint64, id [16]byte) FileID {
+	return FileID{form: fullID, volume: volume, id: id}
+}
+
+// indexFileID is the ID of the file numbered index on volume, with index in
+// the low 8 bytes, where NTFS's full ID holds it.
+func indexFileID(volume, index uint64) FileID {
+	id := FileID{form: indexID, volume: volume}
+	binary.LittleEndian.PutUint64(id.id[:8], index)
+	return id
 }
 
 // andList joins names as a sentence lists them: "a", "a and b", "a, b and c".
