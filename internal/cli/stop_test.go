@@ -1,9 +1,12 @@
 package cli_test
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -92,7 +95,7 @@ func (f *fakeLoadline) serve(listener net.Listener) {
 			version = f.successor
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, version)
+		_ = json.NewEncoder(w).Encode(map[string]string{"app": "loadline", "version": version})
 	})
 	mux.HandleFunc("POST /api/stop", f.handleStop)
 	f.server = &http.Server{Handler: mux, ReadHeaderTimeout: hangBound}
@@ -512,6 +515,62 @@ func TestRunStop_ExitCodes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Stop prints the status a refusal came with, and the reason phrase of its
+// status line is whatever answers on the port's own text: escape sequences
+// there would retitle the terminal, erase stop's line and write another in
+// its place. Stop names the status by its code alone.
+func TestRunStop_NamesARefusalByItsCodeAlone(t *testing.T) {
+	home := stopHome(t)
+	installToken(t, home)
+	port := refuseStopWith(t, "HTTP/1.1 500 \x1b]0;title set by the port's holder\a\x1b[2K\x1b[1GStopped the Loadline server.")
+	writeConfigPort(t, home, port)
+
+	got := run(t, "stop")
+
+	want := fmt.Sprintf("loadline: stop the server on port %d: post /api/stop: the server answered 500 Internal Server Error; "+
+		"run loadline doctor to check the server\n", port)
+	if got.code != 1 || got.stdout != "" || got.stderr != want {
+		t.Errorf("stop = %d, stdout %q, stderr %q; want 1 and %q", got.code, got.stdout, got.stderr, want)
+	}
+}
+
+// refuseStopWith serves a free port that answers health as Loadline does,
+// and every other request with statusLine, as a process that took the port
+// may: Go's own server writes a reason phrase of its own. It returns the
+// port.
+func refuseStopWith(t *testing.T, statusLine string) int {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	const health = `{"app":"loadline","version":"0.1.1"}`
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, req.Body)
+				if req.URL.Path == "/healthz" {
+					_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+						len(health), health)
+					return
+				}
+				_, _ = io.WriteString(conn, statusLine+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			}()
+		}
+	}()
+	return portOf(t, listener.Addr())
 }
 
 // A server busy shutting down or starting may be slow to answer, so stop

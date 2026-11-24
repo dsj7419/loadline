@@ -8,6 +8,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/serverlock"
+	"github.com/dsj7419/loadline/internal/termtext"
 	"github.com/dsj7419/loadline/internal/timer"
 )
 
@@ -119,8 +120,11 @@ func handOver(ctx context.Context, out *printer, o handoverOptions) (stoppedOld 
 			return true, fmt.Errorf("the old server stopped, but the new one did not start: %w; run loadline open", err)
 		}
 	case version != Version:
+		// Whatever answers on the port names its version, and may have
+		// taken the port first: what in it would act on the terminal is
+		// shown escaped.
 		out.printf("Stopped the old server, but the server that now answers on port %d runs %s, not %s; "+
-			"run loadline stop, and a running session starts the new one.\n", o.port, version, Version)
+			"run loadline stop, and a running session starts the new one.\n", o.port, termtext.Escape(version), Version)
 		return true, nil
 	}
 	if from != o.port {

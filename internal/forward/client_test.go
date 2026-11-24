@@ -1,12 +1,14 @@
 package forward_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -443,6 +445,68 @@ func TestClient_GetFailsUnlessTheServerAnswers200(t *testing.T) {
 			t.Errorf("error = %q, want %q", err, want)
 		}
 	}
+}
+
+// A command prints the status a refusal came with, and the reason phrase of
+// its status line is the answering process's own text: one that took the
+// port may write escape sequences, a carriage return or a bidirectional
+// override there, which act on the terminal, or simply a lie. The client
+// names the status by its code alone, in net/http's words for it.
+func TestClient_NamesARefusalByItsCodeAlone(t *testing.T) {
+	hostile := "\x1b]0;title set by the port's holder\a\x1b[2K\rStopped the Loadline server.\u202e"
+	for _, tc := range []struct {
+		name, statusLine, want string
+	}{
+		{name: "a reason phrase that acts on the terminal", statusLine: "HTTP/1.1 500 " + hostile, want: "500 Internal Server Error"},
+		{name: "a reason phrase that lies", statusLine: "HTTP/1.1 500 OK", want: "500 Internal Server Error"},
+		{name: "a code net/http has no words for", statusLine: "HTTP/1.1 599 " + hostile, want: "599"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := forward.Client{BaseURL: startStatusLineServer(t, tc.statusLine), Token: testToken}
+
+			_, err := client.Post(t.Context(), "/api/stop", 1<<10)
+			sendErr := client.Send(t.Context(), forward.HookPath, envelopeAt(1, t0))
+
+			if want := "post /api/stop: the server answered " + tc.want; err == nil || err.Error() != want {
+				t.Errorf("Post = %v, want %q", err, want)
+			}
+			if want := "post envelope to /ingest/hook: the server answered " + tc.want; sendErr == nil || sendErr.Error() != want {
+				t.Errorf("Send = %v, want %q", sendErr, want)
+			}
+		})
+	}
+}
+
+// startStatusLineServer answers every request on a free loopback port with
+// statusLine, as a process that took the port may: Go's own server writes a
+// reason phrase of its own. It returns the base URL.
+func startStatusLineServer(t *testing.T, statusLine string) string {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				// Closed with a body unread, the connection would be reset
+				// before the client has read the answer.
+				_, _ = io.Copy(io.Discard, req.Body)
+				_, _ = io.WriteString(conn, statusLine+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			}()
+		}
+	}()
+	return "http://" + listener.Addr().String()
 }
 
 func TestClient_GetRefusesAnAnswerOverTheLimit(t *testing.T) {
