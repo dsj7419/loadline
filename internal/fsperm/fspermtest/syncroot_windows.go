@@ -100,7 +100,7 @@ func RegisterSyncRoot(tb testing.TB, dir, provider string) {
 	if !registered {
 		tb.Skipf("register %s as a sync root: HRESULT 0x%08X", dir, hresult(hr))
 	}
-	tb.Logf("registered %s as a sync root of %s", dir, provider)
+	tb.Logf("registered %s as a sync root of %q", dir, provider)
 }
 
 // hresult is the HRESULT a call returned in r, its low 32 bits.

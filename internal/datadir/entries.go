@@ -353,8 +353,9 @@ const (
 	// (repairTemporary).
 	inPlace temporaryVerdict = iota + 1
 	// linkedElsewhere is a file with a name in another folder, which every
-	// look found for as long as the walk waits (settle). No writer makes
-	// one, and whatever is done to the file here is done to it there.
+	// look found for as long as the walk waits, and two looks at least
+	// (settle). No writer makes one, and whatever is done to the file here is
+	// done to it there.
 	linkedElsewhere
 	// goneOrGoing is a name whose file went, or was replaced by a folder,
 	// since its folder was listed, or that Windows would not let the walk

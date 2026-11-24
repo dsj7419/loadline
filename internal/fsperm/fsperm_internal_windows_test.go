@@ -310,6 +310,42 @@ func TestMovableAncestor_NamesAFolderThatReallyHoldsTheDirectory(t *testing.T) {
 	}
 }
 
+// A junction whose name differs from the folder it leads to only in letters
+// that Unicode folds together, and NTFS keeps apart, leads into another
+// folder all the same: the folders that really hold the directory are judged
+// too, and the one that lets others in is found.
+func TestMovableAncestor_JudgesTheFoldersThatReallyHoldTheDirectoryWhenTheirNameFoldsToTheLinks(t *testing.T) {
+	for name, pair := range foldedNames {
+		t.Run(name, func(t *testing.T) {
+			top := t.TempDir()
+			if err := Private(top); err != nil {
+				t.Fatal(err)
+			}
+			given, holder := foldedFolders(t, top, pair)
+			target := filepath.Join(holder, "Local")
+			if err := MkdirAll(target); err != nil {
+				t.Fatal(err)
+			}
+			local := filepath.Join(given, "Local")
+			junction(t, local, target)
+			dir := filepath.Join(local, "loadline")
+			fspermtest.Grant(t, holder, fileDeleteChild, windows.NO_INHERITANCE)
+
+			got, err := MovableAncestor(dir, top)
+
+			heldHolder := mustFinalPath(t, holder)
+			want := Movable{
+				Folder: heldHolder,
+				Problem: dir + " is really " + filepath.Join(mustFinalPath(t, target), "loadline") + ", and " + heldHolder +
+					" lets " + fspermtest.AuthenticatedUsers(t) + " delete or rename the folders in it",
+			}
+			if err != nil || got != want {
+				t.Errorf("MovableAncestor = %+v, %v;\nwant %+v", got, err, want)
+			}
+		})
+	}
+}
+
 func mustFinalPath(t *testing.T, path string) string {
 	t.Helper()
 	final, err := finalPath(path)

