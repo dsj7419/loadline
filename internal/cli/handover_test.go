@@ -124,6 +124,17 @@ func TestInstall_HandsARunningServerOverToTheNewBinary(t *testing.T) {
 	}
 }
 
+// The server a hand-over starts may first wait out the lock on the history,
+// which the server before it lets go of last, so install waits for it to
+// answer at least as long as that wait and a server's start take together,
+// and does not give up on a server that is on its way.
+func TestInstall_WaitsForTheNewServerThroughItsWaitForTheLock(t *testing.T) {
+	if got, least := cli.HandoverStartWait(), cli.LockWait+cli.ServerStartWait; got < least {
+		t.Errorf("install waits %v for the server it hands over to, want at least %v: the %v it may wait for the lock and the %v of a start",
+			got, least, cli.LockWait, cli.ServerStartWait)
+	}
+}
+
 // A server started from an elevated shell would run elevated for as long as
 // it lives, and it runs the claude of a config the user can write. Install
 // stops the old one, and leaves the start to a normal shell.

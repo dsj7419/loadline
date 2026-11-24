@@ -92,25 +92,60 @@ func TestSecure_RefusesALockedDataDirectoryItCannotChange(t *testing.T) {
 // A data directory the user may list and write to, but whose list they may
 // not change, as one Administrators or SYSTEM own that gives the user Modify
 // alone, does not keep them out, but cannot be made private either. It is
-// refused with a sentence that says so, and its list is left as it was.
+// refused with a sentence that says so, and its list is left as it was. The
+// dashboard's browser profile in it, with nothing wrong with it, does not
+// stand in for the data directory's own permissions.
 func TestSecure_RefusesADataDirectoryItMayListButNotChange(t *testing.T) {
-	dir, top := lockedOutDir(t, "D:P(A;OICI;0x1301bf;;;"+fspermtest.UserSID(t)+")")
+	for name, withProfile := range map[string]bool{"without the browser profile": false, "with the browser profile": true} {
+		t.Run(name, func(t *testing.T) {
+			dir, top := lockedOutDir(t, "D:P(A;OICI;0x1301bf;;;"+fspermtest.UserSID(t)+")")
+			if withProfile {
+				if err := PrepareBrowserProfile(filepath.Join(dir, browserProfile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			listsUnchangeable(t)
+			ownedAs(t, func(string) (string, error) { return `BUILTIN\Administrators`, nil })
+			before := fspermtest.Descriptor(t, dir)
+			want := dir + ` cannot be made private, since you may not change who may use it; it belongs to BUILTIN\Administrators: ` +
+				`set LOADLINE_HOME to a folder of your own, or have an administrator reset it with icacls "` + dir +
+				`" /reset, then run loadline install`
+
+			for step, err := range map[string]error{"Secure": Secure(dir, top), "Make": Make(dir), "Verify": Verify(dir, top)} {
+				if err == nil || err.Error() != want {
+					t.Errorf("%s = %v, want %q", step, err, want)
+				}
+			}
+			if got, err := Check(dir, top); err != nil || got != want {
+				t.Errorf("Check = %q, %v; want %q", got, err, want)
+			}
+			if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
+				t.Errorf("the list of %s changed to %s; want it as it was", dir, fspermtest.AccessList(t, dir))
+			}
+		})
+	}
+}
+
+// A data directory that is private already needs no change, so one whose
+// list the user may not change, as one Administrators own, is taken as it
+// is.
+func TestSecure_TakesAPrivateDataDirectoryItMayNotChange(t *testing.T) {
+	top := t.TempDir()
+	if err := fsperm.Private(top); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(top, "loadline")
+	if err := Secure(dir, top); err != nil {
+		t.Fatal(err)
+	}
 	listsUnchangeable(t)
-	ownedAs(t, func(string) (string, error) { return `BUILTIN\Administrators`, nil })
-	before := fspermtest.Descriptor(t, dir)
-	want := dir + ` cannot be made private, since you may not change who may use it; it belongs to BUILTIN\Administrators: ` +
-		`set LOADLINE_HOME to a folder of your own, or have an administrator reset it with icacls "` + dir +
-		`" /reset, then run loadline install`
 
 	for step, err := range map[string]error{"Secure": Secure(dir, top), "Make": Make(dir), "Verify": Verify(dir, top)} {
-		if err == nil || err.Error() != want {
-			t.Errorf("%s = %v, want %q", step, err, want)
+		if err != nil {
+			t.Errorf("%s = %v, want the private data directory taken", step, err)
 		}
 	}
-	if got, err := Check(dir, top); err != nil || got != want {
-		t.Errorf("Check = %q, %v; want %q", got, err, want)
-	}
-	if after := fspermtest.Descriptor(t, dir); !bytes.Equal(after, before) {
-		t.Errorf("the list of %s changed to %s; want it as it was", dir, fspermtest.AccessList(t, dir))
+	if got, err := Check(dir, top); err != nil || got != "" {
+		t.Errorf("Check = %q, %v; want \"\"", got, err)
 	}
 }

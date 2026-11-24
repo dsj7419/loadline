@@ -1386,6 +1386,9 @@ func TestListableOnceRegained_TellsWhetherTheEntryWouldLetTheUserIn(t *testing.T
 		"listing denied to everyone":       {list: denyListing(t)},
 		"listing denied, then inherited":   {list: "D:AI(D;;CC;;;WD)(A;ID;FA;;;SY)"},
 		"a denial for everyone, inherited": {list: "D:AI(A;ID;FA;;;SY)(D;ID;CC;;;WD)", want: true},
+		// A folder without an access list admits everyone already, and
+		// RegainList has no entry to add to it.
+		"no access list at all": {list: "D:NO_ACCESS_CONTROL"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := lockedFolder(t, tt.list)

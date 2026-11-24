@@ -268,6 +268,9 @@ func TestMake_LeavesATokenBeingLinkedIntoPlace(t *testing.T) {
 	if err := datadir.Verify(home, top); err != nil {
 		t.Errorf("Verify = %v, want the data directory taken", err)
 	}
+	if _, err := os.Lstat(temporary); err != nil {
+		t.Errorf("after Verify, %s is gone (%v); want it left as it was", temporary, err)
+	}
 	if err := datadir.Make(home); err != nil {
 		t.Errorf("Make = %v, want the data directory taken", err)
 	}

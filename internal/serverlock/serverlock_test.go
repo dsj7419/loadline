@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,46 +142,97 @@ func TestAcquire_TwoOpensInOneProcessExcludeEachOther(t *testing.T) {
 	release(t, acquire(t, path))
 }
 
+// holdUntilReleased takes the lock at path for the test and returns what
+// lets go of it, once: the test calls it, or the test's cleanup does when
+// the test stops before then, so that no open of the lock file outlives a
+// failing run.
+func holdUntilReleased(t *testing.T, path string) (letGo func()) {
+	t.Helper()
+	lock := acquire(t, path)
+	var once sync.Once
+	letGo = func() { once.Do(func() { release(t, lock) }) }
+	t.Cleanup(letGo)
+	return letGo
+}
+
+// endWait, as a test's cleanup, ends the Acquire behind done, which waits
+// up to wait on clock, if a failing run left it waiting: once the wait has
+// passed it gives up, or takes the lock, which is let go of here. An
+// Acquire that has returned leaves no timer pending.
+func endWait(t *testing.T, clock *clocktest.Clock, done <-chan acquired, wait time.Duration) {
+	t.Helper()
+	var got acquired
+	if len(clock.Pending()) == 0 {
+		select {
+		case got = <-done:
+		default:
+		}
+	} else {
+		clock.Advance(wait)
+		got = receive(t, done)
+	}
+	if got.lock != nil {
+		release(t, got.lock)
+	}
+}
+
+// A server waiting for another to finish shutting down tries again every
+// 50 ms, as Acquire promises: soon enough to take over at once, and seldom
+// enough not to spin on the lock meanwhile. It takes the lock once the
+// holder lets go of it.
 func TestAcquire_WaitsUntilTheHolderReleases(t *testing.T) {
 	path := lockPath(t)
-	holder := acquire(t, path)
+	letGo := holdUntilReleased(t, path)
 	clock := clocktest.New(t0)
+	const wait = time.Minute
 
-	done := acquireAsync(path, time.Minute, clock)
-	for range 3 {
-		waitArmed(t, clock, serverlock.RetryEvery)
+	done := acquireAsync(path, wait, clock)
+	t.Cleanup(func() { endWait(t, clock, done, wait) })
+	for elapsed := time.Duration(0); elapsed < 150*time.Millisecond; elapsed += 50 * time.Millisecond {
+		clock.WaitForTimers(t, 2)
+		want := []time.Duration{50 * time.Millisecond, wait - elapsed}
+		if got := clock.Pending(); !slices.Equal(got, want) {
+			t.Fatalf("timers pending %v into the wait = %v, want the next try in 50ms beside the wait's end: %v", elapsed, got, want)
+		}
 		assertStillWaiting(t, done)
-		clock.Advance(serverlock.RetryEvery)
+		clock.Advance(50 * time.Millisecond)
 	}
-	waitArmed(t, clock, serverlock.RetryEvery)
-	release(t, holder)
-	clock.Advance(serverlock.RetryEvery)
+	clock.WaitForTimers(t, 2)
+	letGo()
+	clock.Advance(50 * time.Millisecond)
 
 	got := receive(t, done)
 	if got.err != nil {
 		t.Fatalf("Acquire = %v once the holder released, want the lock", got.err)
 	}
-	if _, err := serverlock.Acquire(path, 0, nil); !errors.Is(err, serverlock.ErrHeld) {
+	if beside, err := serverlock.Acquire(path, 0, nil); !errors.Is(err, serverlock.ErrHeld) {
 		t.Errorf("Acquire beside the waiter that got the lock = %v, want ErrHeld", err)
+		if beside != nil {
+			release(t, beside)
+		}
 	}
 	release(t, got.lock)
 }
 
 func TestAcquire_GivesUpWithErrHeldAfterWait(t *testing.T) {
 	path := lockPath(t)
-	holder := acquire(t, path)
-	defer release(t, holder)
+	holdUntilReleased(t, path)
 	clock := clocktest.New(t0)
 	const wait = 10 * time.Second
 
 	done := acquireAsync(path, wait, clock)
+	t.Cleanup(func() { endWait(t, clock, done, wait) })
 	waitArmed(t, clock, wait)
 	clock.Advance(wait - time.Nanosecond)
 	waitArmed(t, clock, serverlock.RetryEvery)
 	assertStillWaiting(t, done)
 	clock.Advance(time.Nanosecond)
 
-	if got := receive(t, done); got.lock != nil || !errors.Is(got.err, serverlock.ErrHeld) {
+	got := receive(t, done)
+	if got.lock != nil {
+		release(t, got.lock)
+	}
+	if got.lock != nil || !errors.Is(got.err, serverlock.ErrHeld) {
 		t.Errorf("Acquire once %v had passed = %v, %v; want ErrHeld", wait, got.lock, got.err)
 	}
 }
