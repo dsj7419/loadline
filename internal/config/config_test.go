@@ -56,6 +56,7 @@ func TestDefaults(t *testing.T) {
 		OpenOnStart:     config.OpenOncePerLogin,
 		Browser:         "auto",
 		AppWindow:       true,
+		BrowserProfile:  "dedicated",
 		IdleExitMinutes: 30,
 		RetentionDays:   30,
 		Alerts:          config.AlertSettings{WeeklyPct: 90, ContextPct: 85, NeedsYouSeconds: 20},
@@ -74,6 +75,17 @@ func TestOpenModeValues(t *testing.T) {
 	} {
 		if string(mode) != want {
 			t.Errorf("open mode %q, want %q", mode, want)
+		}
+	}
+}
+
+func TestProfileModeValues(t *testing.T) {
+	for mode, want := range map[config.ProfileMode]string{
+		config.ProfileDedicated: "dedicated",
+		config.ProfileDefault:   "default",
+	} {
+		if string(mode) != want {
+			t.Errorf("profile mode %q, want %q", mode, want)
 		}
 	}
 }
@@ -102,6 +114,7 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		"openOnStart": "never",
 		"browser": "chrome",
 		"appWindow": false,
+		"browserProfile": "default",
 		"idleExitMinutes": 0,
 		"retentionDays": 7,
 		"claudePath": "C:/tools/claude.exe",
@@ -118,6 +131,7 @@ func TestLoad_ReadsEveryDocumentedKey(t *testing.T) {
 		OpenOnStart:     config.OpenNever,
 		Browser:         "chrome",
 		AppWindow:       false,
+		BrowserProfile:  config.ProfileDefault,
 		IdleExitMinutes: 0,
 		RetentionDays:   7,
 		ClaudePath:      "C:/tools/claude.exe",
@@ -188,6 +202,8 @@ func TestLoad_AcceptsBoundaryValues(t *testing.T) {
 		"alert thresholds max": `{"alerts":{"weeklyPct":100,"contextPct":100}}`,
 		"open always":          `{"openOnStart":"always"}`,
 		"open once per login":  `{"openOnStart":"once_per_login"}`,
+		"dedicated profile":    `{"browserProfile":"dedicated"}`,
+		"default profile":      `{"browserProfile":"default"}`,
 		"zero daily budget":    `{"accounts":[{"configDir":` + q(t, abs(".claude")) + `,"dailyBudgetUSD":0}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -230,6 +246,8 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"unknown open mode":       {`{"openOnStart":"sometimes"}`, `openOnStart "sometimes" is not one of`},
 		"empty open mode":         {`{"openOnStart":""}`, `openOnStart "" is not one of`},
 		"empty browser":           {`{"browser":""}`, "browser must not be empty"},
+		"unknown browser profile": {`{"browserProfile":"work"}`, `browserProfile "work" is not one of "dedicated" or "default"`},
+		"empty browser profile":   {`{"browserProfile":""}`, `browserProfile "" is not one of "dedicated" or "default"`},
 		"account without dir":     {`{"accounts":[{"configDir":` + q(t, abs("a")) + `},{"label":"B"}]}`, "accounts[1].configDir must not be empty"},
 		"account with blank dir":  {`{"accounts":[{"configDir":"  "}]}`, "accounts[0].configDir must not be empty"},
 		"account negative budget": {`{"accounts":[{"configDir":` + q(t, abs("a")) + `,"dailyBudgetUSD":-1}]}`, "accounts[0].dailyBudgetUSD -1 is below"},

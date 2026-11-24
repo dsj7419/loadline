@@ -95,6 +95,7 @@ Loadline works without a config file. To change a default, create one with just 
 | `openOnStart` | `once_per_login` | When a starting server opens the dashboard: `once_per_login` (the first start after the computer boots), `always` or `never`. |
 | `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser. |
 | `appWindow` | `true` | Opens a Chromium-family browser as an app window, without tabs or an address bar. Firefox and the system default ignore it. |
+| `browserProfile` | `dedicated` | `dedicated` opens a Chromium app window in a profile of its own, `browser` in the data directory, with no extensions and nothing shared with your browsing (see [Privacy and security](#privacy-and-security)). `default` opens it in your normal profile. A tab, Firefox and the system default always use your normal profile. A snap or Flatpak browser given by its path cannot write under `~/.local/state`: set `default` for one. |
 | `idleExitMinutes` | `30` | How long the server keeps running with no live session. `0` keeps it running. |
 | `retentionDays` | `30` | How many days of history the server keeps. |
 | `claudePath` | `""` | The `claude` executable to run. Empty means the one on `PATH`. |
@@ -216,11 +217,19 @@ place: once the server has stopped, which `loadline stop` does at once and the s
   outside the binary and runs under a strict content security policy.
 - **Stored history.** The server keeps accounts, sessions, state changes, rate-limit samples and
   per-minute token and cost totals in a SQLite database in the data directory, for `retentionDays`.
-- **The dashboard's browser profile.** The browser keeps the dashboard's profile, its sign-in
-  cookie and whatever else it stores, in `browser` in the data directory, apart from your own
-  browsing. Loadline makes that folder private like the rest of the data directory, never reads
-  or changes the files in it, and refuses a `browser` folder that it did not make private.
-  `loadline uninstall` leaves it in place, as it leaves the rest of the data directory.
+- **The dashboard's browser profile.** A Chromium-family browser named in `browser` opens the
+  dashboard's app window in a profile of its own, `browser` in the data directory, unless
+  `browserProfile` is `default`. There the browser keeps the dashboard's sign-in cookie and
+  whatever else it stores, apart from your own browsing, and no extension you installed runs in
+  that profile. Loadline makes that folder private like the rest of the data directory before the
+  browser first starts in it, never reads or changes the files in it, and refuses a `browser`
+  folder that it did not make private. `loadline uninstall` leaves it in place, as it leaves the
+  rest of the data directory.
+  - The window is a second instance of the browser, beside any you have open, and takes about
+    150 MB of memory of its own.
+  - Like any new profile, it makes the browser's own background requests: component updates,
+    Safe Browsing lists and settings, and for Edge, Microsoft's services. The browser makes them,
+    not Loadline; the dashboard's own traffic stays on `127.0.0.1`.
 
 [SECURITY.md](SECURITY.md) describes the threat model, its limits, and how to report a
 vulnerability.
@@ -381,6 +390,14 @@ It exits 1 when any check fails. Common fixes:
 - **"port 8289 is in use by another program".** Set `port` in the config file and run
   `loadline install` again.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
+- **A browser extension acts on the dashboard window, or opens more windows like it.** The
+  dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`,
+  `appWindow` is `false`, or `browserProfile` is `default`. Name a Chromium-family browser
+  (`brave`, `chrome` or `edge`) and leave the other two at their defaults, and its window opens in
+  the dashboard's own profile, where no extension runs.
+- **"opening the dashboard in the browser's default profile".** Loadline could not use the
+  dashboard's own profile; the rest of the warning says why and what to do. The dashboard still
+  opens, in your normal profile.
 
 ## Roadmap
 

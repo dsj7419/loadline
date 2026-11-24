@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
@@ -119,6 +120,23 @@ func TestOpen_StartsTheBrowserWithTheURLAsOneArgument(t *testing.T) {
 	// own, so that closing the terminal that ran loadline open spares it.
 	if runtime.GOOS != "windows" && !report.Detached {
 		t.Error("the browser shares its caller's session, want one of its own")
+	}
+}
+
+// The profile folder, like the URL, reaches the browser's own argument list
+// as one argument, with no shell in between: a space, a quote and an
+// ampersand, and letters outside ASCII, arrive as they were.
+func TestOpen_StartsTheBrowserWithTheProfileAsOneArgument(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "John Smith", "O'Brien & Sons", "Zoë 東京", "browser")
+	c := expectChild(t, false)
+
+	if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t), AppWindow: true, ProfileDir: profile}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	report := c.read(t)
+	if want := inDashboardProfile(profile, dashboardURL); !slices.Equal(report.Args, want) {
+		t.Errorf("the browser got arguments %q, want %q", report.Args, want)
 	}
 }
 

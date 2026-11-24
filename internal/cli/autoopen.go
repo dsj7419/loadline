@@ -29,8 +29,10 @@ const (
 
 // dashboardOpener is how a starting server opens the dashboard.
 type dashboardOpener struct {
-	mode     config.OpenMode
-	browser  launch.Browser
+	mode config.OpenMode
+	// browser returns the browser to open the dashboard in, with its
+	// profile made ready, as dashboardBrowser does.
+	browser  func() (launch.Browser, error)
 	open     func(url string, b launch.Browser) error
 	bootTime func() (time.Time, error)
 	// stamp is the file that records the boot of the last open, or "" when
@@ -45,7 +47,7 @@ type dashboardOpener struct {
 func newDashboardOpener(o ServeOptions, cfg config.Config) dashboardOpener {
 	opener := dashboardOpener{
 		mode:     cfg.OpenOnStart,
-		browser:  launch.Browser{Pref: cfg.Browser, AppWindow: cfg.AppWindow},
+		browser:  func() (launch.Browser, error) { return dashboardBrowser(cfg, o.Paths) },
 		open:     o.Open,
 		bootTime: o.BootTime,
 		stamp:    filepath.Join(o.Paths.DataDir, openStampName),
@@ -92,8 +94,14 @@ func (s *instance) openDashboard(ctx context.Context) {
 		s.log.Info("dashboard not opened", "reason", "opened earlier this boot")
 		return
 	}
+	// Before the login code is minted, so that none of the minute it is
+	// valid for goes on making the profile ready.
+	browser, err := o.browser()
+	if err != nil {
+		s.log.Warn("opening the dashboard in the browser's default profile", "err", err)
+	}
 	loginURL := forward.LoopbackURL(s.port) + "/login?code=" + url.QueryEscape(s.srv.MintLoginCode())
-	if err := o.open(loginURL, o.browser); err != nil {
+	if err := o.open(loginURL, browser); err != nil {
 		s.log.Warn("open the dashboard failed", "err", err)
 		return
 	}
