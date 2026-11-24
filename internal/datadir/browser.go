@@ -40,7 +40,9 @@ func PrepareBrowserProfile(dir string) error {
 	if err := CheckLink(dir); err != nil {
 		return err
 	}
-	if err := problemError(ownerProblem(dir)); err != nil {
+	// The profile is in the data directory, which a refusal for its owner
+	// may offer to take back.
+	if err := problemError(ownerProblem(filepath.Dir(dir), dir)); err != nil {
 		return err
 	}
 	// MkdirAll fails on a file in words that say nothing of what to do.

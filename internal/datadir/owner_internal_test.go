@@ -187,6 +187,26 @@ func TestOwnerProblem_OffersToTakeBackAFolderOfAGoneAccountInTheProfile(t *testi
 	}
 }
 
+// The dashboard's browser profile is one of Loadline's folders in the data
+// directory, and the browser's launch judges its owner as Make does, in the
+// same words, the offer to take the data directory back included.
+func TestPrepareBrowserProfile_OffersToTakeBackAProfileOfAGoneAccount(t *testing.T) {
+	dir := home(t)
+	profile := filepath.Join(dir, browserProfile)
+	if err := fsperm.MkdirAll(profile); err != nil {
+		t.Fatal(err)
+	}
+	ownedBy(t, profile, gone)
+	profileHolds(t, dir)
+	want := ownFileReport(profile, gone) + takeBackLead + `run takeown /f "` + dir + `" /r and then loadline install`
+
+	for step, err := range map[string]error{"PrepareBrowserProfile": PrepareBrowserProfile(profile), "Make": Make(dir)} {
+		if err == nil || err.Error() != want {
+			t.Errorf("%s = %v;\nwant %s", step, err, want)
+		}
+	}
+}
+
 // A folder above the data directory, or the data directory itself, that an
 // account this computer no longer has owns, in the profile: the report
 // offers to take it back. Only the data directory is taken back with what it
