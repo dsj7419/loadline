@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/install"
 )
 
@@ -42,6 +43,23 @@ func dirEntries(t *testing.T, dir string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// symlink makes link a symbolic link to target. Where the user may make
+// none, as on Windows without the privilege, the test is skipped, except in
+// CI (which sets CI=true), whose runners may make them: a skip there would
+// pass unseen.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+
+	err := os.Symlink(target, link)
+	switch {
+	case err == nil:
+	case os.Getenv("CI") == "true":
+		t.Fatalf("cannot create symlinks in CI: %v", err)
+	default:
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
 }
 
 func TestApply_BackupAndAtomicRename(t *testing.T) {
@@ -275,9 +293,7 @@ func TestApply_WritesThroughASymlink(t *testing.T) {
 	link := filepath.Join(t.TempDir(), "settings.json")
 	original := []byte(`{"model": "opus"}`)
 	writeFile(t, target, original)
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("cannot create symlinks here: %v", err)
-	}
+	symlink(t, target, link)
 
 	if _, err := install.Apply(link, original, []byte(`{}`), applyTime); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -295,6 +311,106 @@ func TestApply_WritesThroughASymlink(t *testing.T) {
 	}
 	if got := dirEntries(t, dotfiles); !slices.Equal(got, []string{"settings.json"}) {
 		t.Errorf("link target's dir holds %q, want only settings.json", got)
+	}
+}
+
+// A hard link is no link to follow: a settings file that shares its data
+// with a file elsewhere is written at its own name, the one it was given by,
+// and nothing is made beside the other.
+func TestApply_WritesAHardLinkedFileAtItsOwnName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	elsewhere := t.TempDir()
+	original := []byte(`{"model": "opus"}`)
+	writeFile(t, filepath.Join(elsewhere, "settings.json"), original)
+	if err := os.Link(filepath.Join(elsewhere, "settings.json"), path); err != nil {
+		t.Skipf("cannot create hard links here: %v", err)
+	}
+
+	if _, err := install.Apply(path, original, []byte(`{}`), applyTime); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if got := readFile(t, path); string(got) != `{}` {
+		t.Errorf("%s holds %s, want the new settings", path, got)
+	}
+	if got, want := dirEntries(t, dir), []string{"settings.json", "settings.json" + backupSuffix}; !slices.Equal(got, want) {
+		t.Errorf("dir holds %q, want %q", got, want)
+	}
+	if got := dirEntries(t, elsewhere); !slices.Equal(got, []string{"settings.json"}) {
+		t.Errorf("the other link's dir holds %q, want only settings.json", got)
+	}
+	if got := readFile(t, filepath.Join(elsewhere, "settings.json")); !bytes.Equal(got, original) {
+		t.Errorf("the other link holds %s, want the original settings it had", got)
+	}
+}
+
+// Apply resolves a settings file as filepath.EvalSymlinks does, as it always
+// has, and asks the system where the file is only when that fails. So a file
+// is still written where the system cannot say, such as on a volume without
+// a drive letter that the path names by its GUID name.
+func TestApply_WritesAFileTheSystemCannotPlace(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		linkedFile bool
+	}{
+		{name: "plain file"},
+		{name: "linked file", linkedFile: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			install.SetFinalPath(t, func(path string) (string, error) {
+				return "", fmt.Errorf("resolve %s: %w", path, fsperm.ErrNoDriveLetter)
+			})
+			path := filepath.Join(t.TempDir(), "settings.json")
+			original := []byte(`{"model": "opus"}`)
+			written := path
+			if tc.linkedFile {
+				written = filepath.Join(t.TempDir(), "settings.json")
+				writeFile(t, written, original)
+				symlink(t, written, path)
+			} else {
+				writeFile(t, path, original)
+			}
+
+			backup, err := install.Apply(path, original, []byte(`{}`), applyTime)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			if want := path + backupSuffix; backup != want {
+				t.Errorf("backup = %s, want %s", backup, want)
+			}
+			if got := readFile(t, written); string(got) != `{}` {
+				t.Errorf("%s holds %s, want the new settings", written, got)
+			}
+		})
+	}
+}
+
+// Where filepath.EvalSymlinks resolves a settings file, Apply writes where it
+// leads, as it always has, and does not ask the system at all: whatever the
+// system would say, here a file elsewhere, goes untouched.
+func TestApply_AsksTheSystemOnlyWhereEvalSymlinksFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	elsewhere := t.TempDir()
+	decoy := filepath.Join(elsewhere, "settings.json")
+	original := []byte(`{"model": "opus"}`)
+	writeFile(t, path, original)
+	writeFile(t, decoy, original)
+	install.SetFinalPath(t, func(string) (string, error) { return decoy, nil })
+
+	if _, err := install.Apply(path, original, []byte(`{}`), applyTime); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if got := readFile(t, path); string(got) != `{}` {
+		t.Errorf("%s holds %s, want the new settings", path, got)
+	}
+	if got := readFile(t, decoy); !bytes.Equal(got, original) {
+		t.Errorf("%s, where the system would have led, holds %s, want it untouched", decoy, got)
+	}
+	if got := dirEntries(t, elsewhere); !slices.Equal(got, []string{"settings.json"}) {
+		t.Errorf("%s holds %q, want only settings.json", elsewhere, got)
 	}
 }
 

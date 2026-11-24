@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dsj7419/loadline/internal/fsperm"
 )
 
 // ErrChangedSincePlan means the settings file no longer holds the bytes a
@@ -39,6 +41,10 @@ const (
 // testHookBeforeRecheck, when set by a test, runs just before Apply reads
 // the settings file one last time ahead of replacing it.
 var testHookBeforeRecheck func()
+
+// finalPath is fsperm.FinalPath. Tests replace it: no file system at hand
+// leaves the system unable to say where a file is.
+var finalPath = fsperm.FinalPath
 
 // Apply writes out to the settings file at path, if it still holds original;
 // an empty original means the file did not exist when it was read. Otherwise
@@ -73,9 +79,9 @@ func Apply(path string, original, out []byte, now time.Time) (string, error) {
 		return "", fmt.Errorf("%s: %w", path, ErrChangedSincePlan)
 	}
 
-	target, err := filepath.EvalSymlinks(path)
+	target, err := linkTarget(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", path, err)
+		return "", err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
@@ -97,6 +103,22 @@ func Apply(path string, original, out []byte, now time.Time) (string, error) {
 	}
 	pruneBackups(path, backup)
 	return backup, nil
+}
+
+// linkTarget returns the file that writing the settings file at path
+// replaces: the one at the end of every link on the way. It resolves path as
+// filepath.EvalSymlinks does, as Apply always has, and asks the system where
+// the file is only when that fails, as it does on Windows at a junction on
+// the way, such as one that moves a home or config folder to another drive.
+// The system cannot say for every path EvalSymlinks resolves, such as one
+// that names a volume without a drive letter by its GUID name. When neither
+// resolves path, the system's error is the one returned: it says why, and it
+// names path.
+func linkTarget(path string) (string, error) {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		return target, nil
+	}
+	return finalPath(path)
 }
 
 // privateMode is mode without any permission for group or others.
