@@ -1919,6 +1919,22 @@ func TestServe_ANewServerWaitsForTheOldOneToCloseItsHistory(t *testing.T) {
 		}
 	})
 
+	// The old one may take its whole shutdown before it writes and closes
+	// the history: the new one is still waiting then, and starts once the
+	// history is closed.
+	t.Run("the old one closes it after its whole shutdown", func(t *testing.T) {
+		_, first, second, clock, release, _ := begin(t)
+
+		clock.Advance(cli.ShutdownTimeout)
+		clock.WaitForTimers(t, 2)
+		close(release)
+		if code := first.returned(t); code != 0 {
+			t.Errorf("the first Serve = %d, want 0", code)
+		}
+		clock.Advance(clock.Pending()[0])
+		second.awaitReady(t)
+	})
+
 	t.Run("the old one holds it past the wait", func(t *testing.T) {
 		f, first, second, clock, release, aside := begin(t)
 

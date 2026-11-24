@@ -20,6 +20,7 @@ import (
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/clocktest"
 	"github.com/dsj7419/loadline/internal/config"
+	"github.com/dsj7419/loadline/internal/deadlinetest"
 	"github.com/dsj7419/loadline/internal/exetest"
 	"github.com/dsj7419/loadline/internal/forward"
 )
@@ -466,6 +467,43 @@ func TestRunStop_ExitCodes(t *testing.T) {
 				t.Errorf("%q = %d, stdout %q, stderr %q; want 2 and stop's usage", args, got.code, got.stdout, got.stderr)
 			}
 		})
+	}
+}
+
+// A server busy shutting down or starting may be slow to answer, so stop
+// gives its health check 2 s, longer than a hook can wait, before it says
+// that no server runs. The server times the wait, from the request's
+// arrival until the client gives up (deadlinetest).
+func TestRunStop_GivesABusyServerTwoSecondsToAnswer(t *testing.T) {
+	home := stopHome(t)
+	held := make(chan time.Duration, 1)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := &http.Server{ReadHeaderTimeout: hangBound, Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		arrived := time.Now()
+		<-r.Context().Done()
+		select {
+		case held <- time.Since(arrived):
+		default:
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	port := portOf(t, listener.Addr())
+	writeConfigPort(t, home, port)
+
+	got := run(t, "stop")
+
+	if want := fmt.Sprintf("No Loadline server is running on port %d.\n", port); got.code != 0 || got.stdout != want || got.stderr != "" {
+		t.Errorf("stop = %d, stdout %q, stderr %q; want 0 and %q", got.code, got.stdout, got.stderr, want)
+	}
+	select {
+	case d := <-held:
+		deadlinetest.AssertHeldFor(t, "stop's health check", d, 2*time.Second)
+	case <-time.After(hangBound):
+		t.Fatal("the server saw no health check end")
 	}
 }
 

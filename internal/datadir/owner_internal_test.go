@@ -81,6 +81,29 @@ func TestMake_RefusesAFileOfLoadlinesThatBelongsToSomeoneElse(t *testing.T) {
 	}
 }
 
+// Each file another process is writing is judged, not only the first: one
+// that belongs to someone else is refused after one that is the user's.
+func TestMake_RefusesATemporaryFileOfSomeoneElsesAfterOneOfTheUsers(t *testing.T) {
+	dir := home(t)
+	if err := os.WriteFile(filepath.Join(dir, ".token-1000"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".token-1234")
+	ownedByStranger(t, path)
+	want := path + " belongs to a stranger"
+
+	for step, err := range map[string]error{
+		"Verify": Verify(dir, filepath.Dir(dir)), "Make": Make(dir), "Secure": Secure(dir, filepath.Dir(dir)),
+	} {
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%s = %v; want it refused, starting %q", step, err, want)
+		}
+	}
+	if got, err := Check(dir, filepath.Dir(dir)); err != nil || !strings.HasPrefix(got, want) {
+		t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
+	}
+}
+
 // A file the system leaves, in the data directory, is judged by its owner
 // as Loadline's own are.
 func TestMake_RefusesASystemFileThatBelongsToSomeoneElse(t *testing.T) {
