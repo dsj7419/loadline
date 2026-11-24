@@ -24,8 +24,10 @@ All notable changes to Loadline are recorded here. The format follows
 ### Changed
 
 - A Chromium-family browser opens the dashboard's app window in a browser profile of its own,
-  `browser` in the data directory, so no extension from your own profile runs beside it and its
-  sign-in cookie stays apart from your browsing. When that profile cannot be used, the dashboard
+  `browser` in the data directory, which keeps out your own extensions, extensions installed
+  machine-wide and the browser's default apps, and keeps the dashboard's sign-in cookie apart from
+  your browsing. The browser's built-in components still run there, and so does any extension
+  that an organization installs by policy. When that profile cannot be used, the dashboard
   still opens, in your normal profile, and Loadline says why. A browser given as a batch file
   (`.cmd` or `.bat`) opens it in your normal profile, as before, since Windows runs a batch file
   through `cmd.exe`, which would cut a profile path at an `&` or `^`. (#6)

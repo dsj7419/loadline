@@ -142,10 +142,18 @@ func TestCommand_NamesIgnoreCase(t *testing.T) {
 const dashboardProfile = "C:/Users/John Smith/AppData/Local/loadline/browser"
 
 // inDashboardProfile is what a Chromium app window opens url with in
-// profile: the profile, with the pages a new profile shows first turned
-// off, and then the URL.
+// profile, in this order and each flag an argument of its own: the profile,
+// with the pages a new profile shows first turned off, then with extensions
+// and the browser's default apps kept out of it, and then the URL.
 func inDashboardProfile(profile, url string) []string {
-	return []string{"--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check", "--app=" + url}
+	return []string{
+		"--user-data-dir=" + profile,
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-extensions",
+		"--disable-default-apps",
+		"--app=" + url,
+	}
 }
 
 // chromiumCase is a Chromium-family browser as a config names it, and the

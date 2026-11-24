@@ -97,7 +97,7 @@ Loadline works without a config file. To change a default, create one with just 
 | `openOnStart` | `once_per_login` | When a starting server opens the dashboard: `once_per_login` (the first start after the computer boots), `always` or `never`. |
 | `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser, or of a batch file (`.cmd` or `.bat`) that starts one. A batch file, named with its extension or without, opens the dashboard in your normal profile, with `--app=<url>` alone: Windows runs it through cmd.exe, which would cut a profile path at an `&` or `^`. |
 | `appWindow` | `true` | Opens a Chromium-family browser as an app window, without tabs or an address bar. Firefox and the system default ignore it. |
-| `browserProfile` | `dedicated` | `dedicated` opens a Chromium app window in a profile of its own, `browser` in the data directory, with no extensions and nothing shared with your browsing (see [Privacy and security](#privacy-and-security)). `default` opens it in your normal profile. A tab, Firefox, a batch file and the system default always use your normal profile. A snap or Flatpak browser given by its path cannot write under `~/.local/state`: set `default` for one. |
+| `browserProfile` | `dedicated` | `dedicated` opens a Chromium app window in a profile of its own, `browser` in the data directory, which shares nothing with your browsing and keeps out your own extensions, extensions installed machine-wide and the browser's default apps (see [Privacy and security](#privacy-and-security)). `default` opens it in your normal profile. A tab, Firefox, a batch file and the system default always use your normal profile. A snap or Flatpak browser given by its path cannot write under `~/.local/state`: set `default` for one. |
 | `idleExitMinutes` | `30` | How long the server keeps running with no live session. `0` keeps it running. |
 | `retentionDays` | `30` | How many days of history the server keeps. |
 | `claudePath` | `""` | The `claude` executable to run. Empty means the one on `PATH`. |
@@ -232,11 +232,15 @@ place: once the server has stopped, which `loadline stop` does at once and the s
 - **The dashboard's browser profile.** A Chromium-family browser named in `browser`, by its name
   or by the path of its executable, opens the dashboard's app window in a profile of its own,
   `browser` in the data directory, unless `browserProfile` is `default`. There the browser keeps
-  the dashboard's sign-in cookie and whatever else it stores, apart from your own browsing, and no
-  extension you installed runs in that profile. Loadline makes that folder private like the rest
-  of the data directory before the browser first starts in it, never reads or changes the files in
-  it, and refuses a `browser` folder that it did not make private. `loadline uninstall` leaves it
-  in place, as it leaves the rest of the data directory.
+  the dashboard's sign-in cookie and whatever else it stores, apart from your own browsing.
+  Loadline starts it there with `--disable-extensions` and `--disable-default-apps`, which keep
+  your own extensions, extensions installed machine-wide and the browser's default apps out of
+  that profile. The browser's built-in components still run there, and so does any extension that
+  an organization installs by policy: Chromium applies that policy even with
+  `--disable-extensions`. Loadline makes that folder private like the rest of the data directory
+  before the browser first starts in it, never reads or changes the files in it, and refuses a
+  `browser` folder that it did not make private. `loadline uninstall` leaves it in place, as it
+  leaves the rest of the data directory.
   - The window is a second instance of the browser, beside any you have open, and takes about
     150 MB of memory of its own.
   - Like any new profile, it makes the browser's own background requests: component updates,
@@ -417,8 +421,10 @@ It exits 1 when any check fails. Common fixes:
   names a batch file, or names a browser that is not installed, which gives way to the system
   default; `appWindow` is `false`; or `browserProfile` is `default`. Name a Chromium-family browser
   that is installed (`brave`, `chrome` or `edge`, or the path of its executable) and leave the
-  other two at their defaults, and its window opens in the dashboard's own profile, where no
-  extension runs.
+  other two at their defaults, and its window opens in the dashboard's own profile. That keeps out
+  your own extensions, extensions installed machine-wide and the browser's default apps; only the
+  browser's built-in components and any extension that an organization installs by policy still
+  run there.
 - **"opening the dashboard in the browser's default profile".** Loadline could not use the
   dashboard's own profile; the rest of the warning says why and what to do. The dashboard still
   opens, in your normal profile. The sign-in cookie set there, like one 0.1.0 set, stays valid in

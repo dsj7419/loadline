@@ -40,8 +40,9 @@ type ProfileMode string
 
 const (
 	// ProfileDedicated opens it in a profile of the dashboard's own, in the
-	// data directory, with no extensions and nothing shared with the user's
-	// browsing.
+	// data directory, which keeps out the browser's default apps and every
+	// extension but one an organization installs by policy, and shares
+	// nothing with the user's browsing.
 	ProfileDedicated ProfileMode = "dedicated"
 	// ProfileDefault opens it in the browser's default profile, beside the
 	// user's own browsing.
