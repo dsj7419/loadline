@@ -165,9 +165,10 @@ func (s *sandbox) drained(t *testing.T) int {
 }
 
 // build builds the package pkg into out, with ldflags, for this system and
-// without cgo, as a release build is. The build tool runs with the test's
-// own environment, less what would tie it to a session: it reads nothing of
-// Loadline's or Claude Code's, and writes only out.
+// without cgo, as a release build is. The build tool runs with the test
+// binary's environment from before TestMain sealed it, which keeps the go
+// command's caches in the user's home, less what would tie it to a session:
+// it reads nothing of Loadline's or Claude Code's, and writes only out.
 func build(t *testing.T, out, pkg, ldflags string) {
 	t.Helper()
 	goTool, err := exec.LookPath("go")
@@ -181,7 +182,7 @@ func build(t *testing.T, out, pkg, ldflags string) {
 	ctx, cancel := context.WithTimeout(t.Context(), buildBound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, goTool, append(args, pkg)...) //nolint:gosec // G204: the go tool, building this module
-	cmd.Env = append(sessionenv.Strip(os.Environ()), "CGO_ENABLED=0")
+	cmd.Env = append(sessionenv.Strip(unsealedEnv), "CGO_ENABLED=0")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build %s: %v\n%s", pkg, err, output)
 	}

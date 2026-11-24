@@ -55,6 +55,12 @@ build.
 - Write the failing test first, and test behaviour rather than implementation.
 - Tests never touch your real Claude Code or Loadline files: they work under `t.TempDir()`, with
   `LOADLINE_HOME` pointing there, and listen on ports the system assigns.
+- A package whose tests can start `claude`, a server or a browser seals its run in `TestMain` with
+  `internal/hermetictest`: `claude` on `PATH` is then a stand-in that fails the run when anything
+  calls it, and the home directory, Claude Code's config dir and Loadline's files are temporary.
+  A test that runs the server or a command also writes a config naming its own port
+  (`hermetictest.WriteConfig`), so that code which loses the port it was given still never falls
+  back on the default one, where your own Loadline may be running.
 - One Windows test binds a wildcard address, which raises a firewall prompt on a developer machine,
   so it runs only when `CI=true`, as it is on GitHub Actions.
 

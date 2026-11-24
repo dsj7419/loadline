@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/dsj7419/loadline/internal/cli"
-	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/fsperm"
 	"github.com/dsj7419/loadline/internal/launch"
 )
@@ -45,18 +44,6 @@ func newOpenFixture(t *testing.T) *openFixture {
 	f.paths = loadlineHome(t)
 	f.configureBrowser(f.browser, "")
 	return f
-}
-
-// loadlineHome points LOADLINE_HOME at a new folder, and returns the paths
-// Loadline finds its files at there.
-func loadlineHome(t *testing.T) config.Paths {
-	t.Helper()
-	t.Setenv("LOADLINE_HOME", t.TempDir())
-	paths, err := config.DefaultPaths()
-	if err != nil {
-		t.Fatalf("find the paths in LOADLINE_HOME: %v", err)
-	}
-	return paths
 }
 
 // configureBrowser writes a config that has the fixture's server open the
@@ -329,7 +316,7 @@ func TestOpen_ReportsABrowserThatFails(t *testing.T) {
 
 func TestOpen_RefusesAnInvalidConfig(t *testing.T) {
 	f := newOpenFixture(t)
-	f.writeConfig(`{"browser":" "}`)
+	f.writeBrokenConfig(`{"browser":" "}`)
 
 	got := runOpen(t.Context(), f.options(func(string, ...string) error {
 		t.Error("open started a server with an invalid config")

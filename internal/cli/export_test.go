@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/forward"
 	"github.com/dsj7419/loadline/internal/serverlock"
 	"github.com/dsj7419/loadline/internal/timer"
@@ -63,6 +64,15 @@ func TrustFoldersFrom(dir string) (restore func()) {
 	previous := trustFrom
 	trustFrom = dir
 	return func() { trustFrom = previous }
+}
+
+// DoctorFallsBackOn makes the doctor fall back on cfg when it cannot load
+// the config file, until what it returns undoes it. A sealed run falls back
+// on a config that names a port of its own, never the defaults' one.
+func DoctorFallsBackOn(cfg config.Config) (restore func()) {
+	previous := doctorFallback
+	doctorFallback = func() config.Config { return cfg }
+	return func() { doctorFallback = previous }
 }
 
 // FailAsideHousekeeping makes finding and removing the binaries earlier

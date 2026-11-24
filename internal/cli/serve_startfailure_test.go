@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,12 +23,23 @@ import (
 // not start leaves.
 const startFailureMessage = `msg="loadline could not start"`
 
+// serveOnceBound is how long serveOnce lets Serve run: far longer than a
+// server takes to refuse to start, or to leave a port another one serves.
+const serveOnceBound = 5 * time.Second
+
 // serveOnce runs Serve with o until it returns, and returns its exit code and
-// what it wrote to stderr.
+// what it wrote to stderr. It is bounded, so that a server that wrongly
+// starts gives way to the check; one the bound ended fails the test, since a
+// server that serves until it is stopped exits 0, as one that leaves does.
 func serveOnce(t *testing.T, o cli.ServeOptions) (code int, stderr string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), serveOnceBound)
+	defer cancel()
 	var stdout, errOut bytes.Buffer
-	code = cli.Serve(t.Context(), o, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &errOut})
+	code = cli.Serve(ctx, o, cli.IO{In: strings.NewReader(""), Out: &stdout, Err: &errOut})
+	if ctx.Err() != nil {
+		t.Errorf("Serve = %d ran until the %s bound ended it, want it to return by itself", code, serveOnceBound)
+	}
 	if stdout.Len() != 0 {
 		t.Errorf("Serve wrote %q to stdout, want nothing", stdout.String())
 	}
@@ -73,7 +85,7 @@ func holdPort(t *testing.T) int {
 func TestServe_LogsWhyItCouldNotStart(t *testing.T) {
 	for name, setUp := range map[string]func(t *testing.T, f *serveFixture) (reason string){
 		"a bad config": func(_ *testing.T, f *serveFixture) string {
-			f.writeConfig(`{"idleExitMinutes":-5}`)
+			f.writeBrokenConfig(`{"idleExitMinutes":-5}`)
 			return "idleExitMinutes -5 is below 0"
 		},
 		"a port another program holds": func(t *testing.T, f *serveFixture) string {
@@ -121,7 +133,7 @@ func TestServe_StartFailuresAppendToTheLog(t *testing.T) {
 	f.token()
 	f.start().stop(t)
 	before := logLines(t, f)
-	f.writeConfig(`{"idleExitMinutes":-5}`)
+	f.writeBrokenConfig(`{"idleExitMinutes":-5}`)
 
 	serveOnce(t, f.options())
 	serveOnce(t, f.options())
@@ -144,7 +156,7 @@ func TestServe_StartFailuresAppendToTheLog(t *testing.T) {
 func TestServe_LeavesAStartFailureOutOfADataDirectoryItCannotTrust(t *testing.T) {
 	t.Run("no data directory yet", func(t *testing.T) {
 		f := newServeFixture(t)
-		f.writeConfig(`{"idleExitMinutes":-5}`)
+		f.writeBrokenConfig(`{"idleExitMinutes":-5}`)
 
 		if code, stderr := serveOnce(t, f.options()); code != 1 || stderr == "" {
 			t.Fatalf("Serve = %d, stderr %q; want 1 and why", code, stderr)

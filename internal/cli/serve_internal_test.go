@@ -151,7 +151,7 @@ func TestDrain_ShutdownLeavesTheRestSpooled(t *testing.T) {
 	}
 	clock := clocktest.New(idleT0)
 	s := newInstance(t.Context(), ServeOptions{Paths: paths, Home: dir, Runner: noClaude{t}, Clock: clock.Now, Ticker: clock},
-		config.Defaults(), 8289, []byte(strings.Repeat("ab", 32)), slog.New(slog.DiscardHandler))
+		config.Defaults(), closedPort(t), []byte(strings.Repeat("ab", 32)), slog.New(slog.DiscardHandler))
 	defer s.tracker.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

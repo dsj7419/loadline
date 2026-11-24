@@ -11,13 +11,19 @@ import (
 
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/exetest"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 )
 
 // helperEnv, set to "loadline", makes the test binary run as loadline's tap
 // instead of running the tests.
 const helperEnv = "LOADLINE_INSTALL_HELPER"
 
+// The tests run loadline's own tap, which reads Loadline's config and may
+// start a server. The run is sealed, so that one that lost the config a test
+// gave it would find a port nothing listens on, and a stand-in for claude,
+// rather than the user's own.
 func TestMain(m *testing.M) {
+	hermetictest.StandIn()
 	exetest.Hold()
 	if os.Getenv(helperEnv) == "loadline" {
 		// Anything but the tap, such as the server a tap may start, exits at
@@ -27,7 +33,12 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	sealed, err := hermetictest.Seal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(sealed.Finish(m.Run()))
 }
 
 // within runs f and stops the whole test binary if f has not returned by the

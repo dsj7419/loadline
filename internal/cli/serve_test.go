@@ -32,6 +32,7 @@ import (
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/forward"
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/launch"
 	"github.com/dsj7419/loadline/internal/poll"
 	"github.com/dsj7419/loadline/internal/protocol"
@@ -203,6 +204,10 @@ func newServeFixture(t *testing.T) *serveFixture {
 		http:   &http.Client{Transport: &http.Transport{Proxy: nil}},
 	}
 	t.Cleanup(f.http.CloseIdleConnections)
+	// Serve takes its port from the options and runs the fake claude; the
+	// config names them too, so that a server that loses either still serves
+	// on the fixture's port and runs no real claude.
+	f.writeConfig(`{}`)
 	// Claude Code has run on this machine, so its default config dir is
 	// there.
 	f.mkdirs(f.defaultDir())
@@ -241,7 +246,16 @@ func freePort(t *testing.T) int {
 	return portOf(t, l.Addr())
 }
 
+// writeConfig writes the fixture's config, which names the fixture's port
+// and the stand-in claude unless contents names its own.
 func (f *serveFixture) writeConfig(contents string) {
+	f.t.Helper()
+	hermetictest.WriteConfig(f.t, f.paths.ConfigFile, contents, f.port)
+}
+
+// writeBrokenConfig writes contents, a config that does not load, as it is.
+// Serve and open refuse it before they listen, ask a server or run claude.
+func (f *serveFixture) writeBrokenConfig(contents string) {
 	f.t.Helper()
 	if err := os.WriteFile(f.paths.ConfigFile, []byte(contents), 0o600); err != nil {
 		f.t.Fatalf("write config: %v", err)
@@ -776,7 +790,7 @@ func TestServe_PortHeldByOtherAppFails(t *testing.T) {
 }
 
 func TestRunServe_RejectsBadFlags(t *testing.T) {
-	t.Setenv("LOADLINE_HOME", t.TempDir())
+	loadlineHome(t)
 	for name, args := range map[string][]string{
 		"privileged port": {"--port", "80"},
 		"port too high":   {"--port", "65536"},
@@ -796,7 +810,7 @@ func TestRunServe_RejectsBadFlags(t *testing.T) {
 
 func TestServe_InvalidConfigFails(t *testing.T) {
 	f := newServeFixture(t)
-	f.writeConfig(`{"accounts":[{"configDir":".claude-b"}]}`)
+	f.writeBrokenConfig(`{"accounts":[{"configDir":".claude-b"}]}`)
 
 	var stderr bytes.Buffer
 	code := cli.Serve(t.Context(), f.options(), cli.IO{In: strings.NewReader(""), Out: io.Discard, Err: &stderr})

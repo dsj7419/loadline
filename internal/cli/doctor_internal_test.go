@@ -26,6 +26,16 @@ func writeConfig(t *testing.T, contents string) string {
 	return path
 }
 
+// unsealedDoctorFallback is the config the doctor falls back on outside the
+// tests, as it was before TestMain sealed the run.
+var unsealedDoctorFallback = doctorFallback
+
+func TestDoctorFallback_IsTheDefaults(t *testing.T) {
+	if got, want := unsealedDoctorFallback(), config.Defaults(); !reflect.DeepEqual(got, want) {
+		t.Errorf("the doctor falls back on %+v, want the defaults %+v", got, want)
+	}
+}
+
 func TestDoctorConfig_FallsBackOnABadFile(t *testing.T) {
 	path := writeConfig(t, `{"theme": "dark"}`)
 	_, loadErr := config.Load(path, "")
@@ -35,8 +45,8 @@ func TestDoctorConfig_FallsBackOnABadFile(t *testing.T) {
 
 	cfg, checks := doctorConfig(path, "")
 
-	if want := config.Defaults(); !reflect.DeepEqual(cfg, want) {
-		t.Errorf("config = %+v, want the defaults %+v", cfg, want)
+	if want := doctorFallback(); !reflect.DeepEqual(cfg, want) {
+		t.Errorf("config = %+v, want the fallback %+v", cfg, want)
 	}
 	want := []doctor.Check{{
 		Name:   "config",

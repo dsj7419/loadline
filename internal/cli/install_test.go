@@ -633,8 +633,7 @@ func TestInstall_RefusesALoadlineHomeThatHoldsOtherThings(t *testing.T) {
 // Install makes the data directory private as soon as it can, but makes a
 // new one only once the user has agreed.
 func TestInstall_MakesNoDataDirWithoutAYes(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "loadline")
-	t.Setenv("LOADLINE_HOME", home)
+	home := dataDirApart(t, t.TempDir())
 	dir := t.TempDir()
 	writeSettings(t, dir, ownerSettings)
 

@@ -524,6 +524,9 @@ func TestRunHook_NeverWritesStdout(t *testing.T) {
 // Without a usable LOADLINE_HOME there is nowhere to read the token from or
 // spool to, and still the hook must exit 0, silently.
 func TestRunHook_ExitsZeroWithoutItsDirectories(t *testing.T) {
+	// A hook that went on without its directories would read and write
+	// relative paths: in a folder of the test's own, not the package's.
+	t.Chdir(t.TempDir())
 	t.Setenv("LOADLINE_HOME", filepath.Join("relative", "loadline"))
 	var stdout, stderr bytes.Buffer
 

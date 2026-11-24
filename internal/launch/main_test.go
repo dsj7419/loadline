@@ -12,6 +12,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/dsj7419/loadline/internal/hermetictest"
 	"github.com/dsj7419/loadline/internal/launch"
 )
 
@@ -46,10 +47,19 @@ const (
 	lingerAfterExit = 2 * time.Second
 )
 
+// The tests' own run is sealed: claude on PATH is a stand-in that fails the
+// run, and the home directory, in which the browser and the server start,
+// is temporary.
 func TestMain(m *testing.M) {
+	hermetictest.StandIn()
 	switch os.Getenv(helperEnv) {
 	case "":
-		goleak.VerifyTestMain(m)
+		sealed, err := hermetictest.Seal()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) { os.Exit(sealed.Finish(code)) }))
 	case asReporter:
 		os.Exit(runReporter())
 	case asSpawner:
