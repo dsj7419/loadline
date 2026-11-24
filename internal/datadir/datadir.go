@@ -54,14 +54,16 @@ func Secure(dir, top string) error {
 // name and one that belongs to someone else, and takes off each that it
 // found none of that in whatever its access list holds of its own, which
 // making the dir private leaves (fsperm.EntryPrivate), even when it goes on
-// to refuse another. Only when it refuses none does it have the dir pass
-// its list down. The browser profile it judges by itself alone, and changes
-// nothing there (browserProfile).
+// to refuse another. Only when it refuses none, and has judged the names of
+// every file still being written there, does it have the dir pass its list
+// down. The browser profile it judges by itself alone, and changes nothing
+// there (browserProfile).
 //
 // Several Loadline processes may run it at once, and write files in dir
-// meanwhile (Temporary), which it leaves alone. It changes nothing that is
-// private already: Windows passes a new access list on a folder down to
-// everything in it, those files among them.
+// meanwhile (Temporary), which it refuses only for a name elsewhere, and
+// otherwise leaves alone. It changes nothing that is private already:
+// Windows passes a new access list on a folder down to everything in it,
+// those files among them.
 func Make(dir string) error {
 	dir = filepath.Clean(dir)
 	problem, err := contentProblem(dir)
@@ -120,7 +122,9 @@ func Make(dir string) error {
 	if problem := found.linkProblem(); problem != "" {
 		return errors.New(problem)
 	}
-	if private {
+	// A temporary name the walk could not judge may be a file elsewhere too,
+	// which the list passed down would reach: it is left for the next run.
+	if private || found.unjudged {
 		return nil
 	}
 	// Last, as well as everything above, what other Loadline processes

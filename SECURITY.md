@@ -51,11 +51,17 @@ What it defends against:
   without passing that on. Each file is put back as soon as it is judged, each folder once
   everything it holds has been, even when something later is refused, and the data directory
   passes its list down only when nothing is, so that nothing reaches a file elsewhere through a
-  hard link before it is refused. They leave alone the files another Loadline process is still
-  writing there under a temporary name, when they are files. Since everything in the data
-  directory is made private with it, `LOADLINE_HOME` must be a folder of Loadline's own: install,
-  the server and the creation of the token refuse one that holds anything else, and change
-  nothing in it. Only the files that Windows Explorer and the macOS Finder leave in a folder
+  hard link before it is refused. The files another Loadline process is still writing there under
+  a temporary name (`.token-…`, `.put-….tmp`, `.loadline-….tmp`) they leave to that process,
+  changing nothing of them, but they count each one's names first, and refuse one with a name
+  outside its own folder as they refuse any other hard link: the token has its temporary name
+  beside its own while it is linked into place, but no file Loadline writes has a name elsewhere.
+  A name they cannot judge, because its file goes or Windows will not let them look at it while
+  it is being deleted, keeps the data directory, and the folder that holds it, from passing a list
+  down, which would reach that file; the next run judges what is there then. Since everything in
+  the data directory is made private with it, `LOADLINE_HOME` must be a folder of Loadline's own:
+  install, the server and the creation of the token refuse one that holds anything else, and
+  change nothing in it. Only the files that Windows Explorer and the macOS Finder leave in a folder
   (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged
   by their owner as Loadline's own files are.
   The dashboard's browser profile, `browser` in the data directory, holds the `loadline_ui` cookie
@@ -178,11 +184,14 @@ or is narrow.
     temporary file that another Loadline process began there before, whose name starts with
     `.token-`, `.put-` or `.loadline-`. The other is something install or the server refuses,
     such as a hard link, a link or a file that belongs to someone else, inside a folder of
-    Loadline's that kept you out.
-  - *Impact:* the refused run makes the data directory private and puts right what it has judged,
-    but it passes the directory's list down only when nothing is refused. That temporary file keeps
-    what it inherited before, which can let others read it. Later runs find the directory private
-    and leave such a file to its writer.
+    Loadline's that kept you out, or another such temporary name that they cannot judge while they
+    run, because its file goes, as a spooled event's does when it is put in place, or is being
+    deleted.
+  - *Impact:* the run makes the data directory private and puts right what it has judged, but it
+    passes the directory's list down only when it refuses nothing and has judged every temporary
+    name, and puts a folder of Loadline's right only when it has judged every temporary name in
+    it. That temporary file keeps what it inherited before, which can let others read it. Later
+    runs find the directory private and leave such a file to its writer.
   - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default. Otherwise delete
     the file and run `loadline install`.
 - **A data directory that keeps you out.**
@@ -227,13 +236,3 @@ or is narrow.
     be refused too.
   - *Mitigation:* use the default on a standard profile. Otherwise take ownership of the folder it
     names (for example `takeown /f <folder>`) and run `loadline install`.
-- **A hard link under a temporary name.**
-  - *What it takes:* a `LOADLINE_HOME` that was not private yet, into which someone put a hard
-    link to a file elsewhere under one of the names Loadline writes files under before it puts
-    them in place (`.token-…`, `.put-….tmp`, `.loadline-….tmp`).
-  - *Impact:* install and the server leave such files to the Loadline process writing them, and
-    do not open them, so they never refuse that link. When they put right the folder that holds
-    it, or the data directory passes its list down, that list reaches the file elsewhere through
-    the link, and changes who may use the file there.
-  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default, where nobody else
-    can put anything.

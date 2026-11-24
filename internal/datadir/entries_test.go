@@ -146,7 +146,9 @@ func TestMake_WaitsForTheTokensTemporaryNameToGo(t *testing.T) {
 
 // Only the file's own temporary name in its own folder stands beside it. A
 // name elsewhere is refused even with such a name there too, and so is a
-// temporary name in another folder, which no writer of the token makes.
+// temporary name in another folder, which no writer of the token makes. The
+// walk refuses the first of the file's names it comes to: a temporary name
+// comes before the token in its folder, and the spool before the token.
 func TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -154,10 +156,15 @@ func TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne(t *testing.T) {
 		// another is a file of its own under a temporary name, another
 		// writer's, which is no name of the token's and is left alone.
 		another bool
+		// refused is the name the walk refuses, in the data directory.
+		refused string
 	}{
-		{name: "a name elsewhere too", names: []string{".token-1234", "elsewhere"}},
-		{name: "a name elsewhere, beside another file's temporary name", names: []string{"elsewhere"}, another: true},
-		{name: "a temporary name in the spool", names: []string{filepath.Join("spool", ".put-1234.tmp")}},
+		{name: "a name elsewhere too", names: []string{".token-1234", "elsewhere"}, refused: ".token-1234"},
+		{name: "a name elsewhere, beside another file's temporary name", names: []string{"elsewhere"}, another: true, refused: "token"},
+		{
+			name: "a temporary name in the spool", names: []string{filepath.Join("spool", ".put-1234.tmp")},
+			refused: filepath.Join("spool", ".put-1234.tmp"),
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			home := filepath.Join(t.TempDir(), "loadline")
@@ -186,12 +193,88 @@ func TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne(t *testing.T) {
 
 			err := datadir.Make(home)
 
-			if want := token + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
+			if want := filepath.Join(home, tt.refused) + " has another name"; err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Errorf("Make = %v, want it refused, starting %q", err, want)
 			}
 			if _, err := os.Lstat(writing); tt.another && err != nil {
 				t.Errorf("Make removed %s, another writer's file (%v)", writing, err)
 			}
 		})
+	}
+}
+
+// newHome returns a data directory below top, not made private yet, that
+// holds the token and the folders Loadline makes for the spool and the
+// binary.
+func newHome(t *testing.T) (home, top string) {
+	t.Helper()
+	top = t.TempDir()
+	home = filepath.Join(top, "loadline")
+	for _, folder := range []string{"spool", "bin"} {
+		if err := os.MkdirAll(filepath.Join(home, folder), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "token"), []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home, top
+}
+
+// A file elsewhere, linked into the data directory under one of the names
+// Loadline writes a file under before it puts it in place, is that file:
+// making its folder private, or passing the data directory's list down to
+// it, would change who may use it there. Each step that takes the data
+// directory refuses it as it refuses any other file of Loadline's with a
+// name elsewhere, and the file there stays as it is.
+func TestMake_RefusesAHardLinkUnderATemporaryName(t *testing.T) {
+	for _, name := range []string{".token-1", filepath.Join("spool", ".put-1.tmp"), filepath.Join("bin", ".loadline-1.tmp")} {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			home, top := newHome(t)
+			shared, unchanged := sharedFile(t)
+			planted := filepath.Join(home, name)
+			if err := os.Link(shared, planted); err != nil {
+				t.Skipf("cannot make a hard link here: %v", err)
+			}
+			want := planted + " has another name"
+
+			for step, err := range map[string]error{"Make": datadir.Make(home), "Verify": datadir.Verify(home, top)} {
+				if err == nil || !strings.HasPrefix(err.Error(), want) {
+					t.Errorf("%s = %v, want it refused, starting %q", step, err, want)
+				}
+			}
+			if got, err := datadir.Check(home, top); err != nil || !strings.HasPrefix(got, want) {
+				t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
+			}
+			unchanged(t)
+		})
+	}
+}
+
+// While a caller links the token into place, and after, when it was ended
+// before it removed the temporary name, the token has two names side by side
+// in the data directory: its own and the temporary one it was written
+// under. That temporary name is the token's, no file elsewhere, and each
+// step takes the data directory.
+func TestMake_LeavesATokenBeingLinkedIntoPlace(t *testing.T) {
+	home, top := newHome(t)
+	token := filepath.Join(home, "token")
+	temporary := filepath.Join(home, ".token-1")
+	if err := os.Link(token, temporary); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+
+	// Verify changes nothing, so the temporary name is still there for Make.
+	if err := datadir.Verify(home, top); err != nil {
+		t.Errorf("Verify = %v, want the data directory taken", err)
+	}
+	if err := datadir.Make(home); err != nil {
+		t.Errorf("Make = %v, want the data directory taken", err)
+	}
+	if got, err := datadir.Check(home, top); err != nil || got != "" {
+		t.Errorf("Check = %q, %v; want \"\"", got, err)
+	}
+	if data, err := os.ReadFile(token); err != nil || string(data) != strings.Repeat("ab", 32) {
+		t.Errorf("the token reads %q, %v; want it as it was", data, err)
 	}
 }
