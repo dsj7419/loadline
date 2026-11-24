@@ -391,13 +391,16 @@ It exits 1 when any check fails. Common fixes:
   `loadline install` again.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
 - **A browser extension acts on the dashboard window, or opens more windows like it.** The
-  dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`,
-  `appWindow` is `false`, or `browserProfile` is `default`. Name a Chromium-family browser
-  (`brave`, `chrome` or `edge`) and leave the other two at their defaults, and its window opens in
-  the dashboard's own profile, where no extension runs.
+  dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`, or
+  names a browser that is not installed, which gives way to the system default; `appWindow` is
+  `false`; or `browserProfile` is `default`. Name a Chromium-family browser that is installed
+  (`brave`, `chrome` or `edge`, or its path) and leave the other two at their defaults, and its
+  window opens in the dashboard's own profile, where no extension runs.
 - **"opening the dashboard in the browser's default profile".** Loadline could not use the
   dashboard's own profile; the rest of the warning says why and what to do. The dashboard still
-  opens, in your normal profile.
+  opens, in your normal profile. The sign-in cookie set there, like one 0.1.0 set, stays valid in
+  that profile until it expires 30 days after it was set, or until the token changes
+  ([SECURITY.md](SECURITY.md) says how to change it).
 
 ## Roadmap
 

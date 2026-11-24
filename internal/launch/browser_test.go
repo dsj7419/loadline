@@ -229,13 +229,15 @@ func TestCommand_FirefoxAndTheDefaultBrowserIgnoreTheProfile(t *testing.T) {
 }
 
 // The profile folder reaches the browser as one argument, whatever its path
-// holds: a space, a quote and an ampersand, which a shell would act on, or
+// holds: a space, a quote and an ampersand, what cmd, PowerShell and sh
+// expand or escape (% $ ! ^ `), all of which a shell would act on, or
 // letters outside ASCII.
 func TestCommand_ProfileDirIsOneArgument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Chromium", "chrome.exe")
 	for _, profile := range []string{
 		"C:/Users/John Smith/AppData/Local/loadline/browser",
 		filepath.Join(t.TempDir(), "O'Brien & Sons", "loadline", "browser"),
+		filepath.Join(t.TempDir(), "100% $HOME !x ^y `z", "browser"),
 		filepath.Join(t.TempDir(), "Zoë", "東京", "browser"),
 	} {
 		t.Run(profile, func(t *testing.T) {

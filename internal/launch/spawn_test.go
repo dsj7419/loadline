@@ -125,18 +125,26 @@ func TestOpen_StartsTheBrowserWithTheURLAsOneArgument(t *testing.T) {
 
 // The profile folder, like the URL, reaches the browser's own argument list
 // as one argument, with no shell in between: a space, a quote and an
-// ampersand, and letters outside ASCII, arrive as they were.
+// ampersand, what cmd, PowerShell and sh expand or escape (% $ ! ^ `), and
+// letters outside ASCII, arrive as they were.
 func TestOpen_StartsTheBrowserWithTheProfileAsOneArgument(t *testing.T) {
-	profile := filepath.Join(t.TempDir(), "John Smith", "O'Brien & Sons", "Zoë 東京", "browser")
-	c := expectChild(t, false)
+	for name, profile := range map[string]string{
+		"a space, a quote and an ampersand": filepath.Join(t.TempDir(), "John Smith", "O'Brien & Sons", "browser"),
+		"what shells expand or escape":      filepath.Join(t.TempDir(), "100% $HOME !x ^y `z", "browser"),
+		"letters outside ASCII":             filepath.Join(t.TempDir(), "Zoë 東京", "browser"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := expectChild(t, false)
 
-	if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t), AppWindow: true, ProfileDir: profile}); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+			if err := c.open(dashboardURL, launch.Browser{Pref: testBinary(t), AppWindow: true, ProfileDir: profile}); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
 
-	report := c.read(t)
-	if want := inDashboardProfile(profile, dashboardURL); !slices.Equal(report.Args, want) {
-		t.Errorf("the browser got arguments %q, want %q", report.Args, want)
+			report := c.read(t)
+			if want := inDashboardProfile(profile, dashboardURL); !slices.Equal(report.Args, want) {
+				t.Errorf("the browser got arguments %q, want %q", report.Args, want)
+			}
+		})
 	}
 }
 
