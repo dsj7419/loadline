@@ -34,6 +34,22 @@ const (
 
 var openModes = []OpenMode{OpenOncePerLogin, OpenAlways, OpenNever}
 
+// ProfileMode says which browser profile a Chromium app window opens the
+// dashboard in.
+type ProfileMode string
+
+const (
+	// ProfileDedicated opens it in a profile of the dashboard's own, in the
+	// data directory, with no extensions and nothing shared with the user's
+	// browsing.
+	ProfileDedicated ProfileMode = "dedicated"
+	// ProfileDefault opens it in the browser's default profile, beside the
+	// user's own browsing.
+	ProfileDefault ProfileMode = "default"
+)
+
+var profileModes = []ProfileMode{ProfileDedicated, ProfileDefault}
+
 const (
 	minPort = 1024
 	maxPort = 65535
@@ -58,6 +74,9 @@ type Config struct {
 	// AppWindow opens the dashboard in a Chromium app window, without tabs or
 	// an address bar.
 	AppWindow bool `json:"appWindow"`
+	// BrowserProfile says which profile a Chromium app window opens the
+	// dashboard in.
+	BrowserProfile ProfileMode `json:"browserProfile"`
 	// IdleExitMinutes is how long the server waits with no live session
 	// before it exits. Zero means never.
 	IdleExitMinutes int `json:"idleExitMinutes"`
@@ -112,6 +131,7 @@ func Defaults() Config {
 		OpenOnStart:     OpenOncePerLogin,
 		Browser:         "auto",
 		AppWindow:       true,
+		BrowserProfile:  ProfileDedicated,
 		IdleExitMinutes: 30,
 		RetentionDays:   30,
 		Alerts: AlertSettings{
@@ -193,6 +213,9 @@ func (c Config) validate(home string) error {
 	}
 	if strings.TrimSpace(c.Browser) == "" {
 		return errors.New("browser must not be empty")
+	}
+	if !slices.Contains(profileModes, c.BrowserProfile) {
+		return fmt.Errorf("browserProfile %q is not one of %q or %q", c.BrowserProfile, ProfileDedicated, ProfileDefault)
 	}
 	if c.IdleExitMinutes < 0 {
 		return fmt.Errorf("idleExitMinutes %d is below 0", c.IdleExitMinutes)

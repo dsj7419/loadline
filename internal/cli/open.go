@@ -86,6 +86,12 @@ func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
 	if client.Token, err = config.EnsureToken(o.Paths.TokenFile); err != nil {
 		return fail(stdio, err)
 	}
+	// Before the login code is asked for, so that none of the minute it is
+	// valid for goes on making the profile ready.
+	browser, err := dashboardBrowser(cfg, o.Paths)
+	if err != nil {
+		_, _ = fmt.Fprintf(stdio.Err, "loadline: warning: opening the dashboard in the browser's default profile: %v\n", err)
+	}
 	code, err := loginCode(ctx, client)
 	if err != nil {
 		return fail(stdio, err)
@@ -96,7 +102,7 @@ func OpenDashboard(ctx context.Context, o OpenOptions, stdio IO) int {
 		open = launch.Open
 	}
 	loginURL := client.BaseURL + "/login?code=" + url.QueryEscape(code)
-	if err := open(loginURL, launch.Browser{Pref: cfg.Browser, AppWindow: cfg.AppWindow}); err != nil {
+	if err := open(loginURL, browser); err != nil {
 		return fail(stdio, fmt.Errorf("open the dashboard: %w", err))
 	}
 	return exitOK

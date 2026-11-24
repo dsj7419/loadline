@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -147,7 +148,7 @@ func TestServe_AutoOpenSkippedWhenClientReconnects(t *testing.T) {
 
 	t.Run("no dashboard connects", func(t *testing.T) {
 		f := newServeFixture(t)
-		f.writeConfig(`{"browser":"brave","appWindow":true}`)
+		browser := f.chromiumAppWindow()
 		opens := &browserOpens{}
 		r := f.start(opening(opens, boot))
 
@@ -159,7 +160,7 @@ func TestServe_AutoOpenSkippedWhenClientReconnects(t *testing.T) {
 			t.Fatalf("the server opened %q, want its login URL", urls[0])
 		}
 		signIn(t, urls[0])
-		if want := (launch.Browser{Pref: "brave", AppWindow: true}); browsers[0] != want {
+		if want := (launch.Browser{Pref: browser, AppWindow: true, ProfileDir: f.paths.BrowserProfileDir}); browsers[0] != want {
 			t.Errorf("the server opened %+v, want the configured %+v", browsers[0], want)
 		}
 		r.stop(t)
@@ -171,6 +172,77 @@ func TestServe_AutoOpenSkippedWhenClientReconnects(t *testing.T) {
 			t.Errorf("the log should note the open and never hold its login code:\n%s", log)
 		}
 	})
+}
+
+// chromiumAppWindow configures the server to open the dashboard in a
+// Chromium-family browser given by its path, which is opened as it is
+// whichever browsers are installed here, in an app window, and returns
+// the browser's path.
+func (f *serveFixture) chromiumAppWindow() string {
+	f.t.Helper()
+	browser := filepath.Join(f.t.TempDir(), "Chromium", "chrome.exe")
+	f.writeConfig(fmt.Sprintf(`{"browser":%q,"appWindow":true}`, browser))
+	return browser
+}
+
+func TestServe_AutoOpenUsesTheDashboardProfile(t *testing.T) {
+	f := newServeFixture(t)
+	browser := f.chromiumAppWindow()
+	opens := &browserOpens{}
+	r := f.start(opening(opens, boot))
+
+	f.passOpenDelay()
+
+	waitFor(t, "the dashboard to open", func() bool { return opens.count() > 0 })
+	r.stop(t)
+	_, browsers := opens.opened()
+	if want := (launch.Browser{Pref: browser, AppWindow: true, ProfileDir: f.paths.BrowserProfileDir}); browsers[0] != want {
+		t.Errorf("the server opened %+v, want %+v", browsers[0], want)
+	}
+	assertPrivateProfile(t, f.paths.BrowserProfileDir)
+}
+
+// The profile is made as the dashboard opens, so a server that opens none,
+// as one that loadline open or install starts, makes none.
+func TestServe_NoOpenMakesNoProfile(t *testing.T) {
+	f := newServeFixture(t)
+	f.chromiumAppWindow()
+
+	f.start().stop(t)
+
+	assertNoProfile(t, f.paths.BrowserProfileDir)
+}
+
+// A profile that the server cannot use by the time it opens the dashboard
+// never keeps it from opening: it opens in the browser's default profile,
+// and the log says once why.
+func TestServe_AutoOpenFallsBackToTheDefaultProfileWhenTheProfileIsRefused(t *testing.T) {
+	f := newServeFixture(t)
+	browser := f.chromiumAppWindow()
+	opens := &browserOpens{}
+	r := f.start(opening(opens, boot))
+	// Once the server has started, which refuses such a profile, and before
+	// it opens the dashboard.
+	plantProfileNotMadePrivate(t, f.paths.BrowserProfileDir)
+
+	f.passOpenDelay()
+
+	waitFor(t, "the dashboard to open", func() bool { return opens.count() > 0 })
+	r.stop(t)
+	_, browsers := opens.opened()
+	if want := (launch.Browser{Pref: browser, AppWindow: true}); browsers[0] != want {
+		t.Errorf("the server opened %+v, want %+v", browsers[0], want)
+	}
+	const refusal = "is not private, so the dashboard's browser profile there cannot be trusted"
+	warnings := 0
+	for line := range strings.Lines(f.logText()) {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "default profile") && strings.Contains(line, refusal) {
+			warnings++
+		}
+	}
+	if warnings != 1 || strings.Count(f.logText(), refusal) != 1 {
+		t.Errorf("log:\n%s\nwant one warning that the dashboard opens in the default profile because the profile %s", f.logText(), refusal)
+	}
 }
 
 func TestServe_OpensOncePerBoot(t *testing.T) {

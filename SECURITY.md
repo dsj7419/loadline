@@ -80,7 +80,8 @@ What it defends against:
   change nothing in it. Only the files that Windows Explorer and the macOS Finder leave in a folder
   (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged
   by their owner as Loadline's own files are.
-  The dashboard's browser profile, `browser` in the data directory, holds the `loadline_ui` cookie
+  The dashboard's browser profile, `browser` in the data directory, which a Chromium app window
+  opens the dashboard in unless `browserProfile` is `default`, holds the `loadline_ui` cookie
   and whatever else the browser stores. Loadline creates it private before the browser first
   launches: on Windows with an access list of its own, which the data directory's list, passed
   down, does not reach, and on macOS and Linux with mode 0700. What the browser writes there is
@@ -150,10 +151,15 @@ What it defends against:
   Linux other local users can read a process's command line through `/proc/<pid>/cmdline` while
   the browser starts.
 - **The dashboard cookie's scope.** Browsers do not separate cookies by port, so the `loadline_ui`
-  cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits. It does
-  not rotate: it is derived from the token and changes only with it. To change both, stop the
-  server (`loadline stop`, or let it exit `idleExitMinutes` after the last session ends), delete
-  the `token` file in the data directory and run `loadline install` again.
+  cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits in the
+  profile that holds it. In the dashboard's own profile, which a Chromium app window opens in by
+  default, that is only Loadline's own pages, unless you browse elsewhere in that window. In your
+  normal profile, with `browser: auto`, Firefox, a tab or `browserProfile: default`, it is every
+  local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or by an open
+  that fell back to it, stays valid there until it expires 30 days after it was set, or until the
+  token changes. It does not rotate: it is derived from the token and changes only with it. To
+  change both, stop the server (`loadline stop`, or let it exit `idleExitMinutes` after the last
+  session ends), delete the `token` file in the data directory and run `loadline install` again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
 - **A refused server.** A server that refuses its data directory writes no log there, since it

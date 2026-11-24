@@ -19,7 +19,7 @@ import (
 func FuzzLoad(f *testing.F) {
 	for _, seed := range []string{
 		`{}`,
-		`{"port":8300,"openOnStart":"always","browser":"brave","appWindow":false,"idleExitMinutes":0,` +
+		`{"port":8300,"openOnStart":"always","browser":"brave","appWindow":false,"browserProfile":"default","idleExitMinutes":0,` +
 			`"retentionDays":7,"claudePath":"/usr/local/bin/claude",` +
 			`"alerts":{"weeklyPct":75,"contextPct":100,"needsYouSeconds":1},` +
 			`"accounts":[{"configDir":"~/.claude","label":"Main","plan":"Ultra","dailyBudgetUSD":25,` +
@@ -27,7 +27,7 @@ func FuzzLoad(f *testing.F) {
 		`{"accounts":[{"configDir":"~/a","plan":" Ultra "}]}`,
 		`{"accounts":[{"configDir":"~/a","plan":"` + strings.Repeat("x", 40) + `"}]}`,
 		"\xef\xbb\xbf{\"port\":1024}",
-		`{"port":80}`, `{"port":65536}`, `{"openOnStart":"sometimes"}`, `{"browser":" "}`,
+		`{"port":80}`, `{"port":65536}`, `{"openOnStart":"sometimes"}`, `{"browser":" "}`, `{"browserProfile":"work"}`,
 		`{"idleExitMinutes":-1}`, `{"retentionDays":0}`, `{"alerts":{"weeklyPct":100.5}}`,
 		`{"accounts":[{"configDir":"relative"}]}`, `{"accounts":[{"configDir":"~/a"},{"configDir":"~/a/"}]}`,
 		`{"accounts":[{"configDir":"~/a","credits":[{"usd":0,"addedAt":"2026-11-21T12:00:00Z"}]}]}`,
@@ -67,6 +67,9 @@ func checkBounds(t *testing.T, cfg config.Config, homeDir string) {
 	}
 	if strings.TrimSpace(cfg.Browser) == "" {
 		t.Error("browser is empty")
+	}
+	if !slices.Contains([]config.ProfileMode{config.ProfileDedicated, config.ProfileDefault}, cfg.BrowserProfile) {
+		t.Errorf("browserProfile %q is no mode Loadline knows", cfg.BrowserProfile)
 	}
 	if cfg.IdleExitMinutes < 0 || cfg.RetentionDays < 1 {
 		t.Errorf("idleExitMinutes %d or retentionDays %d is out of range", cfg.IdleExitMinutes, cfg.RetentionDays)

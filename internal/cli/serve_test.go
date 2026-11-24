@@ -175,6 +175,8 @@ func newServeFixture(t *testing.T) *serveFixture {
 			SpoolDir:   filepath.Join(data, "spool"),
 			DBFile:     filepath.Join(data, "loadline.db"),
 			ServerLock: filepath.Join(data, "server.lock"),
+			// Where config.DefaultPaths puts it, in the data directory.
+			BrowserProfileDir: filepath.Join(data, "browser"),
 		},
 		port:   freePort(t),
 		claude: newFakeClaude(),
