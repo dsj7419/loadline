@@ -21,10 +21,16 @@ import (
 // latest of the calls' starts, each call's end less its duration, and of the
 // starts the status lines show, each line's time less the growth of its
 // process's API time, since such a line came with the responses that grew
-// it. Calls that run side by side, as subagents' do, grow the API time by
-// more than the time they took together, which dates their line too early:
-// that errs toward the readings already held, and a line is never dated
-// before the response its process last heard (see date). The line's API time
+// it. A line whose API time grew by several calls is dated too early, since
+// it reports what the last of them heard: calls made one after another date
+// it at the first one's start, and calls made side by side, as subagents'
+// are, earlier still, as they grow the API time by more than the time they
+// took together. That errs toward the readings already held. A reading the
+// process heard after another's, such as a reset's, then waits for the
+// calls' records, which date the process's first line to grow once they have
+// come at the latest of the calls' starts, or else for a line whose own
+// growth dates it after the other reading. A line is never dated before the
+// response its process last heard (see date). The line's API time
 // is the signal rather than its cost: it grows by a whole number of
 // milliseconds with every response, whatever the call cost, where the cost
 // stays put for a call priced at nothing. Until either is seen, and so for

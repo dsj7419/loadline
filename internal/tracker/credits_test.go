@@ -688,8 +688,8 @@ func (b busyAccount) call(sec int, id domain.SessionID, costUSD float64, duratio
 
 // crossTheLimit plays two busy sessions of account A up to its weekly limit:
 // long's line at 0 s, its API time at longAPIMS, and short's at 2 s report
-// 98%, and short's calls report 100% from its line at 62 s. Meanwhile long
-// begins a call at 5 s, whose response headers report 98%.
+// 98%, and short's calls report 100% from its line at 62 s. The calls long
+// makes meanwhile are its callers' to play.
 func (b busyAccount) crossTheLimit(long, short domain.SessionID, longAPIMS int64) {
 	b.line(0, long, 98, longAPIMS)
 	b.line(2, short, 98, 4_000)
@@ -709,10 +709,10 @@ func onCreditsSpans(h *harness, sec int) []domain.OnCreditsSpan {
 // status line carries the rate limits that came with the response headers of
 // its process's newest call, as the call began, but only once the call has
 // ended, when the line's API time grows by the whole call. long's four-minute
-// call began at 98%, and its line at 246 s still reports that 98%, after
-// short's calls have reported 100% since 62 s. The reading is older than the
-// crossing, so the stretch on credits that began there goes on: one span, one
-// since, and every call made in it counted.
+// call began at 5 s, when its response headers reported 98%, and its line at
+// 246 s still reports that 98%, after short's calls have reported 100% since
+// 62 s. The reading is older than the crossing, so the stretch on credits that
+// began there goes on: one span, one since, and every call made in it counted.
 func TestTracker_TwoBusySessionsCrossingTheLimitKeepOneSpan(t *testing.T) {
 	h := newSubscribedHarness(t, tracker.Config{Credits: aThousandDollars, Alerts: defaultAlerts})
 	account := busyAccount{h: h, apiTime: true, calls: true}

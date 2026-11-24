@@ -414,6 +414,50 @@ func TestTracker_ALineIsNeverDatedBeforeItsProcesssLastResponse(t *testing.T) {
 	}
 }
 
+// A process makes three 20-second calls one after another, from 65 s, and its
+// line at 126 s counts them all: its API time grew by a minute, which dates
+// the line at the first call's start. The owner's mid-week reset, which kept
+// its reset time, came at 99 s, after another session's line dated 98 s held
+// 100%, so only the last call, begun at 105 s, heard it, and the line reports
+// that call's 0%. The calls' records date the process's first line to grow
+// once they have come at the latest of their starts, and the reset shows
+// there: at that very line when they come before it, and otherwise at the
+// next, even one whose own growth, from subagents' calls side by side, dates
+// it before the other session's reading.
+func TestTracker_AResetTheLastOfSeveralCallsHeardShowsOnceTheirRecordsCome(t *testing.T) {
+	records := func(h *harness) {
+		for _, end := range []int{85, 105, 125} {
+			r := request(at(end), s1, "Opus 5.5", 0.1)
+			r.DurationMS = 20_000
+			h.tr.RecordAPI(r)
+		}
+	}
+	for name, play := range map[string]func(h *harness) float64{
+		"the records come before the line": func(h *harness) float64 {
+			records(h)
+			return shownWeekly(h, withAPITime(weeklyFrom(126, s1, 0), 65_000))
+		},
+		"the records come after it": func(h *harness) float64 {
+			shownWeekly(h, withAPITime(weeklyFrom(126, s1, 0), 65_000))
+			records(h)
+			// Three subagents' half-minute calls, side by side from 127 s,
+			// whose records are still to come.
+			return shownWeekly(h, withAPITime(weeklyFrom(158, s1, 0), 155_000))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tracker.Config{})
+			shownWeekly(h, withAPITime(weeklyFrom(10, s2, 100), 1_000))
+			shownWeekly(h, withAPITime(weeklyFrom(40, s1, 100), 5_000))
+			shownWeekly(h, withAPITime(weeklyFrom(100, s2, 100), 3_000))
+
+			if got := play(h); got != 0 {
+				t.Errorf("shown %v%%, want the 0%% the last call heard at 105 s, after the 100%% dated 98 s", got)
+			}
+		})
+	}
+}
+
 // A garbled count can put a response's start further back than a duration
 // reaches, or after the call that brought it. The response is then dated as
 // long ago as a duration reaches, or when the call ended, and never ahead of
