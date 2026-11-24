@@ -1,6 +1,7 @@
 package fsperm
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -374,6 +375,71 @@ func reFSDir(t *testing.T) string {
 		}
 	})
 	return dir
+}
+
+// A reparse point's tag says what kind it is. One that stands for another
+// name leads elsewhere, whoever's it is; the cloud's and deduplication's are
+// Microsoft's own; every other kind is one Loadline does not know.
+func TestReparseKind_FromTag(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		tag  uint32
+		want ReparseKind
+	}{
+		{"SYMLINK", 0xA000000C, NameSurrogate},
+		{"MOUNT_POINT, a junction", 0xA0000003, NameSurrogate},
+		{"LX_SYMLINK", 0xA000001D, NameSurrogate},
+		{"a third party's that stands for another name", 0x2000ABCD, NameSurrogate},
+		{"CLOUD", 0x9000001A, CloudFile},
+		{"CLOUD_1", 0x9000101A, CloudFile},
+		{"CLOUD_3, a sync root's", 0x9000301A, CloudFile},
+		{"CLOUD_4, a placeholder file's", 0x9000401A, CloudFile},
+		{"CLOUD_6, a placeholder folder's", 0x9000601A, CloudFile},
+		{"CLOUD_F", 0x9000F01A, CloudFile},
+		{"ONEDRIVE", 0x80000021, CloudFile},
+		{"DEDUP", 0x80000013, Deduplicated},
+		{"APPEXECLINK", 0x8000001B, OtherReparse},
+		{"WCI", 0x80000018, OtherReparse},
+		{"STORAGE_SYNC, Azure File Sync's", 0x8000001E, OtherReparse},
+		{"PROJFS, one bit from CLOUD", 0x9000001C, OtherReparse},
+		{"a third party's", 0x0000ABCD, OtherReparse},
+	} {
+		if got := reparseKind(tt.tag); got != tt.want {
+			t.Errorf("reparseKind(0x%08X, %s) = %v, want %v", tt.tag, tt.name, got, tt.want)
+		}
+	}
+}
+
+// replaceSyncRootQuestion makes SyncRoot ask proc, for the rest of the test.
+func replaceSyncRootQuestion(t *testing.T, proc *windows.LazyProc) {
+	t.Helper()
+	previous := procCfGetSyncRootInfoByPath
+	procCfGetSyncRootInfoByPath = proc
+	t.Cleanup(func() { procCfGetSyncRootInfoByPath = previous })
+}
+
+// A Windows without the Cloud Files API, or with one that lacks the call,
+// keeps no folder in sync through it. SyncRoot answers not under, and says
+// why, rather than fail, or call what is not there.
+func TestSyncRoot_AnswersNotUnderWithoutTheCloudFilesAPI(t *testing.T) {
+	dir := t.TempDir()
+	for name, tt := range map[string]struct {
+		proc *windows.LazyProc
+		want windows.Errno
+	}{
+		"no cldapi.dll":                    {windows.NewLazySystemDLL("cldapi-missing.dll").NewProc("CfGetSyncRootInfoByPath"), windows.ERROR_MOD_NOT_FOUND},
+		"no CfGetSyncRootInfoByPath in it": {windows.NewLazySystemDLL("cldapi.dll").NewProc("CfGetSyncRootInfoByPathMissing"), windows.ERROR_PROC_NOT_FOUND},
+	} {
+		t.Run(name, func(t *testing.T) {
+			replaceSyncRootQuestion(t, tt.proc)
+
+			root, provider, under, err := SyncRoot(dir)
+
+			if under || root != "" || provider != "" || !errors.Is(err, tt.want) {
+				t.Errorf("SyncRoot = %q, %q, %t, %v; want not under, for %v", root, provider, under, err, tt.want)
+			}
+		})
+	}
 }
 
 // fileSystemOf names the file system of the volume that holds path, such as

@@ -835,8 +835,191 @@ func TestInspect_TellsWhatAPathIsEvenOneThatKeepsTheUserOut(t *testing.T) {
 	if got, err := fsperm.Inspect(file); err != nil || got.Link || got.Folder || got.Names != 2 || got.ID != created.ID {
 		t.Errorf("Inspect of a file with a second name that keeps the user out = %+v, %v; want the file %+v, of two names", got, err, created)
 	}
-	if got, err := fsperm.Inspect(link); err != nil || !got.Link {
-		t.Errorf("Inspect of a junction that keeps the user out = %+v, %v; want a link", got, err)
+	if got, err := fsperm.Inspect(link); err != nil || !got.Link || got.Reparse != fsperm.NameSurrogate {
+		t.Errorf("Inspect of a junction that keeps the user out = %+v, %v; want a link that stands for another name", got, err)
+	}
+}
+
+// maker makes path a file, or when folder is set, a folder, of some kind.
+type maker func(t *testing.T, path string, folder bool)
+
+func plainEntry(t *testing.T, path string, folder bool) {
+	t.Helper()
+	if !folder {
+		write(t, path)
+		return
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// planted makes path a file or folder that holds a reparse point with tag.
+func planted(tag uint32) maker {
+	return func(t *testing.T, path string, folder bool) {
+		t.Helper()
+		plainEntry(t, path, folder)
+		fspermtest.PlantReparsePoint(t, path, tag)
+	}
+}
+
+// Inspect reads what kind of reparse point a path is from its tag. Every
+// kind but a deduplicated file is a link, which Loadline refuses among its
+// own files; only one that stands for another name leads to a path doctor
+// can name. A deduplicated file is the ordinary file it was.
+func TestInspect_SortsReparsePointsByKind(t *testing.T) {
+	targets := t.TempDir()
+	targetFile, targetFolder := filepath.Join(targets, "target.txt"), filepath.Join(targets, "target")
+	plainEntry(t, targetFile, false)
+	plainEntry(t, targetFolder, true)
+	symlink := func(t *testing.T, path string, folder bool) {
+		t.Helper()
+		target := targetFile
+		if folder {
+			target = targetFolder
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("make a symbolic link here: %v", err)
+		}
+	}
+	// A junction is a folder.
+	junctionTo := func(t *testing.T, path string, _ bool) {
+		t.Helper()
+		junction(t, path, targetFolder)
+	}
+
+	for _, tt := range []struct {
+		name        string
+		make        maker
+		foldersOnly bool
+		reparse     fsperm.ReparseKind
+		tag         uint32
+	}{
+		{name: "an ordinary one", make: plainEntry, reparse: fsperm.NotReparse},
+		{name: "a junction", make: junctionTo, foldersOnly: true, reparse: fsperm.NameSurrogate, tag: windows.IO_REPARSE_TAG_MOUNT_POINT},
+		{name: "a symbolic link", make: symlink, reparse: fsperm.NameSurrogate, tag: windows.IO_REPARSE_TAG_SYMLINK},
+		{name: "a Linux symbolic link", make: planted(fspermtest.TagLXSymlink), reparse: fsperm.NameSurrogate, tag: fspermtest.TagLXSymlink},
+		{name: "a third party's link", make: planted(fspermtest.TagThirdPartySurrogate), reparse: fsperm.NameSurrogate, tag: fspermtest.TagThirdPartySurrogate},
+		{name: "a cloud file", make: planted(fspermtest.TagOneDrive), reparse: fsperm.CloudFile, tag: fspermtest.TagOneDrive},
+		{name: "a deduplicated file", make: planted(fspermtest.TagDedup), reparse: fsperm.Deduplicated, tag: fspermtest.TagDedup},
+		{name: "an app execution alias", make: planted(fspermtest.TagAppExecLink), reparse: fsperm.OtherReparse, tag: fspermtest.TagAppExecLink},
+		{name: "a third party's reparse point", make: planted(fspermtest.TagThirdParty), reparse: fsperm.OtherReparse, tag: fspermtest.TagThirdParty},
+	} {
+		for _, folder := range []bool{false, true} {
+			if tt.foldersOnly && !folder {
+				continue
+			}
+			// No comma in the name: the junction's path, which holds it, is
+			// passed to cmd, which takes a comma for a separator.
+			name := tt.name + " as a file"
+			if folder {
+				name = tt.name + " as a folder"
+			}
+			t.Run(name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "token")
+				tt.make(t, path, folder)
+				link := tt.reparse != fsperm.NotReparse && tt.reparse != fsperm.Deduplicated
+				surrogate := tt.reparse == fsperm.NameSurrogate
+
+				got, err := fsperm.Inspect(path)
+
+				if err != nil || got.Reparse != tt.reparse || got.Tag != tt.tag || got.Link != link || got.Folder != folder {
+					t.Errorf("Inspect = %+v, %v; want kind %v, tag 0x%08X, link %t, folder %t", got, err, tt.reparse, tt.tag, link, folder)
+				}
+				if got, err := fsperm.IsLink(path); err != nil || got != link {
+					t.Errorf("IsLink = %t, %v; want %t", got, err, link)
+				}
+				if got, err := fsperm.IsNameSurrogate(path); err != nil || got != surrogate {
+					t.Errorf("IsNameSurrogate = %t, %v; want %t", got, err, surrogate)
+				}
+			})
+		}
+	}
+}
+
+// testProvider names the cloud service of the sync roots the tests register.
+const testProvider = "Example Drive"
+
+// syncRootIn makes a folder in parent and registers it as a sync root of
+// testProvider.
+func syncRootIn(t *testing.T, parent string) string {
+	t.Helper()
+	root := filepath.Join(parent, "Cloud")
+	plainEntry(t, root, true)
+	fspermtest.RegisterSyncRoot(t, root, testProvider)
+	return root
+}
+
+// sameFolder reports whether got names the folder want names, however each
+// is written.
+func sameFolder(t *testing.T, got, want string) bool {
+	t.Helper()
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInfo, err := os.Stat(got)
+	return err == nil && os.SameFile(gotInfo, wantInfo)
+}
+
+// Windows says a path is in a sync root by where it is, not by anything the
+// cloud service did to it: the root itself, a folder made there that the
+// service never turned into a placeholder, and a path not made yet there,
+// which would be made in that folder, are all under it. SyncRoot names the
+// root and the service.
+func TestSyncRoot_AnswersForAFolderTheEngineHasNotConverted(t *testing.T) {
+	root := syncRootIn(t, t.TempDir())
+	plain := filepath.Join(root, "plain")
+	plainEntry(t, plain, true)
+
+	for _, path := range []string{root, plain, filepath.Join(plain, "not", "made", "yet")} {
+		got, provider, under, err := fsperm.SyncRoot(path)
+
+		if err != nil || !under || provider != testProvider || !sameFolder(t, got, root) {
+			t.Errorf("SyncRoot(%s) = %q, %q, %t, %v; want under %s, of %s", path, got, provider, under, err, root, testProvider)
+		}
+	}
+}
+
+// A folder in no sync root is not under one, whatever Windows answers for
+// it, which depends on whether the cloud filter serves its volume.
+func TestSyncRoot_AnswersNotUnderForAFolderInNoSyncRoot(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{dir, filepath.Join(dir, "not", "made", "yet")} {
+		root, provider, under, err := fsperm.SyncRoot(path)
+
+		if under || root != "" || provider != "" {
+			t.Errorf("SyncRoot(%s) = %q, %q, %t, %v; want not under", path, root, provider, under, err)
+		}
+	}
+}
+
+// Windows answers for where a path really is, each link on the way followed,
+// which is where the files of a data directory there would go: a junction
+// from outside a sync root into it is under the root, and one from inside it
+// out of it is not.
+func TestSyncRoot_AnswersForWhereALinkLeads(t *testing.T) {
+	base := t.TempDir()
+	root := syncRootIn(t, base)
+	inside, outside := filepath.Join(root, "plain"), filepath.Join(base, "outside")
+	plainEntry(t, inside, true)
+	plainEntry(t, outside, true)
+	intoRoot, outOfRoot := filepath.Join(base, "into"), filepath.Join(root, "out")
+	junction(t, intoRoot, inside)
+	junction(t, outOfRoot, outside)
+
+	for path, wantUnder := range map[string]bool{
+		intoRoot: true, filepath.Join(intoRoot, "loadline"): true,
+		outOfRoot: false, filepath.Join(outOfRoot, "loadline"): false,
+	} {
+		got, provider, under, err := fsperm.SyncRoot(path)
+
+		switch {
+		case wantUnder && (err != nil || !under || provider != testProvider || !sameFolder(t, got, root)):
+			t.Errorf("SyncRoot(%s) = %q, %q, %t, %v; want under %s, of %s", path, got, provider, under, err, root, testProvider)
+		case !wantUnder && (under || got != "" || provider != ""):
+			t.Errorf("SyncRoot(%s) = %q, %q, %t, %v; want not under", path, got, provider, under, err)
+		}
 	}
 }
 

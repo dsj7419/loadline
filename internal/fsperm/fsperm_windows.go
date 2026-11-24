@@ -1,6 +1,7 @@
 package fsperm
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -307,17 +308,51 @@ func ClearExplicit(path string) error {
 	return nil
 }
 
-// IsLink reports whether path itself is a symbolic link, a junction or any
-// other reparse point, which opening it would follow somewhere else.
+// IsLink reports whether path itself is a link (Entry.Link): a symbolic
+// link, a junction or any other reparse point but a deduplicated file.
 func IsLink(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, fmt.Errorf("read %s: %w", path, err)
+	entry, err := Inspect(path)
+	return entry.Link, err
+}
+
+// IsNameSurrogate reports whether path itself is a link that stands for
+// another path, such as a symbolic link or a junction, which can be followed
+// to say where it leads. A cloud file, a deduplicated file and a reparse
+// point of a kind Loadline does not know are none.
+func IsNameSurrogate(path string) (bool, error) {
+	entry, err := Inspect(path)
+	return entry.Reparse == NameSurrogate, err
+}
+
+// The reparse tags, and parts of them, that Loadline tells apart (winnt.h).
+const (
+	// reparseTagNameSurrogate is set in every tag whose reparse point
+	// stands for another name (IsReparseTagNameSurrogate), whoever's tag
+	// it is.
+	reparseTagNameSurrogate = 0x20000000
+	// reparseTagCloud is IO_REPARSE_TAG_CLOUD. IO_REPARSE_TAG_CLOUD_1 to
+	// _F are the same tag with a number in the bits of
+	// reparseTagCloudNumber.
+	reparseTagCloud       = 0x9000001A
+	reparseTagCloudNumber = 0xF000
+	// reparseTagOneDrive is IO_REPARSE_TAG_ONEDRIVE, which OneDrive gave its
+	// files before it kept them through the cloud filter.
+	reparseTagOneDrive = 0x80000021
+	// reparseTagDedup is IO_REPARSE_TAG_DEDUP.
+	reparseTagDedup = 0x80000013
+)
+
+// reparseKind tells the kind of a reparse point from its tag.
+func reparseKind(tag uint32) ReparseKind {
+	switch {
+	case tag&reparseTagNameSurrogate != 0:
+		return NameSurrogate
+	case tag&^reparseTagCloudNumber == reparseTagCloud, tag == reparseTagOneDrive:
+		return CloudFile
+	case tag == reparseTagDedup:
+		return Deduplicated
 	}
-	if attrs, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
-		return attrs.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
-	}
-	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0, nil
+	return OtherReparse
 }
 
 // Inspect tells what path itself is, a link not followed. It reads the
@@ -338,12 +373,164 @@ func Inspect(path string) (Entry, error) {
 	if err != nil {
 		return Entry{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	reparse, tag, err := reparseOf(handle, info.FileAttributes)
+	if err != nil {
+		return Entry{}, fmt.Errorf("read %s: %w", path, err)
+	}
 	return Entry{
-		Link:   info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0,
-		Folder: info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0,
-		Names:  uint64(info.NumberOfLinks),
-		ID:     id,
+		Link:    reparse != NotReparse && reparse != Deduplicated,
+		Reparse: reparse,
+		Tag:     tag,
+		Folder:  info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0,
+		Names:   uint64(info.NumberOfLinks),
+		ID:      id,
 	}, nil
+}
+
+// fileAttributeTagInfo is FILE_ATTRIBUTE_TAG_INFO, what
+// GetFileInformationByHandleEx gives for FileAttributeTagInfo.
+type fileAttributeTagInfo struct {
+	FileAttributes uint32
+	ReparseTag     uint32
+}
+
+// reparseOf tells what kind of reparse point the file handle is open on is,
+// and its tag, from attributes, the file's attributes read on that handle.
+// The tag is read only from a reparse point: a file system that has none
+// need not answer for it.
+func reparseOf(handle windows.Handle, attributes uint32) (ReparseKind, uint32, error) {
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+		return NotReparse, 0, nil
+	}
+	var info fileAttributeTagInfo
+	//nolint:gosec // G103: the call fills exactly the FILE_ATTRIBUTE_TAG_INFO it is given, of the size it is told
+	if err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		return NotReparse, 0, err
+	}
+	return reparseKind(info.ReparseTag), info.ReparseTag, nil
+}
+
+// procCfGetSyncRootInfoByPath is the call of the Cloud Files API that tells
+// of the sync root that holds a path. Tests replace it: no Windows at hand
+// lacks it.
+var procCfGetSyncRootInfoByPath = windows.NewLazySystemDLL("cldapi.dll").NewProc("CfGetSyncRootInfoByPath")
+
+// The classes of what CfGetSyncRootInfoByPath tells of a sync root
+// (CF_SYNC_ROOT_INFO_CLASS).
+const (
+	// syncRootInfoBasic is CF_SYNC_ROOT_INFO_BASIC: the root's 64-bit file
+	// ID.
+	syncRootInfoBasic = 0
+	// syncRootInfoProvider is CF_SYNC_ROOT_INFO_PROVIDER: the service that
+	// keeps the root in sync (syncRootProviderInfo).
+	syncRootInfoProvider = 2
+)
+
+// notUnderSyncRoot is the HRESULT of ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT:
+// CfGetSyncRootInfoByPath's answer for a path in no sync root, on a volume
+// the cloud filter serves.
+const notUnderSyncRoot = 0x80070000 | uint32(windows.ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT)
+
+// syncRootProviderInfo is CF_SYNC_ROOT_PROVIDER_INFO (cfapi.h). It holds no
+// pointer, so it is laid out the same on every Windows architecture.
+type syncRootProviderInfo struct {
+	ProviderStatus  uint32
+	ProviderName    [256]uint16
+	ProviderVersion [256]uint16
+}
+
+// SyncRoot asks Windows whether path is in a folder that a cloud service,
+// such as OneDrive, keeps in sync, a sync root, and if so returns that
+// folder and the name of the service. It asks about path, or when path does
+// not exist yet, about the nearest folder above it that does, in which it
+// would be made, and finds that folder without following a link. Windows
+// answers for where that folder really is, each link on the way followed,
+// which is where whatever is made there goes.
+//
+// under is true only when Windows says so. When it cannot answer, err says
+// why: a file system that the cloud filter does not serve, such as exFAT or
+// a network share, answers with an error, as does a Windows without the
+// Cloud Files API. A path in no sync root is not under one, with no error.
+func SyncRoot(path string) (root, provider string, under bool, err error) {
+	existing, err := nearestExisting(path)
+	if err == nil {
+		err = procCfGetSyncRootInfoByPath.Find()
+	}
+	var name *uint16
+	if err == nil {
+		name, err = windows.UTF16PtrFromString(existing)
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("ask whether %s is kept in sync with the cloud: %w", path, err)
+	}
+	var info syncRootProviderInfo
+	switch hr := syncRootInfo(name, syncRootInfoProvider, &info); hr {
+	case 0:
+		return syncRootFolder(existing, name), windows.UTF16ToString(info.ProviderName[:]), true, nil
+	case notUnderSyncRoot:
+		return "", "", false, nil
+	default:
+		return "", "", false, fmt.Errorf("ask whether %s is kept in sync with the cloud: HRESULT 0x%08X", existing, hr)
+	}
+}
+
+// syncRootInfo asks CfGetSyncRootInfoByPath what class tells of the sync
+// root that holds the path name, into info, the structure class calls for,
+// and returns the HRESULT it answers with.
+func syncRootInfo[T syncRootProviderInfo | uint64](name *uint16, class uintptr, info *T) uint32 {
+	var written uint32
+	//nolint:gosec // G103: the call reads the path and writes at most the size of *info there, and how much it wrote at written
+	hr, _, _ := procCfGetSyncRootInfoByPath.Call(uintptr(unsafe.Pointer(name)), class, uintptr(unsafe.Pointer(info)),
+		unsafe.Sizeof(*info), uintptr(unsafe.Pointer(&written)))
+	return uint32(hr) //nolint:gosec // G115: an HRESULT is 32 bits
+}
+
+// syncRootFolder names the sync root that holds existing, a folder that
+// CfGetSyncRootInfoByPath, asked about the path name, says is in one: of
+// the folders that really hold existing, the one whose file ID is the
+// root's. NTFS, the only file system the cloud filter serves, keeps that
+// 64-bit ID in the low 64 bits of a file's full ID. Each folder is looked at
+// itself, a link not followed. When the root cannot be found, existing names
+// a folder the service keeps in sync too.
+func syncRootFolder(existing string, name *uint16) string {
+	// CF_SYNC_ROOT_BASIC_INFO, which holds the ID alone.
+	var rootID uint64
+	if syncRootInfo(name, syncRootInfoBasic, &rootID) != 0 {
+		return existing
+	}
+	held, err := finalPath(existing)
+	if err != nil {
+		return existing
+	}
+	for folder := held; ; folder = filepath.Dir(folder) {
+		if entry, err := Inspect(folder); err == nil && binary.LittleEndian.Uint64(entry.ID.id[:8]) == rootID {
+			return folder
+		}
+		if filepath.Dir(folder) == folder {
+			return existing
+		}
+	}
+}
+
+// nearestExisting returns path, made absolute, or when it does not exist
+// yet, the nearest folder above it that does. Each is looked at itself, a
+// link not followed, so a link that leads nowhere exists.
+func nearestExisting(path string) (string, error) {
+	existing, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for {
+		_, err := os.Lstat(existing)
+		parent := filepath.Dir(existing)
+		switch {
+		case err == nil:
+			return existing, nil
+		case !errors.Is(err, fs.ErrNotExist) || parent == existing:
+			return "", err
+		}
+		existing = parent
+	}
 }
 
 // fileIDInfo is FILE_ID_INFO, what GetFileInformationByHandleEx gives for

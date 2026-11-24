@@ -159,11 +159,16 @@ func Inspect(path string) (Entry, error) {
 	if !ok {
 		return Entry{}, fmt.Errorf("read %s: the system gives no count of its names", path)
 	}
+	link, reparse := info.Mode()&fs.ModeSymlink != 0, NotReparse
+	if link {
+		reparse = NameSurrogate
+	}
 	return Entry{
-		Link:   info.Mode()&fs.ModeSymlink != 0,
-		Folder: info.IsDir(),
-		Names:  uint64(stat.Nlink),                      //nolint:unconvert,nolintlint // Nlink is uint16 on macOS and uint64 on Linux
-		ID:     indexFileID(uint64(stat.Dev), stat.Ino), //nolint:gosec,unconvert,nolintlint // Dev is int32 on macOS and uint64 on Linux; a device number is never negative
+		Link:    link,
+		Reparse: reparse,
+		Folder:  info.IsDir(),
+		Names:   uint64(stat.Nlink),                      //nolint:unconvert,nolintlint // Nlink is uint16 on macOS and uint64 on Linux
+		ID:      indexFileID(uint64(stat.Dev), stat.Ino), //nolint:gosec,unconvert,nolintlint // Dev is int32 on macOS and uint64 on Linux; a device number is never negative
 	}, nil
 }
 
@@ -179,6 +184,14 @@ func IsLink(path string) (bool, error) {
 	}
 	return info.Mode()&fs.ModeSymlink != 0, nil
 }
+
+// IsNameSurrogate reports whether path itself is a symbolic link, the only
+// link here, which stands for another path.
+func IsNameSurrogate(path string) (bool, error) { return IsLink(path) }
+
+// SyncRoot never says path is in a folder that a cloud service keeps in
+// sync: only Windows tells which folders those are.
+func SyncRoot(string) (root, provider string, under bool, err error) { return "", "", false, nil }
 
 // Transient reports nothing here as a refusal that passes in a moment: a
 // file that is deleted or renamed goes from its name at once.
