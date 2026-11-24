@@ -125,10 +125,12 @@ What it defends against:
   writes nothing into a folder it refused. A server a hook starts therefore says why only through
   `loadline doctor`, which reports the same refusal, and `loadline serve` run by hand prints it on
   its standard error. The hooks go on running the binary that is there.
-- **A linked settings file.** When `settings.json`, or the config folder that holds it, is a link,
-  for example into a dotfiles repository (a symbolic link, or on Windows a junction), install writes
-  the token into the file it ends up in, and committing that repository would publish it. `loadline
-  doctor` warns about either link.
+- **A linked settings file.** When `settings.json`, the config folder that holds it, or a folder
+  above that such as a linked home folder, is a link, for example into a dotfiles repository (a
+  symbolic link, or on Windows a junction), install writes the token into the file it ends up in,
+  and committing that repository would publish it. `loadline doctor` warns about the link nearest
+  the file. It leaves out the folders straight under the root, such as `/var` on macOS, whose links
+  are the system's own layout.
 - **Claude Code's own writes.** Claude Code rewrites `settings.json` when you change a setting, with
   permissions of its own choosing, which can let group or others read the token again. On macOS and
   Linux `loadline doctor` reports a settings file whose mode lets them in.
@@ -185,14 +187,6 @@ or is narrow.
       Access is denied."
   - *Mitigation:* use the default. Otherwise reset the folder's permissions (for example
     `icacls <folder> /reset`) and run `loadline install`.
-- **A link further above the settings file.**
-  - *What it takes:* a link, a symbolic link or on Windows a junction, two or more levels above
-    `settings.json`, above the config folder that holds it, such as a linked home folder.
-  - *Impact:* `loadline doctor` warns when `settings.json` or its config folder is a link, but not
-    about links further up. Install then writes the token wherever that link leads without a
-    warning, which matters when it leads into a repository that gets published.
-  - *Mitigation:* use the default `~/.claude` in a standard profile, and keep the folders above a
-    custom config folder unlinked.
 - **Cloud and deduplicated files.**
   - *What it takes:* a data directory under a OneDrive folder with Files On-Demand, where
     Loadline's own files can be reparse points.

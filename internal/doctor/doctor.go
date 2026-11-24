@@ -324,12 +324,14 @@ func relativeGit(path string, settings []byte, d Deps) []Check {
 	return checks
 }
 
-// symlinked warns when the settings file at path, or the config dir that
-// holds it, is a link, a symbolic link or on Windows a junction too: install
-// writes the ingest token into the file it ends up in, which may sit in a
-// dotfiles repository that its owner publishes. Links further up, such as
-// the one macOS keeps from /var to /private/var, leave the file where its
-// owner put it and are not reported.
+// symlinked warns when the settings file at path, the config dir that holds
+// it, or a folder above that, such as a home folder, is a link, a symbolic
+// link or on Windows a junction too: install writes the ingest token into
+// the file it ends up in, which may sit in a dotfiles repository that its
+// owner publishes. It names the first link it finds, the nearest to the
+// file. The folders straight under the root are left out (ancestorsToCheck):
+// their links, such as the one macOS keeps from /var to /private/var, are the
+// system's own layout and leave the file where its owner put it.
 func symlinked(path string) []Check {
 	name := "token in " + path
 	if isLink(path) {
@@ -344,28 +346,63 @@ func symlinked(path string) []Check {
 				"keep that file out of any repository you share",
 		}}
 	}
+	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
-	if !isLink(dir) {
-		return nil
+	if isLink(dir) {
+		return linkedFolder(name, "its folder "+dir, dir, filepath.Base(path))
 	}
-	target, err := os.Readlink(dir)
+	for _, folder := range ancestorsToCheck(path) {
+		if isLink(folder) {
+			// ancestorsToCheck gives each folder as the clean path begins, so
+			// the rest of the path is the file's below the folder.
+			return linkedFolder(name, "the folder "+folder+" above it", folder, strings.TrimPrefix(path, folder))
+		}
+	}
+	return nil
+}
+
+// linkedFolder warns, as check name, that folder, which holds the settings
+// file at rel below it, is a link, and names where install therefore writes
+// the token. called is what the warning calls the folder.
+func linkedFolder(name, called, folder, rel string) []Check {
+	target, err := os.Readlink(folder)
 	if err != nil {
-		return []Check{{Name: name, Status: Warn, Detail: "its folder " + dir + " is a link that cannot be followed: " + err.Error()}}
+		return []Check{{Name: name, Status: Warn, Detail: called + " is a link that cannot be followed: " + err.Error()}}
 	}
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(dir), target)
+		target = filepath.Join(filepath.Dir(folder), target)
 	}
 	return []Check{{
 		Name:   name,
 		Status: Warn,
-		Detail: "its folder " + dir + " is a link to " + target + ", so install writes the ingest token into " +
-			filepath.Join(target, filepath.Base(path)) + "; keep that folder out of any repository you share",
+		Detail: called + " is a link to " + target + ", so install writes the ingest token into " +
+			filepath.Join(target, rel) + "; keep that folder out of any repository you share",
 	}}
 }
 
+// isLink reports whether path itself is a link that stands for another path,
+// which the doctor can name. A cloud file or a deduplicated file is a reparse
+// point, but no link: it is where its name says.
 func isLink(path string) bool {
-	link, err := fsperm.IsLink(path)
+	link, err := fsperm.IsNameSurrogate(path)
 	return err == nil && link
+}
+
+// ancestorsToCheck returns the folders above the config folder that holds
+// the settings file at settings, nearest first. It stops short of the
+// folders straight under the root of the volume, and of the root itself:
+// C:\Users\x\.claude\settings.json gives C:\Users\x alone, and
+// /home/x/dots/.claude/settings.json gives /home/x/dots and /home/x. It
+// reads nothing from the disk.
+func ancestorsToCheck(settings string) []string {
+	var ancestors []string
+	for folder := filepath.Dir(filepath.Dir(settings)); ; folder = filepath.Dir(folder) {
+		parent := filepath.Dir(folder)
+		if parent == folder || filepath.Dir(parent) == parent {
+			return ancestors
+		}
+		ancestors = append(ancestors, folder)
+	}
 }
 
 // openToOthers warns, outside Windows, when the mode of the settings file at
