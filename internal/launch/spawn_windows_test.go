@@ -184,7 +184,8 @@ func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *te
 // under the name it was given. So a batch file gets no profile however the
 // config names it. Each row names one batch file another way, with a profile
 // under R&D; a stand-in where the text after the & leads leaves a mark if
-// cmd.exe runs it. Some names start nothing at all.
+// cmd.exe runs it. Some names start nothing at all, and under others cmd.exe
+// cannot find the batch file; the rows whose batch file runs say so.
 func TestOpen_ABatchFileHoweverItIsNamedGetsNoProfile(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -193,23 +194,26 @@ func TestOpen_ABatchFileHoweverItIsNamedGetsNoProfile(t *testing.T) {
 		file string
 		// pref names the batch file at path as the config does.
 		pref func(t *testing.T, path string) string
+		// mustRun says that Windows runs the batch file under that name, so
+		// that a change that kept it from running at all fails the row.
+		mustRun bool
 	}{
-		{name: "as it is", pref: func(_ *testing.T, path string) string { return path }},
+		{name: "as it is", mustRun: true, pref: func(_ *testing.T, path string) string { return path }},
 		{name: "with a dot after it", pref: func(_ *testing.T, path string) string { return path + "." }},
 		{name: `with \. after it`, pref: func(_ *testing.T, path string) string { return path + `\.` }},
 		{name: `with /. after it`, pref: func(_ *testing.T, path string) string { return path + `/.` }},
 		{name: `with \.\. after it`, pref: func(_ *testing.T, path string) string { return path + `\.\.` }},
 		{name: `with \. and a blank after it`, pref: func(_ *testing.T, path string) string { return path + `\. ` }},
-		{name: `with a blank and \. after it`, pref: func(_ *testing.T, path string) string { return path + ` \.` }},
+		{name: `with a blank and \. after it`, mustRun: true, pref: func(_ *testing.T, path string) string { return path + ` \.` }},
 		{name: `with \... after it`, pref: func(_ *testing.T, path string) string { return path + `\...` }},
 		{name: `with a folder and .. after it`, pref: func(_ *testing.T, path string) string { return path + `\sub\..` }},
 		{name: "with its data stream named", pref: func(_ *testing.T, path string) string { return path + "::$DATA" }},
-		{name: "with forward slashes", pref: func(_ *testing.T, path string) string { return filepath.ToSlash(path) }},
+		{name: "with forward slashes", mustRun: true, pref: func(_ *testing.T, path string) string { return filepath.ToSlash(path) }},
 		{name: `through \\?\`, pref: func(_ *testing.T, path string) string { return `\\?\` + path }},
-		{name: "by a folder and .. on the way", pref: func(_ *testing.T, path string) string {
+		{name: "by a folder and .. on the way", mustRun: true, pref: func(_ *testing.T, path string) string {
 			return filepath.Dir(path) + `\sub\..\` + filepath.Base(path)
 		}},
-		{name: "by its short name", file: "browser launcher.cmd", pref: func(t *testing.T, path string) string {
+		{name: "by its short name", file: "browser launcher.cmd", mustRun: true, pref: func(t *testing.T, path string) string {
 			t.Helper()
 			long, err := windows.UTF16PtrFromString(path)
 			if err != nil {
@@ -274,8 +278,14 @@ func TestOpen_ABatchFileHoweverItIsNamedGetsNoProfile(t *testing.T) {
 					t.Fatalf("what Open(%q) started still ran %v later", pref, reapLimit())
 				}
 			}
-			if args, err := os.ReadFile(ran); err == nil && strings.Contains(string(args), "--user-data-dir") {
+			args, err := os.ReadFile(ran)
+			switch {
+			case err == nil && strings.Contains(string(args), "--user-data-dir"):
 				t.Errorf("the batch file named %q got a profile through cmd.exe: %s", pref, args)
+			case tc.mustRun && err != nil:
+				t.Errorf("the batch file named %q never ran: %v", pref, err)
+			case tc.mustRun && !strings.HasSuffix(strings.TrimSpace(string(args)), "--app="+batchURL):
+				t.Errorf("the batch file named %q got %q, want the app window's URL last", pref, args)
 			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Errorf("with the batch file named %q, cmd.exe ran the text after the ampersand in the profile path as a command of its own", pref)
