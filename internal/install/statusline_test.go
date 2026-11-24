@@ -135,6 +135,41 @@ func TestUsesPowerShellWrapper(t *testing.T) {
 	}
 }
 
+// PowerShell takes each typographic quote for the ASCII quote of its kind, on
+// either side of a string, and a quote of that kind doubled inside it for one
+// such character. Loadline's launcher in any of them is still Loadline's, so
+// install and uninstall leave it alone rather than tap it a second time or
+// restore something that was never the user's own.
+func TestPlanAndRevert_LeaveLoadlineInAnyQuotes(t *testing.T) {
+	for _, launcher := range []string{
+		// Each quote opens a path and each closes one, in pairs that need not
+		// match.
+		`'C:/x/loadline.exe‘`, `‘C:/x/loadline.exe’`, `’C:/x/loadline.exe‚`, `‚C:/x/loadline.exe‛`, `‛C:/x/loadline.exe'`,
+		`“C:/x/loadline.exe”`, `”C:/x/loadline.exe„`, `„C:/x/loadline.exe“`, `“C:/x/loadline.exe"`,
+		// Doubled, a quote is part of the path; one of the other kind is too.
+		`‘C:/Users/O’’Brien/loadline.exe’`, `“C:/Users/a””b/loadline.exe”`, `“C:/Users/O’Brien/loadline.exe”`,
+	} {
+		command := "& " + launcher + " tap --print"
+		t.Run(command, func(t *testing.T) {
+			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
+
+			for _, shell := range shells {
+				out, changes, warnings := plan(t, settings, options(shell))
+
+				if got := statusCommand(t, out); got != command ||
+					!hasChange(changes, "statusLine.command", install.ActionSkip) || len(warnings) != 1 {
+					t.Errorf("shell %d: install made it %q with changes %+v and warnings %q, want it left alone with a warning",
+						shell, got, changes, warnings)
+				}
+			}
+			reverted, changes := revert(t, settings, "")
+			if !bytes.Equal(reverted, settings) || !hasChange(changes, "statusLine.command", install.ActionSkip) {
+				t.Errorf("uninstall made it %s with changes %+v, want it left alone and reported", reverted, changes)
+			}
+		})
+	}
+}
+
 // TestBashForm_KeepsTheOriginalsMeaning runs each original and the command
 // install makes of it through real shells, with a stand-in for tap that
 // copies stdin to stdout as tap does, and expects the same output. Starting

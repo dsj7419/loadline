@@ -614,6 +614,14 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 		`&  "C:/x/loadline.exe" tap --print`,
 		`&"C:/x/loadline.exe" tap --print`,
 		`  loadline tap | foo`,
+		// Install quotes the program only in ASCII double quotes. Any other
+		// quotes come from a hand edit or a word processor.
+		`&'C:/x/loadline.exe' tap --print`,
+		`& 'C:/x/loadline.exe' tap --run-b64 '` + b64("foo") + `'`,
+		`'C:/x/loadline.exe' tap | cat`,
+		`& ‘C:/x/loadline.exe’ tap --print`,
+		`& “C:/x/loadline.exe” tap --print`,
+		`& 'C:/Users/O''Brien/loadline.exe' tap --print`,
 	} {
 		t.Run(command, func(t *testing.T) {
 			settings := []byte(`{"statusLine": {"type": "command", "command": ` + jsonQuote(t, command) + `}}`)
@@ -623,6 +631,9 @@ func TestPlan_SkipsAnEditedLoadlineStatusLine(t *testing.T) {
 
 				if got := statusCommand(t, out); got != command {
 					t.Errorf("shell %d: status line = %q, want it left as %q", shell, got, command)
+				}
+				if install.UsesPowerShellWrapper(out, goldenExe) {
+					t.Errorf("shell %d: UsesPowerShellWrapper = true, want false for a status line install did not write", shell)
 				}
 				if !hasChange(changes, "statusLine.command", install.ActionSkip) {
 					t.Errorf("shell %d: changes %+v lack a skip for statusLine.command", shell, changes)

@@ -205,6 +205,13 @@ func TestRevert_StatusLineForms(t *testing.T) {
 		{"blanks ahead of the PowerShell form", ` & "C:/x/loadline.exe" tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
 		{"blanks after the PowerShell call", `&  "C:/x/loadline.exe" tap --print`, skipped, ""},
 		{"no blank after the PowerShell call", `&"C:/x/loadline.exe" tap --print`, skipped, ""},
+		// Install quotes the program only in ASCII double quotes.
+		{"single quotes, no blank after the PowerShell call", `&'C:/x/loadline.exe' tap --print`, skipped, ""},
+		{"single quotes in the PowerShell form", `& 'C:/x/loadline.exe' tap --run-b64 '` + b64("foo") + `'`, skipped, ""},
+		{"single quotes in the bash form", `'C:/x/loadline.exe' tap | cat`, skipped, ""},
+		{"typographic single quotes", `& ‘C:/x/loadline.exe’ tap --print`, skipped, ""},
+		{"typographic double quotes", `& “C:/x/loadline.exe” tap --print`, skipped, ""},
+		{"a doubled single quote in the path", `& 'C:/Users/O''Brien/loadline.exe' tap --print`, skipped, ""},
 		{"a PowerShell call of the user's own", `&"C:/x/other.exe" --print`, untouched, ""},
 		{"a command of the user's own that starts with a blank", ` cat ~/notes/loadline`, untouched, ""},
 		{"another program", `"C:/x/other.exe" tap | foo`, untouched, ""},

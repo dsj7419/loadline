@@ -195,21 +195,22 @@ func isPlainRune(r rune) bool {
 // parseTapCommand tells whether a status-line command, given as its JSON
 // string literal, is one install wrote, for any Loadline path or exe, and if
 // so recovers the user's own command. Neither whitespace nor PowerShell's
-// call operator, spaced or not, hides a Loadline command, but install writes
-// only the operator and one space ahead of the program, so a command with
-// anything else there counts as edited.
+// call operator, spaced or not, nor the quotes around the path hide a
+// Loadline command. Install writes only the operator and one space ahead of
+// the program, and ASCII double quotes around it, so a command with anything
+// else there counts as edited.
 func parseTapCommand(literal, exe string) (tapCommand, tapMatch) {
 	chars := splitString(literal)
 	launcher := trimLeadingSpace(chars)
 	if afterCall, called := cutText(launcher, "&"); called {
 		launcher = trimLeadingSpace(afterCall)
 	}
-	path, rest, quoted := cutLauncher(launcher)
+	path, rest, quote := cutLauncher(launcher)
 	if !isLoadlinePath(text(path), exe) {
 		return tapCommand{}, foreign
 	}
 	lead := text(chars[:len(chars)-len(launcher)])
-	if !quoted || lead != "" && lead != powerShellCall {
+	if quote != straightDouble || lead != "" && lead != powerShellCall {
 		return tapCommand{}, edited
 	}
 	if text(rest) == printSuffix {
@@ -240,22 +241,77 @@ func UsesPowerShellWrapper(settings []byte, exe string) bool {
 	return match == tapped && !tap.print
 }
 
+// quoteKind is how a status-line command quotes the program it starts with.
+type quoteKind uint8
+
+const (
+	// unquoted programs end at the first blank.
+	unquoted quoteKind = iota
+	// straightDouble is the ASCII double quote ", the only quote install
+	// writes.
+	straightDouble
+	// otherDouble is a typographic double quote: “, ” or „.
+	otherDouble
+	// single is a single quote, ASCII or typographic: ', ‘, ’, ‚ or ‛.
+	single
+)
+
 // cutLauncher splits off the program a command starts with: a quoted path,
-// or else its first word.
-func cutLauncher(chars []char) (path, rest []char, quoted bool) {
-	if after, ok := cutText(chars, `"`); ok {
+// or else its first word. A path in ASCII double quotes, as install writes
+// it, ends at the next one, as bash reads it. Of the shells, only PowerShell
+// gives other quotes a meaning, and a hand edit or a word processor can leave
+// them, so a path in one is read as PowerShell reads it. A path whose closing
+// quote is missing is no path at all.
+func cutLauncher(chars []char) (path, rest []char, quote quoteKind) {
+	if len(chars) == 0 {
+		return nil, nil, unquoted
+	}
+	opening, after := chars[0].r, chars[1:]
+	switch {
+	case opening == '"':
 		end := slices.IndexFunc(after, func(c char) bool { return c.r == '"' })
 		if end < 0 {
-			return nil, nil, false
+			return nil, nil, straightDouble
 		}
-		return after[:end], after[end+1:], true
+		return after[:end], after[end+1:], straightDouble
+	case isDoubleQuote(opening):
+		path, rest = cutPowerShellString(after, isDoubleQuote)
+		return path, rest, otherDouble
+	case isSingleQuote(opening):
+		path, rest = cutPowerShellString(after, isSingleQuote)
+		return path, rest, single
 	}
 	end := slices.IndexFunc(chars, func(c char) bool { return c.r == ' ' || c.r == '\t' })
 	if end < 0 {
 		end = len(chars)
 	}
-	return chars[:end], chars[end:], false
+	return chars[:end], chars[end:], unquoted
 }
+
+// cutPowerShellString splits chars, which follow a string's opening quote,
+// at its closing quote, as PowerShell reads a string: any quote isQuote
+// accepts closes it, whichever opened it, except that two together stand for
+// the second of them. It returns nothing when no quote closes the string.
+func cutPowerShellString(chars []char, isQuote func(rune) bool) (content, rest []char) {
+	for len(chars) > 0 {
+		c := chars[0]
+		chars = chars[1:]
+		if isQuote(c.r) {
+			if len(chars) == 0 || !isQuote(chars[0].r) {
+				return content, chars
+			}
+			c, chars = chars[0], chars[1:]
+		}
+		content = append(content, c)
+	}
+	return nil, nil
+}
+
+// isDoubleQuote reports whether PowerShell reads r as a double quote.
+func isDoubleQuote(r rune) bool { return strings.ContainsRune(`"“”„`, r) }
+
+// isSingleQuote reports whether PowerShell reads r as a single quote.
+func isSingleQuote(r rune) bool { return strings.ContainsRune(`'‘’‚‛`, r) }
 
 func parsePipe(rest []char) (tapCommand, tapMatch) {
 	after, ok := cutText(rest, tapPipe)
