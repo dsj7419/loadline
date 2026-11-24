@@ -399,3 +399,58 @@ func TestReadHolder_NamesNoHolderFromAFileWithoutARecord(t *testing.T) {
 		}
 	})
 }
+
+// A record names its holder whatever TCP port it serves, from the lowest to
+// the highest, and whatever its process.
+func TestReadHolder_NamesAHolderOnAnyTCPPort(t *testing.T) {
+	for name, want := range map[string]serverlock.Holder{
+		"the lowest port":   {Port: 1, PID: 4242},
+		"the highest port":  {Port: 65535, PID: 4242},
+		"the first process": {Port: 61234, PID: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeLockFile(t, fmt.Sprintf(`{"port":%d,"pid":%d}`, want.Port, want.PID))
+
+			if got, ok := serverlock.ReadHolder(path); !ok || got != want {
+				t.Errorf("ReadHolder = %+v, %v; want %+v", got, ok, want)
+			}
+		})
+	}
+}
+
+// A file is read as a record only up to the size a record may take, blanks
+// after it included; a longer one names no holder, however it begins.
+func TestReadHolder_ReadsAFileOnlyUpToTheSizeOfARecord(t *testing.T) {
+	const record = `{"port":61234,"pid":4242}`
+	for name, tc := range map[string]struct {
+		size  int
+		named bool
+	}{
+		"padded with blanks to the size of a record": {size: serverlock.MaxRecord, named: true},
+		"padded with blanks past it":                 {size: serverlock.MaxRecord + 1, named: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeLockFile(t, record+strings.Repeat(" ", tc.size-len(record)))
+
+			got, ok := serverlock.ReadHolder(path)
+
+			if want := (serverlock.Holder{Port: 61234, PID: 4242}); ok != tc.named || (ok && got != want) {
+				t.Errorf("ReadHolder of a %d-byte file = %+v, %v; want a holder named: %v", tc.size, got, ok, tc.named)
+			}
+		})
+	}
+}
+
+// writeLockFile writes contents as the lock's file, in a folder of the
+// test's own, and returns its path.
+func writeLockFile(t *testing.T, contents string) string {
+	t.Helper()
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
