@@ -15,9 +15,9 @@ import (
 func ownedByStranger(t *testing.T, path string) {
 	t.Helper()
 	previous := foreignOwner
-	foreignOwner = func(p string) (string, error) {
+	foreignOwner = func(p string) (fsperm.Owner, error) {
 		if p == path {
-			return "a stranger", nil
+			return fsperm.Owner{Name: "a stranger"}, nil
 		}
 		return previous(p)
 	}

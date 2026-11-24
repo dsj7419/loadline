@@ -380,7 +380,7 @@ func dirLinkProblem(dir string) (string, error) {
 // Loadline makes of its access list, or "" when it does not. A path that is
 // being deleted is waited for (settle), and once gone, has no problem.
 func ownerProblem(path string) (string, error) {
-	var owner string
+	var owner fsperm.Owner
 	err := settle(func() (err error) {
 		owner, err = foreignOwner(path)
 		return err
@@ -388,10 +388,10 @@ func ownerProblem(path string) (string, error) {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return "", nil
-	case err != nil || owner == "":
+	case err != nil || owner == (fsperm.Owner{}):
 		return "", err
 	}
-	return path + " belongs to " + owner + ", who can always change who may read or replace it, " +
+	return path + " belongs to " + owner.Name + ", who can always change who may read or replace it, " +
 		"which Loadline's own files must not allow: remove it, then run loadline install", nil
 }
 
@@ -409,8 +409,8 @@ func exposed(path string, exposure func(string) (string, error)) (string, error)
 // and what to do about it, or "" when there is none.
 func movable(dir, top string) (string, error) {
 	found, err := fsperm.MovableAncestor(dir, top)
-	if err != nil || found == "" {
+	if err != nil || found.Problem == "" {
 		return "", err
 	}
-	return found + movableAdvice, nil
+	return found.Problem + movableAdvice, nil
 }
