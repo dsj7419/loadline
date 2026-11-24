@@ -42,7 +42,8 @@ jobs:
       - name: Make a ReFS volume
         # ReFS, which a Dev Drive uses, does not keep a file's 64-bit index
         # unique, so file identity is tested on it too: TestInspect_OnReFS
-        # finds the volume through LOADLINE_TEST_REFS_DIR. The disk is
+        # finds the volume through LOADLINE_TEST_REFS_DIR, and fails unless
+        # that names a folder there, which this step makes. The disk is
         # expandable, so it takes only what is written to it, though ReFS
         # needs a few gigabytes to format.
         if: runner.os == 'Windows'
@@ -73,16 +74,25 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -timeout 20m ./...
-      - name: Test a token's names with the data directory on ReFS
-        # t.TempDir() follows TMP, so the data directory, the token and every
-        # other name the test gives it are on the ReFS volume, where two files
-        # can share a 64-bit index. The log lists each case, as run or skipped.
+      - name: Test file identity and a token's names on ReFS
+        # TestInspect_OnReFS reads IDs in LOADLINE_TEST_REFS_DIR. The token
+        # test makes its data directory and every other name it gives the
+        # token with t.TempDir(), which follows TMP, so the guard first proves
+        # the temporary folder is on the ReFS volume, where two files can share
+        # a 64-bit index. The log lists each test and case as run, so none of
+        # them passed by being skipped.
         if: runner.os == 'Windows'
+        shell: pwsh
         env:
           CGO_ENABLED: "1"
           TMP: ${{ env.LOADLINE_TEST_REFS_DIR }}
           TEMP: ${{ env.LOADLINE_TEST_REFS_DIR }}
-        run: go test -race -count=1 -v -run 'TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne$' ./internal/datadir/
+        run: |
+          $temp = [IO.Path]::GetTempPath()
+          if (-not $temp.StartsWith('R:\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "the temporary folder is $temp, not on the ReFS volume R:"
+          }
+          go test -race -count=1 -v -run 'TestInspect_OnReFS$|TestMake_StillRefusesAnotherNameBesideTheTokensTemporaryOne$' ./internal/fsperm/ ./internal/datadir/
       - name: Test the full generated cases and the real tap under every shell
         # Under the race detector these tests run a reduced set of cases, or
         # one shell, to stay inside CI time; without it they run every case

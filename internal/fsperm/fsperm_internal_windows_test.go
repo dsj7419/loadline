@@ -344,21 +344,29 @@ func TestInspect_OnReFS(t *testing.T) {
 }
 
 // reFSDir returns a new folder inside the one LOADLINE_TEST_REFS_DIR names,
-// removed when the test ends. It skips the test when that names no folder on
-// a ReFS volume.
+// removed when the test ends. It skips the test when the variable is unset or
+// empty. Once it is set, whoever set it means the test to run there, so a
+// folder that is missing, is not on ReFS, or cannot hold a new folder fails
+// the test rather than letting it pass untested.
 func reFSDir(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv("LOADLINE_TEST_REFS_DIR")
-	//nolint:gosec // G703: root is the folder whoever runs the tests sets aside for them
-	if info, err := os.Stat(root); root == "" || err != nil || !info.IsDir() {
-		t.Skipf("LOADLINE_TEST_REFS_DIR (%q) names no folder on a ReFS volume", root)
+	if root == "" {
+		t.Skip("LOADLINE_TEST_REFS_DIR is unset; set it to a folder on a ReFS volume, such as a Dev Drive, to run this test")
+	}
+	info, err := os.Stat(root) //nolint:gosec // G703: root is the folder whoever runs the tests sets aside for them
+	switch {
+	case err != nil:
+		t.Fatalf("LOADLINE_TEST_REFS_DIR (%s) names no folder: %v", root, err)
+	case !info.IsDir():
+		t.Fatalf("LOADLINE_TEST_REFS_DIR (%s) names a file, not a folder", root)
 	}
 	if fileSystem := fileSystemOf(t, root); fileSystem != "ReFS" {
-		t.Skipf("LOADLINE_TEST_REFS_DIR (%s) is on %s, not ReFS", root, fileSystem)
+		t.Fatalf("LOADLINE_TEST_REFS_DIR (%s) is on %s, not ReFS", root, fileSystem)
 	}
 	dir, err := os.MkdirTemp(root, "inspect-")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("make a folder in LOADLINE_TEST_REFS_DIR (%s): %v", root, err)
 	}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(dir); err != nil { //nolint:gosec // G703: dir is the folder made above for this test alone
