@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsj7419/loadline/internal/deadlinetest"
 	"github.com/dsj7419/loadline/internal/domain"
 	"github.com/dsj7419/loadline/internal/store"
 )
@@ -208,25 +209,43 @@ func TestAsyncRecorder_DropsWhatComesAfterClose(t *testing.T) {
 	closeRecorder(t, rec)
 }
 
-// A shutdown must not wait on a database that never frees up.
+// A shutdown must not wait on a database that never frees up. Close gives up
+// at its deadline and abandons the write, which then ends because Close ended
+// it: a Close that waited on the database would leave the write to wait out
+// the database's own 5 s for the lock, and fail as the database fails it.
 func TestAsyncRecorder_CloseGivesUpAtItsDeadline(t *testing.T) {
 	s, path := openStore(t)
 	release := holdWriteLock(t, path)
-	rec, _ := newRecorder(t, s)
+	rec, logs := newRecorder(t, s)
 	rec.UsageRecorded(dirA, modelCall(0))
 
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
+	const deadline = 100 * time.Millisecond
+	// Started before the deadline is set, so that the deadline is counted
+	// in full.
 	began := time.Now()
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
 	err := rec.Close(ctx)
 
+	// Close does little besides wait for the writer or its deadline, so it
+	// is held to the deadline itself.
+	deadlinetest.AssertGaveUpAt(t, "Close", time.Since(began), deadline)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Close = %v, want the deadline's error", err)
 	}
-	if waited := time.Since(began); waited > 2*time.Second {
-		t.Errorf("Close took %v, want it back at its deadline", waited)
+	// Well past the database's own wait, so that how the write failed, not
+	// this bound, tells an abandoned write from one the database gave up on.
+	// The failure is counted before it is logged, so the log is what to wait
+	// for.
+	eventually(t, 30*time.Second, "the abandoned write to give up its wait for the lock", func() bool {
+		return strings.Contains(logs.String(), "history write failed")
+	})
+	if rec.Errors() != 1 {
+		t.Errorf("%d writes failed, want the one abandoned", rec.Errors())
 	}
-	eventually(t, 2*time.Second, "the abandoned write to give up its wait for the lock", func() bool { return rec.Errors() == 1 })
+	if text := logs.String(); !strings.Contains(text, context.Canceled.Error()) {
+		t.Errorf("the write failed as %q, want it ended by Close abandoning it", text)
+	}
 	release()
 }
 

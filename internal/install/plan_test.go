@@ -1089,13 +1089,32 @@ func TestPlan_RefusesSettingsNestedTooDeep(t *testing.T) {
 		t.Fatalf("depth 513: Revert err = %v, want ErrInvalidSettings", err)
 	}
 
-	// With the bound in place, far deeper input is refused as quickly.
-	start := time.Now()
-	if _, _, _, err := install.Plan([]byte(nested(50000)), options(install.ShellBash)); !errors.Is(err, install.ErrInvalidSettings) {
-		t.Errorf("depth 50000: err = %v, want ErrInvalidSettings", err)
+	// Far deeper input is refused by the bound too, and the bound is what
+	// the refusal names, ahead of a key given twice.
+	deepAfterTwice := `{"x": 1, "x": ` + nested(50000) + `}`
+	if _, _, _, err := install.Plan([]byte(deepAfterTwice), options(install.ShellBash)); !errors.Is(err, install.ErrInvalidSettings) || !strings.Contains(err.Error(), "512") {
+		t.Errorf("depth 50000: err = %v, want ErrInvalidSettings naming the 512 limit, ahead of the key given twice", err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("depth 50000 took %s to refuse", elapsed)
+	// The bound is checked before the walk over the document, whose cost
+	// grows with the depth it is kept from: refusing 4096 levels costs no
+	// more than refusing 513, where a walk first would cost thousands of
+	// allocations more. Allocations count that cost on any machine, though
+	// not to the one: the race detector makes sync.Pool drop what it keeps
+	// now and then, which costs a refusal an allocation more, and the count
+	// is the process's, which goroutines that earlier tests left can add to.
+	// So each count is the least of three, and the two may differ by one.
+	o := options(install.ShellBash)
+	refusing := func(depth int) float64 {
+		input := []byte(nested(depth))
+		plan := func() { _, _, _, _ = install.Plan(input, o) }
+		fewest := testing.AllocsPerRun(100, plan)
+		for range 2 {
+			fewest = min(fewest, testing.AllocsPerRun(100, plan))
+		}
+		return fewest
+	}
+	if shallow, deep := refusing(513), refusing(4096); deep > shallow+1 {
+		t.Errorf("refusing 4096 levels took %v allocations and 513 levels %v, want no more: the bound checked before any walk over the document", deep, shallow)
 	}
 	// Brackets inside strings are not nesting.
 	deepInText := `{"x": "` + strings.Repeat("[{", 1000) + `"}`
