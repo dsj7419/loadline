@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -150,7 +151,10 @@ func newWorld(t *testing.T) *world {
 			w.checked = append(w.checked, dir)
 			return w.problem, w.problemErr
 		},
-		Now: w.clock.Now,
+		Getenv:  func(string) string { return "" },
+		IsFile:  func(string) bool { return false },
+		WorkDir: dir,
+		Now:     w.clock.Now,
 	}
 	return w
 }
@@ -458,6 +462,121 @@ func TestDoctor_DetectsTheShellOfEachFile(t *testing.T) {
 	defer mu.Unlock()
 	if want := [][]byte{w.read(powerShell), w.read(w.settings)}; !slices.EqualFunc(seen, want, bytes.Equal) {
 		t.Errorf("Shell saw %q, want each file's contents once, in order: %q", seen, want)
+	}
+}
+
+// Claude Code looks for git on PATH from each session's own working
+// directory, so a relative PATH entry can lead each session to a different
+// Git Bash, or to none, whatever install chose.
+func TestDoctor_WarnsOfARelativeGitOnPath(t *testing.T) {
+	const workDir = `D:\work`
+	relativeGit := func(entry string) string {
+		return "PATH holds " + entry + ", which may lead to a git (from this folder it does); that means a different " +
+			"folder in each session's working directory, so Claude Code's shell may differ from the one install chose; " +
+			"set CLAUDE_CODE_GIT_BASH_PATH"
+	}
+	tests := []struct {
+		name     string
+		settings string
+		env      map[string]string
+		files    []string
+		// warned are the entries warned of, on Windows.
+		warned []string
+	}{
+		{
+			name:   "a root-relative entry that leads to a git",
+			env:    map[string]string{"PATH": `C:\Windows;\cmd`},
+			files:  []string{`D:\cmd\git.exe`},
+			warned: []string{`\cmd`},
+		},
+		{
+			name:   "two entries that lead to a git",
+			env:    map[string]string{"PATH": `\cmd;C:\Windows;tools`},
+			files:  []string{`D:\cmd\git.exe`, `D:\work\tools\git.exe`},
+			warned: []string{`\cmd`, `tools`},
+		},
+		{
+			name:     "an entry set in the settings file's env",
+			settings: `{"env": {"PATH": "tools"}}`,
+			env:      map[string]string{"PATH": `C:\Windows`},
+			files:    []string{`D:\work\tools\git.exe`},
+			warned:   []string{`tools`},
+		},
+		{
+			name:  "a relative entry without a git",
+			env:   map[string]string{"PATH": `tools`},
+			files: []string{`D:\work\tools\bash.exe`},
+		},
+		{
+			name:  "a git in an absolute entry only",
+			env:   map[string]string{"PATH": `D:\Tools\Git\cmd`},
+			files: []string{`D:\Tools\Git\cmd\git.exe`},
+		},
+		{
+			// Claude Code stops at the first git it finds.
+			name:  "a relative entry after the first git on PATH",
+			env:   map[string]string{"PATH": `C:\Git\cmd;tools`},
+			files: []string{`C:\Git\cmd\git.exe`, `D:\work\tools\git.exe`},
+		},
+		{
+			name:  "CLAUDE_CODE_GIT_BASH_PATH naming an existing bash",
+			env:   map[string]string{"PATH": `\cmd`, "CLAUDE_CODE_GIT_BASH_PATH": `E:\git\bin\bash.exe`},
+			files: []string{`D:\cmd\git.exe`, `E:\git\bin\bash.exe`},
+		},
+		{
+			name:     "CLAUDE_CODE_GIT_BASH_PATH naming an existing bash in the settings file's env",
+			settings: `{"env": {"CLAUDE_CODE_GIT_BASH_PATH": "E:\\git\\bin\\bash.exe"}}`,
+			env:      map[string]string{"PATH": `\cmd`},
+			files:    []string{`D:\cmd\git.exe`, `E:\git\bin\bash.exe`},
+		},
+		{
+			// Claude Code passes over a value that names no existing bash or
+			// sh, and looks further.
+			name:   "CLAUDE_CODE_GIT_BASH_PATH naming a missing file",
+			env:    map[string]string{"PATH": `\cmd`, "CLAUDE_CODE_GIT_BASH_PATH": `E:\nowhere\bash.exe`},
+			files:  []string{`D:\cmd\git.exe`},
+			warned: []string{`\cmd`},
+		},
+		{
+			name:   "CLAUDE_CODE_GIT_BASH_PATH naming another shell",
+			env:    map[string]string{"PATH": `\cmd`, "CLAUDE_CODE_GIT_BASH_PATH": `E:\tools\zsh.exe`},
+			files:  []string{`D:\cmd\git.exe`, `E:\tools\zsh.exe`},
+			warned: []string{`\cmd`},
+		},
+		{
+			name:  "Git Bash in Program Files, where Claude Code looks before PATH",
+			env:   map[string]string{"PATH": `\cmd`},
+			files: []string{`D:\cmd\git.exe`, `C:\Program Files\Git\bin\bash.exe`},
+		},
+		{
+			name:  "Git Bash in Program Files (x86), where Claude Code looks before PATH",
+			env:   map[string]string{"PATH": `\cmd`},
+			files: []string{`D:\cmd\git.exe`, `C:\Program Files (x86)\Git\bin\bash.exe`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			settings := tt.settings
+			if settings == "" {
+				settings = `{}`
+			}
+			w.install(w.settings, settings, install.ShellBash)
+			w.deps.Getenv = func(key string) string { return tt.env[key] }
+			w.deps.IsFile = func(path string) bool { return slices.Contains(tt.files, path) }
+			w.deps.WorkDir = workDir
+
+			got := w.run()
+
+			want := []doctor.Check{{Name: "settings " + w.settings, Status: doctor.OK, Detail: "wired"}}
+			// Claude Code looks for Git Bash on Windows only.
+			if runtime.GOOS == "windows" {
+				for _, entry := range tt.warned {
+					want = append(want, doctor.Check{Name: "status line " + w.settings, Status: doctor.Warn, Detail: relativeGit(entry)})
+				}
+			}
+			assertChecks(t, settingsChecks(t, got), want)
+		})
 	}
 }
 

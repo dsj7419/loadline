@@ -60,7 +60,7 @@ type Check struct {
 }
 
 // Deps is the setup Run checks and the means to reach it. Shell,
-// ClaudeVersion and CheckDataDir must be set.
+// ClaudeVersion, CheckDataDir, Getenv and IsFile must be set.
 type Deps struct {
 	// SettingsFiles are the Claude Code settings files Loadline should be
 	// wired into.
@@ -89,6 +89,15 @@ type Deps struct {
 	// is an error that matches fs.ErrNotExist; one it would refuse to make
 	// is reported with why.
 	CheckDataDir func(dir string) (string, error)
+	// Getenv reads the environment Claude Code starts in, which each settings
+	// file's env overrides, and IsFile reports whether a file exists. Run
+	// looks with them for a git that PATH may lead Claude Code to from some
+	// folders and not others.
+	Getenv func(name string) string
+	IsFile func(path string) bool
+	// WorkDir is the folder the doctor runs in, against which it resolves
+	// the entries of PATH that are not absolute.
+	WorkDir string
 	// Now reads the time. Nil means time.Now.
 	Now func() time.Time
 }
@@ -121,6 +130,10 @@ const (
 	installHint    = "run loadline install"
 	powerShellNote = "the PowerShell wrapper starts a PowerShell process on every status refresh, which is slower " +
 		"than the Git Bash pipe form; installing Git for Windows and running loadline install again avoids it"
+	// relativeGitNote takes a PATH entry that is not absolute.
+	relativeGitNote = "PATH holds %s, which may lead to a git (from this folder it does); that means a different " +
+		"folder in each session's working directory, so Claude Code's shell may differ from the one install chose; " +
+		"set CLAUDE_CODE_GIT_BASH_PATH"
 )
 
 // minClaude is the oldest Claude Code that Loadline works with.
@@ -148,7 +161,7 @@ func Run(ctx context.Context, d Deps) []Check {
 		target.Token = missingToken
 	}
 	for _, path := range d.SettingsFiles {
-		checks = append(checks, checkSettings(path, target, d.Shell)...)
+		checks = append(checks, checkSettings(path, target, d)...)
 	}
 	checks = append(checks, checkBinary(d.Exe))
 
@@ -261,9 +274,9 @@ func checkToken(path string) ([]byte, Check) {
 
 // checkSettings reports whether the settings file at path is wired to
 // target as install would wire it, warns when its status line runs through
-// the PowerShell wrapper, and warns where the copy of the token it holds may
-// leak.
-func checkSettings(path string, target install.Options, shell func([]byte) install.Shell) []Check {
+// the PowerShell wrapper or may run under a shell install did not quote it
+// for, and warns where the copy of the token it holds may leak.
+func checkSettings(path string, target install.Options, d Deps) []Check {
 	name := "settings " + path
 	settings, err := os.ReadFile(filepath.Clean(path))
 	switch {
@@ -273,17 +286,40 @@ func checkSettings(path string, target install.Options, shell func([]byte) insta
 		return []Check{{Name: name, Status: Fail, Detail: err.Error()}}
 	}
 
-	target.Shell = shell(settings)
+	target.Shell = d.Shell(settings)
 	wired := wiring(name, settings, target)
 	checks := []Check{wired}
 	if install.UsesPowerShellWrapper(settings, target.Exe) {
 		checks = append(checks, Check{Name: "status line " + path, Status: Warn, Detail: powerShellNote})
 	}
+	checks = append(checks, relativeGit(path, settings, d)...)
 	checks = append(checks, symlinked(path)...)
 	if wired.Status != Fail {
 		// Installing again would not edit the file, so would not narrow its
 		// mode either.
 		checks = append(checks, openToOthers(path)...)
+	}
+	return checks
+}
+
+// relativeGit warns, on Windows, of each PATH entry that is not absolute and
+// leads to a git from the folder the doctor runs in, ahead of the first
+// absolute one that does. Claude Code resolves such an entry against each
+// session's own working directory, so it may find a different Git Bash in
+// each session, or none, whatever install chose for the status line of the
+// settings at path. Claude Code reaches PATH only when it finds no Git Bash
+// before it, as install's own rule does.
+func relativeGit(path string, settings []byte, d Deps) []Check {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	getenv := install.SettingsEnv(settings, d.Getenv)
+	if install.GitBashBeforePath(getenv, d.IsFile) {
+		return nil
+	}
+	var checks []Check
+	for _, entry := range install.RelativeGitEntries(getenv, d.IsFile, d.WorkDir) {
+		checks = append(checks, Check{Name: "status line " + path, Status: Warn, Detail: fmt.Sprintf(relativeGitNote, entry)})
 	}
 	return checks
 }
