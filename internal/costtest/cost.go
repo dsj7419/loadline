@@ -6,8 +6,9 @@
 package costtest
 
 import (
-	"math"
+	"cmp"
 	"runtime"
+	"slices"
 	"time"
 )
 
@@ -18,8 +19,9 @@ const (
 	// slack is how many times longer than a linear cost the operation may
 	// take at the larger size: halfway, in proportion, to a quadratic one.
 	slack = 2
-	// runs is how many times AssertLinear times the operation at each size.
-	runs = 5
+	// rounds is how many times AssertLinear times the operation at each size.
+	// Their median holds while up to 3 of them are distorted the same way.
+	rounds = 7
 	// batch is how long timeOf goes on running an operation. Go's clock on
 	// Windows steps at the system timer's tick, which can be as coarse as
 	// 15.6 ms, so a single run of a few milliseconds cannot be timed.
@@ -36,22 +38,34 @@ type T interface {
 // size. build returns the operation at a size, counted in unit; AssertLinear
 // builds it at n and at 4n, and fails unless it takes under 8 times as long
 // at 4n as at n: a linear cost takes 4 times as long, and a quadratic one 16.
-// Each time is the fastest of 5, taken in turn with the other size's, so a
-// stall in one decides nothing.
+// It times the two sizes one straight after the other, in 7 rounds, and
+// judges the round whose proportion is the median. Stalls in up to 3 rounds
+// decide nothing, and nor does a machine that slows or speeds up partway, as
+// other work starts or ends beside the test: the two times of a round are
+// taken at much the same speed, where the fastest or the median time at each
+// size may come from rounds at different speeds.
 func AssertLinear(t T, n int, unit string, build func(size int) (op func())) {
 	t.Helper()
 	sizes := [2]int{n, growth * n}
 	ops := [2]func(){build(sizes[0]), build(sizes[1])}
-	fastest := [2]time.Duration{math.MaxInt64, math.MaxInt64}
-	for range runs {
+	var times [rounds][2]time.Duration
+	for r := range times {
 		for i, op := range ops {
-			fastest[i] = min(fastest[i], timeOf(op))
+			times[r][i] = timeOf(op)
 		}
 	}
-	if ratio := float64(fastest[1]) / float64(fastest[0]); ratio >= growth*slack {
+	slices.SortFunc(times[:], func(a, b [2]time.Duration) int { return cmp.Compare(proportion(a), proportion(b)) })
+	median := times[rounds/2]
+	if ratio := proportion(median); ratio >= growth*slack {
 		t.Errorf("took %v at %d %s and %v at %d: %.1f times as long, want under %d, as a cost linear in the %s takes %d times as long",
-			fastest[0], sizes[0], unit, fastest[1], sizes[1], ratio, growth*slack, unit, growth)
+			median[0], sizes[0], unit, median[1], sizes[1], ratio, growth*slack, unit, growth)
 	}
+}
+
+// proportion is how many times as long a round took at the larger size as at
+// the smaller.
+func proportion(round [2]time.Duration) float64 {
+	return float64(round[1]) / float64(round[0])
 }
 
 // timeOf returns how long op takes on average, run over and over for at

@@ -135,3 +135,22 @@ func TestClock_WaitForTimersReturnsOnceEnoughAreArmed(t *testing.T) {
 		t.Errorf("%d timers pending, want 2", got)
 	}
 }
+
+// A timer armed before the clock moved has less than its duration left,
+// which can equal the whole duration of another kind of timer: it is not
+// one just armed. Nor is one a timer armed while the clock moved.
+func TestClock_JustArmedListsOnlyTimersWithAllTheirTimeToRun(t *testing.T) {
+	c := clocktest.New(t0)
+	c.AfterFunc(10*time.Second, func() {})
+	c.AfterFunc(time.Second, func() { c.AfterFunc(5*time.Second, func() {}) })
+	c.Advance(5 * time.Second)
+	c.AfterFunc(30*time.Second, func() {})
+	c.AfterFunc(5*time.Second, func() {})
+
+	if got, want := c.JustArmed(), []time.Duration{5 * time.Second, 30 * time.Second}; !slices.Equal(got, want) {
+		t.Errorf("JustArmed = %v, want %v", got, want)
+	}
+	if got, want := c.Pending(), []time.Duration{time.Second, 5 * time.Second, 5 * time.Second, 30 * time.Second}; !slices.Equal(got, want) {
+		t.Errorf("Pending = %v, want %v", got, want)
+	}
+}

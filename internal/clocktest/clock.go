@@ -25,7 +25,9 @@ type Clock struct {
 
 type timer struct {
 	at time.Time
-	f  func()
+	// d is how long the timer was armed for.
+	d time.Duration
+	f func()
 }
 
 // New returns a clock that reads now until it is advanced.
@@ -47,7 +49,7 @@ func (c *Clock) Now() time.Time {
 func (c *Clock) AfterFunc(d time.Duration, f func()) (stop func() bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &timer{at: c.now.Add(d), f: f}
+	t := &timer{at: c.now.Add(d), d: d, f: f}
 	c.timers = append(c.timers, t)
 	close(c.armed)
 	c.armed = make(chan struct{})
@@ -115,6 +117,24 @@ func (c *Clock) Pending() []time.Duration {
 	}
 	slices.Sort(left)
 	return left
+}
+
+// JustArmed returns how long each pending timer that has all of its time
+// still to run was armed for, soonest first: the timers armed since the
+// clock last moved. Where several kinds of timer share the clock, it tells
+// one that some code has just armed for d from one armed earlier that has d
+// left, which Pending cannot.
+func (c *Clock) JustArmed() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var armed []time.Duration
+	for _, t := range c.timers {
+		if t.at.Sub(c.now) == t.d {
+			armed = append(armed, t.d)
+		}
+	}
+	slices.Sort(armed)
+	return armed
 }
 
 // WaitForTimers waits until at least n timers are pending, for code on

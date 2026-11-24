@@ -20,6 +20,10 @@ const IdleCheckEvery = idleCheckEvery
 // close the history.
 const LockWait = lockWait
 
+// ShutdownTimedOutMessage is the message of the log record that says a
+// server's graceful shutdown ran out of time.
+const ShutdownTimedOutMessage = shutdownTimedOutMessage
+
 // TapSendTimeout returns the bound on the tap's post.
 func TapSendTimeout() time.Duration { return tapSendTimeout }
 
