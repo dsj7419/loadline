@@ -179,12 +179,13 @@ What it defends against:
   cookie, set for `127.0.0.1`, goes to every port on `127.0.0.1` that the browser visits in the
   profile that holds it. In the dashboard's own profile, which a Chromium app window opens in by
   default, that is only Loadline's own pages, unless you browse elsewhere in that window. In your
-  normal profile, with `browser: auto`, Firefox, a tab or `browserProfile: default`, it is every
-  local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or by an open
-  that fell back to it, stays valid there until it expires 30 days after it was set, or until the
-  token changes. It does not rotate: it is derived from the token and changes only with it. To
-  change both, stop the server (`loadline stop`, or let it exit `idleExitMinutes` after the last
-  session ends), delete the `token` file in the data directory and run `loadline install` again.
+  normal profile, with `browser: auto`, Firefox, a batch file, a tab or `browserProfile: default`,
+  it is every local page you open there. A cookie set in your normal profile earlier, by 0.1.0 or
+  by an open that fell back to it, stays valid there until it expires 30 days after it was set, or
+  until the token changes. It does not rotate: it is derived from the token and changes only with
+  it. To change both, stop the server (`loadline stop`, or let it exit `idleExitMinutes` after the
+  last session ends), delete the `token` file in the data directory and run `loadline install`
+  again.
 - **Opening once per login.** `openOnStart: once_per_login` opens the dashboard on the first server
   start after the computer boots, not after each sign-in.
 - **A refused server.** A server that refuses its data directory writes no log there, since it

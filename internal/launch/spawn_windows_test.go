@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -119,5 +120,37 @@ func TestChildRead_WaitsOutTheRenameThatPublishedTheReport(t *testing.T) {
 
 	if report.PID != 4242 {
 		t.Errorf("read the report as %+v, want the one written", report)
+	}
+}
+
+// A browser given by path may be a batch file that starts the real browser
+// with flags of the user's own. Windows runs a batch file through cmd.exe,
+// which reads its command line again, and Go quotes an argument only when it
+// holds a blank: a profile path such as C:\Users\R&D\...\browser would end the
+// batch file's arguments at the & and start the rest as a command of its own.
+// So a batch file gets the one argument it got before the dashboard had a
+// profile of its own, --app=<url>, whole, which holds nothing cmd.exe acts on.
+func TestOpen_ABatchFileBrowserGetsTheAppWindowAloneWhateverTheProfilePath(t *testing.T) {
+	const url = "http://127.0.0.1:8289/login?code=0123456789abcdef"
+	profile := filepath.Join(t.TempDir(), "R&D", "loadline", "browser")
+	for _, name := range []string{"browser.cmd", "BROWSER.BAT"} {
+		t.Run(name, func(t *testing.T) {
+			c := expectChild(t, false)
+			// The batch file passes its arguments on to the program that
+			// reports them, as one that starts a browser passes them on.
+			batch := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(batch, []byte("@\""+testBinary(t)+"\" %*\r\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := c.open(url, launch.Browser{Pref: batch, AppWindow: true, ProfileDir: profile}); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+
+			report := c.read(t)
+			if want := []string{"--app=" + url}; !slices.Equal(report.Args, want) {
+				t.Errorf("the browser got arguments %q, want %q", report.Args, want)
+			}
+		})
 	}
 }

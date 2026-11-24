@@ -25,16 +25,17 @@ var chromium = []string{brave, chrome, edge}
 type Browser struct {
 	// Pref is "auto" for the system's default browser, "brave", "chrome",
 	// "edge" or "firefox", in any case, or the absolute path of a browser
-	// executable.
+	// executable or of a batch file that starts one.
 	Pref string
 	// AppWindow opens the dashboard in a Chromium app window, which has no
 	// tabs or address bar. Firefox, by name or by a path to its firefox
 	// executable, and the system default ignore it; any other path given
-	// with it must be a Chromium-family browser's.
+	// with it must be a Chromium-family browser's, or a batch file's that
+	// starts one.
 	AppWindow bool
 	// ProfileDir is a profile folder of the dashboard's own, which a
 	// Chromium app window opens in; empty means the browser's default
-	// profile.
+	// profile. A batch file ignores it (batchFileKind).
 	ProfileDir string
 }
 
@@ -48,6 +49,13 @@ const (
 	// chromiumKind is a Chromium-family browser, which can open an app
 	// window in a profile folder of its own.
 	chromiumKind
+	// batchFileKind is a batch file, taken to start a Chromium-family
+	// browser as any path but Firefox's is. Windows runs it through cmd.exe,
+	// which reads its command line again and acts on an & or ^ that Go
+	// quotes only in an argument that also holds a blank. So it gets no
+	// profile folder, whose path may hold either: it opens the dashboard as
+	// it did before the dashboard had a profile of its own.
+	batchFileKind
 	// firefoxKind is Firefox, which has no app window.
 	firefoxKind
 )
@@ -55,9 +63,10 @@ const (
 // Command returns the program and arguments that open url in b. find
 // returns where the named browser is installed, or false when it is not; a
 // browser that is not installed gives way to the system default. The URL,
-// and the profile folder, are each always a single argument, passed to the
-// program itself and never through a shell, which would act on the & in
-// the URL.
+// and the profile folder, are each always a single argument. An executable
+// gets them as they are, with no shell in between to act on the & in the
+// URL; a batch file, which Windows runs through cmd.exe, gets no profile
+// folder (batchFileKind).
 func Command(url string, b Browser, find func(name string) (string, bool)) (name string, args []string, err error) {
 	if !known(b.Pref) {
 		return "", nil, fmt.Errorf("browser %q is not one of %q, %q, %q, %q or %q, nor an absolute path",
@@ -67,6 +76,8 @@ func Command(url string, b Browser, find func(name string) (string, bool)) (name
 	switch kind {
 	case chromiumKind:
 		return program, chromiumArgs(url, b), nil
+	case batchFileKind:
+		return program, chromiumArgs(url, Browser{AppWindow: b.AppWindow}), nil
 	case firefoxKind:
 		return program, []string{url}, nil
 	default:
@@ -98,12 +109,30 @@ func known(pref string) bool {
 }
 
 // resolve decides which program opens the dashboard for b, and how it takes
-// the URL. A path is used as it is: Firefox's, as a portable or Scoop
-// install has it, and otherwise a Chromium-family browser's. A browser
-// named is the one find finds installed. "auto", and a named browser that
-// is not installed, give the system default, which has no program of its
-// own here.
+// the URL. The program is the one locate finds; a Chromium-family one whose
+// name ends in .cmd or .bat, in any case, is a batch file, whether b gives
+// its path or find finds it.
 func resolve(b Browser, find func(name string) (string, bool)) (program string, kind browserKind) {
+	program, kind = locate(b, find)
+	if kind == chromiumKind && isBatchFile(program) {
+		return program, batchFileKind
+	}
+	return program, kind
+}
+
+// isBatchFile reports whether path names a batch file, which Windows runs
+// through cmd.exe.
+func isBatchFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".cmd" || ext == ".bat"
+}
+
+// locate finds the program that opens the dashboard for b. A path is used
+// as it is: Firefox's, as a portable or Scoop install has it, and otherwise
+// a Chromium-family browser's. A browser named is the one find finds
+// installed. "auto", and a named browser that is not installed, give the
+// system default, which has no program of its own here.
+func locate(b Browser, find func(name string) (string, bool)) (program string, kind browserKind) {
 	if filepath.IsAbs(b.Pref) {
 		if isFirefox(b.Pref) {
 			return b.Pref, firefoxKind
