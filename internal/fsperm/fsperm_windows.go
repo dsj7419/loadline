@@ -816,12 +816,13 @@ var userProfile = func() (string, error) {
 }
 
 // InProfile reports whether path is the folder of the user's profile, or is
-// in it. It compares both as the system resolves them (resolved): each link
-// on the way followed and each short 8.3 name in its long form, and the part
-// of path that does not exist yet as written. So a short name cannot hide
-// that a path is in the profile, nor a junction in the profile that leads
-// out of it make one read as in it, nor one outside it that leads in make one
-// read as outside.
+// in it. It finds where both really are (resolved): each link on the way
+// followed and each short 8.3 name in its long form, and the part of path
+// that does not exist yet as written. So a short name cannot hide that a
+// path is in the profile, nor a junction in the profile that leads out of it
+// make one read as in it, nor one outside it that leads in make one read as
+// outside. The profile's folder is told by its resolved path and its file
+// ID together (within).
 func InProfile(path string) (bool, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -832,6 +833,10 @@ func InProfile(path string) (bool, error) {
 		return false, err
 	}
 	heldProfile, err := resolved(profile)
+	var profileFolder Entry
+	if err == nil {
+		profileFolder, err = Inspect(heldProfile)
+	}
 	if err != nil {
 		return false, fmt.Errorf("find your user profile: %w", err)
 	}
@@ -839,21 +844,30 @@ func InProfile(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("find whether %s is in your user profile: %w", path, err)
 	}
-	return within(held, heldProfile), nil
+	return within(held, heldProfile, profileFolder.ID), nil
 }
 
-// within reports whether path is folder or in it, comparing names as Windows
-// does, without regard to case. A separator must follow folder's name in
-// path, so that C:\Users\me2 is not in C:\Users\me.
-func within(path, folder string) bool {
-	path, folder = filepath.Clean(path), filepath.Clean(folder)
-	if strings.EqualFold(path, folder) {
-		return true
+// within reports whether path is the profile's folder or in it: whether path,
+// or one of the folders above it, is profile, letter for letter, and is
+// still the folder whose file ID is id. Both are resolved, each name as the
+// system gives it (finalPath), which spells one folder one way, so names
+// that differ in letters NTFS keeps apart, or in case in a folder set to be
+// case sensitive, never match, as a fold of the names would take them to.
+// The file ID alone is not enough either: a copy of the profile's volume
+// made sector for sector, as a cloned disk left attached is, has the same
+// serial number and file numbers, so its copy of the profile has the
+// profile's ID, at another path.
+func within(path, profile string, id FileID) bool {
+	profile = filepath.Clean(profile)
+	for x := filepath.Clean(path); ; x = filepath.Dir(x) {
+		if x == profile {
+			entry, err := Inspect(x)
+			return err == nil && entry.ID == id
+		}
+		if filepath.Dir(x) == x {
+			return false
+		}
 	}
-	if !strings.HasSuffix(folder, `\`) {
-		folder += `\`
-	}
-	return len(path) > len(folder) && strings.EqualFold(path[:len(folder)], folder)
 }
 
 // othersGranted names the trustees besides the user, SYSTEM and
@@ -1003,12 +1017,6 @@ func fileRights(mask windows.ACCESS_MASK) windows.ACCESS_MASK {
 		specific |= windows.FILE_GENERIC_EXECUTE
 	}
 	return specific
-}
-
-// samePath reports whether a and b name the same folder, as Windows compares
-// names: without regard to case.
-func samePath(a, b string) bool {
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // The forms GetFinalPathNameByHandle can name a path in (winbase.h).

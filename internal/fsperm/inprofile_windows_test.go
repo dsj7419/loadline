@@ -8,6 +8,7 @@ package fsperm
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -82,6 +83,172 @@ func TestInProfile(t *testing.T) {
 				t.Errorf("InProfile(%s), with the profile at %s = %t, %v; want %t", tt.path, tt.profile, got, err, tt.want)
 			}
 		})
+	}
+}
+
+// foldedNames are pairs of folder names that Unicode's case folding takes for
+// one, and NTFS, which compares names by its own table of upper case, keeps
+// apart. The characters are given by their code points, so that none of them
+// hides in this file.
+var foldedNames = map[string][2]string{
+	"the micro sign and the Greek mu":         {"\u00b5-user", "\u03bc-user"},
+	"Georgian Mkhedruli and Mtavruli letters": {"\u10d2\u10d8\u10dd", "\u1c92\u1c98\u1c9d"},
+	"two Cyrillic letters uk":                 {"\ua64b-user", "\u1c88-user"},
+	"the Kelvin sign and the letter K":        {"Kevin", "\u212aevin"},
+}
+
+// foldedFolders makes a folder by each name of pair, side by side in root,
+// and skips the test where the file system takes the two for one name.
+func foldedFolders(t *testing.T, root string, pair [2]string) (first, second string) {
+	t.Helper()
+	first, second = filepath.Join(root, pair[0]), filepath.Join(root, pair[1])
+	if err := os.Mkdir(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(second, 0o700); err != nil {
+		t.Skipf("the file system of %s takes %q and %q for one name: %v", root, pair[0], pair[1], err)
+	}
+	return first, second
+}
+
+// A folder beside the profile whose name differs from the profile's only in
+// letters that Unicode folds together, and NTFS keeps apart, is another
+// folder: neither it nor anything in it is in the profile, and it is not the
+// profile's folder.
+func TestInProfile_TellsTheProfileFromAFolderBesideItWhoseNameFoldsToItsName(t *testing.T) {
+	for name, pair := range foldedNames {
+		t.Run(name, func(t *testing.T) {
+			profile, beside := foldedFolders(t, t.TempDir(), pair)
+			local := filepath.Join(beside, "AppData", "Local")
+			if err := os.MkdirAll(local, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			profileAt(t, profile)
+
+			for _, path := range []string{beside, filepath.Join(local, "loadline")} {
+				if in, err := InProfile(path); err != nil || in {
+					t.Errorf("InProfile(%q), with the profile at %q = %t, %v; want false: it is beside the profile", path, profile, in, err)
+				}
+			}
+			if samePath(profile, beside) {
+				t.Errorf("samePath(%q, %q) = true; want false: they are two folders", profile, beside)
+			}
+		})
+	}
+}
+
+// otherCase returns path with each ASCII letter in the case it does not have.
+func otherCase(path string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r - 'a' + 'A'
+		case r >= 'A' && r <= 'Z':
+			return r - 'A' + 'a'
+		}
+		return r
+	}, path)
+}
+
+// lowerDrive returns path with its drive letter in lower case.
+func lowerDrive(path string) string {
+	if len(path) > 1 && path[1] == ':' {
+		return strings.ToLower(path[:1]) + path[1:]
+	}
+	return path
+}
+
+// However the profile and the path are spelled, in another case, by a short
+// name, with dots or a separator at the end, or as an extended-length path,
+// they name the same folders, and a path in the profile is in it.
+func TestInProfile_TakesEverySpellingWindowsTakesForTheSameFolders(t *testing.T) {
+	root := t.TempDir()
+	profile := filepath.Join(root, "A Profile With A Long Name")
+	local := filepath.Join(profile, "AppData", "Local")
+	outside := filepath.Join(root, "Elsewhere", "AppData", "Local")
+	for _, dir := range []string{local, outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	short := shortName(t, profile)
+
+	for _, tt := range []struct {
+		name, profile, path string
+		short               bool
+		want                bool
+	}{
+		{name: "the path in another case", profile: profile, path: otherCase(filepath.Join(local, "loadline")), want: true},
+		{name: "the profile in another case", profile: otherCase(profile), path: filepath.Join(local, "loadline"), want: true},
+		{name: "both in another case, each its own", profile: strings.ToUpper(profile), path: strings.ToLower(local), want: true},
+		{name: "the path's drive letter in lower case", profile: profile, path: lowerDrive(local), want: true},
+		{name: "the profile's drive letter in lower case", profile: lowerDrive(profile), path: local, want: true},
+		{
+			name: "the path by the profile's short name, in another case", profile: profile, short: true,
+			path: otherCase(filepath.Join(short, "AppData", "Local", "loadline", "bin")), want: true,
+		},
+		{name: "the profile with a separator at its end", profile: profile + `\`, path: local, want: true},
+		{name: "the path with dots in it", profile: profile, path: filepath.Join(local, "..", "Local", ".", "loadline") + `\`, want: true},
+		{name: "the path as an extended-length one", profile: profile, path: `\\?\` + local, want: true},
+		{name: "a folder elsewhere, in another case", profile: profile, path: otherCase(filepath.Join(outside, "loadline")), want: false},
+		{name: "the folder that holds the profile, in another case", profile: profile, path: otherCase(root), want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.short && short == profile {
+				t.Skipf("the volume of %s makes no 8.3 short names (fsutil 8dot3name query shows it)", root)
+			}
+			profileAt(t, tt.profile)
+
+			got, err := InProfile(tt.path)
+
+			if err != nil || got != tt.want {
+				t.Errorf("InProfile(%s), with the profile at %s = %t, %v; want %t", tt.path, tt.profile, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// A file ID is the volume's serial number and the file's number on it. A
+// copy of a volume made sector for sector, as a disk cloned to a new one and
+// left attached is, has the same serial number and the same numbers, so the
+// copy of the profile's folder there has the profile's ID. It is another
+// folder all the same, at another path, and nothing in it is in the profile.
+// No such volume is at hand, so the read of the ID stands in for one: the
+// copy's folder answers with the ID of the profile's.
+func TestInProfile_TellsTheProfileFromItsCopyOnAClonedVolume(t *testing.T) {
+	root := t.TempDir()
+	profile := filepath.Join(root, "disk", "Users", "me")
+	copied := filepath.Join(root, "clone", "Users", "me")
+	data := filepath.Join(copied, "AppData", "Local", "loadline")
+	for _, dir := range []string{profile, data} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profileFolder, err := Inspect(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldCopy := mustFinalPath(t, copied)
+	asked := false
+	previous := readFileID
+	readFileID = func(handle windows.Handle) (FileID, error) {
+		if name, err := finalPathName(handle, volumeNameDOS); err == nil && dosPath(name) == heldCopy {
+			asked = true
+			return profileFolder.ID, nil
+		}
+		return previous(handle)
+	}
+	t.Cleanup(func() { readFileID = previous })
+	profileAt(t, profile)
+
+	in, err := InProfile(data)
+
+	if err != nil || in {
+		t.Errorf("InProfile(%s), with the profile at %s = %t, %v; want false: it is in a copy of the profile, at another path", data, profile, in, err)
+	}
+	if entry, err := Inspect(copied); err != nil || entry.ID != profileFolder.ID || !asked {
+		t.Errorf("the copy of the profile reads with ID %v (%v), the profile's is %v, so the test proves nothing", entry.ID, err, profileFolder.ID)
 	}
 }
 
