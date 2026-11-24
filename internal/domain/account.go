@@ -66,8 +66,9 @@ type Account struct {
 }
 
 // APIRequest is one model call, as an OpenTelemetry api_request log event
-// reports it. It carries token counts and cost, never content.
+// reports it. It carries token counts, cost and duration, never content.
 type APIRequest struct {
+	// At is when the call ended, which is when Claude Code logs it.
 	At      time.Time
 	Session SessionID
 	Email   string
@@ -75,4 +76,7 @@ type APIRequest struct {
 
 	Input, Output, CacheRead, CacheWrite int64
 	CostUSD                              float64
+	// DurationMS is how long the call took, zero when unknown, so the call
+	// began DurationMS before At.
+	DurationMS int64
 }

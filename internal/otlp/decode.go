@@ -38,6 +38,7 @@ const (
 	attrCacheWrite    = "cache_creation_tokens"
 	attrCostUSD       = "cost_usd"
 	attrCostUSDMicros = "cost_usd_micros"
+	attrDurationMS    = "duration_ms"
 )
 
 const microsPerUnit = 1e6
@@ -214,8 +215,8 @@ func (v anyValue) float() (float64, bool) {
 
 // inheritable reports whether a record may take the attribute from its
 // resource. A resource describes the process that emits events, not any one
-// event, so the attributes that name an event and say when it happened are
-// the record's own.
+// event, so the attributes that name an event and say when it happened, its
+// time and its duration, are the record's own.
 func inheritable(key string) bool {
 	switch key {
 	case attrSession, attrEmail, attrModel, attrInput, attrOutput, attrCacheRead, attrCacheWrite,
@@ -299,6 +300,7 @@ func (rec logRecord) apiRequest(inherited map[string]anyValue) (domain.APIReques
 		CacheRead:  attrs.count(attrCacheRead),
 		CacheWrite: attrs.count(attrCacheWrite),
 		CostUSD:    cost(attrs),
+		DurationMS: attrs.count(attrDurationMS),
 	}, true
 }
 
