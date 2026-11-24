@@ -6,6 +6,8 @@ All notable changes to Loadline are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-24
+
 ### Added
 
 - `loadline stop [--port N]`, which asks the running server to stop and waits until its process
@@ -108,6 +110,11 @@ All notable changes to Loadline are recorded here. The format follows
   LOADLINE_HOME must be a folder of Loadline's own, since Loadline makes it, and all it holds,
   private; set LOADLINE_HOME to a new folder", or the same sentence naming `browser`. It mentions
   `LOADLINE_HOME` even when you never set it and use the default data directory.
+- The dashboard's own profile was checked on Windows with Brave and Edge app windows that Loadline
+  started against its demo server: no extension ran but the browser's built-in components, no
+  first-run page opened (Brave shows its own analytics notice inside the window), each
+  `loadline open` opened one window, and closing the last window ended the browser. Chrome is
+  covered only by tests of the arguments Loadline starts it with.
 - On Linux and macOS this release is verified in CI only.
 - For a patch release, this one adds a command (`loadline stop`), a route (`POST /api/stop`) and a
   config key (`browserProfile`). Each is kept small, and the one change to what you see by
@@ -153,5 +160,6 @@ reports from those systems are welcome.
 - Release builds for Windows, macOS and Linux on amd64 and arm64, with checksums and build
   provenance attestations.
 
-[Unreleased]: https://github.com/dsj7419/loadline/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dsj7419/loadline/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dsj7419/loadline/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dsj7419/loadline/releases/tag/v0.1.0
