@@ -52,6 +52,11 @@ type fakeLoadline struct {
 	// keepsProcess, when set, stops the fake answering once it has answered a
 	// stop request, but leaves its process running.
 	keepsProcess bool
+	// successor, when set, is the version of a server that has the port the
+	// moment the fake has answered a stop request, as one a status line
+	// starts may: the fake answers health as that server from then on, while
+	// its own process ends.
+	successor string
 
 	port     int
 	server   *http.Server
@@ -82,8 +87,12 @@ func newFakeLoadline(t *testing.T, edit ...func(*fakeLoadline)) *fakeLoadline {
 func (f *fakeLoadline) serve(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		version := f.version
+		if f.successor != "" && f.stopsAsked() > 0 {
+			version = f.successor
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, f.version)
+		_, _ = fmt.Fprintf(w, `{"app":"loadline","version":%q}`, version)
 	})
 	mux.HandleFunc("POST /api/stop", f.handleStop)
 	f.server = &http.Server{Handler: mux, ReadHeaderTimeout: hangBound}
@@ -108,6 +117,13 @@ func (f *fakeLoadline) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = fmt.Fprint(w, answer)
 	if f.lingers {
+		return
+	}
+	if f.successor != "" {
+		go func() {
+			f.process.End()
+			close(f.gone)
+		}()
 		return
 	}
 	// Once the answer is out, as a real server shuts down: its listener
@@ -277,10 +293,38 @@ func TestStopServer_Outcomes(t *testing.T) {
 		}
 	})
 
-	t.Run("a server that answers on though its process exited", func(t *testing.T) {
+	// Once the process the answer named has exited, the server is gone, its
+	// history closed and its lock let go of: what answers on the port is
+	// another server, as one a status line starts the moment the port is
+	// free.
+	t.Run("a port that answers on though the server's process exited", func(t *testing.T) {
 		gone := exetest.Start(t)
 		gone.End()
 		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.process, f.lingers = gone, true })
+
+		if got, err := ask(t, fake.client(token)); got != "stopped" || err != nil {
+			t.Errorf("StopServer = %s, %v; want stopped", got, err)
+		}
+	})
+
+	// The next server has the port before the asked one is ever seen
+	// silent. It is not asked to stop in its turn.
+	t.Run("the next server has the port at once", func(t *testing.T) {
+		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.successor = "0.1.1-next" })
+
+		if got, err := ask(t, fake.client(token)); got != "stopped" || err != nil {
+			t.Errorf("StopServer = %s, %v; want stopped", got, err)
+		}
+		if n := fake.stopsAsked(); n != 1 {
+			t.Errorf("%d stop requests reached the port, want the one: the next server was asked to stop too", n)
+		}
+	})
+
+	// A process that cannot be watched is gone, as far as can be told, only
+	// once nothing answers.
+	t.Run("a server whose process cannot be watched answers past the wait", func(t *testing.T) {
+		cli.CannotWatchProcesses(t)
+		fake := newFakeLoadline(t, ours(token), func(f *fakeLoadline) { f.lingers = true })
 		clock := clocktest.New(t0)
 		done := make(chan string, 1)
 		go func() {
@@ -545,162 +589,68 @@ func TestRunStop_NeverCreatesAToken(t *testing.T) {
 	})
 }
 
-// psLike reports whether value matches pattern as PowerShell's -like does,
-// ignoring case: * matches any run, ? one character, [...] one of a set,
-// and a backtick takes the character after it as it is.
-func psLike(value, pattern string) bool {
-	var expr strings.Builder
-	expr.WriteString("(?is)^")
-	runes := []rune(pattern)
-	for i := 0; i < len(runes); i++ {
-		switch r := runes[i]; r {
-		case '`':
-			if i+1 < len(runes) {
-				i++
-				expr.WriteString(regexp.QuoteMeta(string(runes[i])))
-			}
-		case '*':
-			expr.WriteString(".*")
-		case '?':
-			expr.WriteString(".")
-		case '[':
-			end := slices.Index(runes[i:], ']')
-			if end < 0 {
-				return false
-			}
-			expr.WriteString("[" + regexp.QuoteMeta(string(runes[i+1:i+end])) + "]")
-			i += end
-		default:
-			expr.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	expr.WriteString("$")
-	return regexp.MustCompile(expr.String()).MatchString(value)
-}
-
-// psSingleQuotes are the characters PowerShell reads as a single quote.
-const psSingleQuotes = "'‘’‚‛"
-
-// likePatterns returns the -like patterns of the PowerShell line in text,
-// each read as PowerShell reads a single-quoted string: it ends at any of
-// its five single quotes, and two of them in a row stand for the second.
-func likePatterns(t *testing.T, text string) []string {
-	t.Helper()
-	var patterns []string
-	for rest := text; ; {
-		_, after, found := strings.Cut(rest, "-like ")
-		if !found {
-			return patterns
-		}
-		runes := []rune(after)
-		if len(runes) == 0 || !strings.ContainsRune(psSingleQuotes, runes[0]) {
-			t.Fatalf("-like takes no single-quoted string in %q", text)
-		}
-		var pattern []rune
-		i := 1
-		for ; i < len(runes); i++ {
-			if strings.ContainsRune(psSingleQuotes, runes[i]) {
-				if i+1 >= len(runes) || !strings.ContainsRune(psSingleQuotes, runes[i+1]) {
-					break
-				}
-				i++
-			}
-			pattern = append(pattern, runes[i])
-		}
-		if i >= len(runes) {
-			t.Fatalf("a -like string is left open in %q", text)
-		}
-		patterns = append(patterns, string(pattern))
-		rest = string(runes[i+1:])
-	}
-}
-
-// matchesAny reports whether value matches one of patterns, as match does.
-func matchesAny(value string, patterns []string, match func(value, pattern string) bool) bool {
-	return slices.ContainsFunc(patterns, func(p string) bool { return match(value, p) })
-}
-
 // A server from 0.1.0 has no stop route, and a server Windows detached gets
 // no signal, so the instruction gives the line that ends it, and nothing
-// else. On Windows that is the process listening on the port, as long as it
-// runs from the folder install put the binary in, under the name it started
-// with or one install moved it aside to.
+// else, wherever it was started from: 0.1.0's open and serve run the binary
+// the user ran, not the one install put in bin. On Windows that is the
+// process listening on the port, when its name is Loadline's; elsewhere
+// every loadline serve of the user's, as the instruction says. Either line
+// says what it did.
 func TestOldServerInstruction(t *testing.T) {
-	odd := []string{
-		`plain`,
-		`with space`,
-		`O'Neil`,
-		`O’Neil`,
-		`a&b`,
-		`(x86)`,
-		`[brackets]`,
-		`c++`,
-		`Ünïcödé 数据`,
-		"back`tick",
-	}
-
 	t.Run("windows", func(t *testing.T) {
-		for _, name := range odd {
-			bin := `C:\Users\` + name + `\AppData\Local\loadline\bin`
-			text := cli.OldServerInstruction("windows", bin, 8289)
+		text := cli.OldServerInstruction("windows", 8289)
 
-			patterns := likePatterns(t, text)
-			if len(patterns) == 0 || !strings.Contains(text, "Get-NetTCPConnection -State Listen -LocalPort 8289") ||
-				!strings.Contains(text, "| Stop-Process") || !strings.Contains(text, "loadline open") {
-				t.Errorf("%s: instruction %q, want a PowerShell line that ends the process on port 8289, and loadline open", name, text)
-				continue
-			}
-			for _, image := range []string{bin + `\loadline.exe`, bin + `\loadline.exe.old`, bin + `\loadline.exe.old-27`} {
-				if !matchesAny(image, patterns, psLike) {
-					t.Errorf("%s: patterns %q miss %s", name, patterns, image)
-				}
-			}
-			for _, image := range []string{`C:\elsewhere\bin\loadline.exe`, bin + `x\loadline.exe`, bin + `\other.exe`} {
-				if matchesAny(image, patterns, psLike) {
-					t.Errorf("%s: patterns %q match %s", name, patterns, image)
-				}
+		for _, want := range []string{
+			"End it once, in PowerShell:\n",
+			"Get-NetTCPConnection -State Listen -LocalPort 8289 ",
+			"Where-Object { $_.ProcessName -like 'loadline*' }",
+			"| Stop-Process -PassThru",
+			"'Nothing was ended: no Loadline server listens on port 8289.'",
+			"Then start the new one:\n  loadline open\n",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("instruction %q lacks %q", text, want)
 			}
 		}
 	})
 
 	t.Run("unix", func(t *testing.T) {
-		for _, name := range odd {
-			bin := "/home/" + name + "/.local/state/loadline/bin"
-			exe := bin + "/loadline"
-			text := cli.OldServerInstruction("linux", bin, 8289)
+		text := cli.OldServerInstruction("linux", 8289)
 
-			if !strings.Contains(text, "loadline open") || !strings.Contains(text, "8289") || !strings.Contains(text, "pkill -f") {
-				t.Errorf("%s: instruction %q, want the port, pkill -f and loadline open", name, text)
-				continue
+		for _, want := range []string{"port 8289", "this ends every loadline serve that runs as you", "Nothing was ended", "loadline open"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("instruction %q lacks %q", text, want)
 			}
-			if strings.ContainsRune(name, '\'') {
-				// No single-quoted line can hold it as written, so the tool
-				// and the binary's path are named instead.
-				if !strings.Contains(text, exe) || strings.Contains(text, "pkill -f '") {
-					t.Errorf("%s: instruction %q, want pkill -f and the path %s, with no quoted line", name, text, exe)
-				}
-				continue
-			}
-			m := regexp.MustCompile(`pkill -f '([^']*)'`).FindStringSubmatch(text)
-			if m == nil {
-				t.Errorf("%s: instruction %q, want a pkill -f line", name, text)
-				continue
-			}
-			pattern, err := regexp.Compile(m[1])
-			if err != nil {
-				t.Errorf("%s: pattern %q does not compile: %v", name, m[1], err)
-				continue
-			}
-			if !pattern.MatchString(exe + " serve --no-open") {
-				t.Errorf("%s: pattern %q misses %s serve", name, m[1], exe)
-			}
+		}
+		// Run as root, pkill would end every user's server: the line keeps
+		// to the processes of the user who runs it, as it says.
+		m := regexp.MustCompile(`pkill -u "\$\(id -u\)" -f '([^']*)'`).FindStringSubmatch(text)
+		if m == nil {
+			t.Fatalf("instruction %q, want a pkill line kept to the user's own processes", text)
+		}
+		pattern, err := regexp.Compile(m[1])
+		if err != nil {
+			t.Fatalf("pattern %q does not compile: %v", m[1], err)
+		}
+		for _, folder := range []string{`plain`, `with space`, `O'Neil`, `[brackets]`, `c++`, `Ünïcödé 数据`, "back`tick"} {
 			for _, command := range []string{
-				exe + " install", "/usr/bin/env " + exe + " serve", bin + "x/loadline serve",
-				strings.Replace(exe, ".local", "xlocal", 1) + " serve",
+				"/home/" + folder + "/.local/state/loadline/bin/loadline serve",
+				"/home/" + folder + "/Downloads/loadline_0.1.0/loadline serve --no-open",
 			} {
-				if pattern.MatchString(command) {
-					t.Errorf("%s: pattern %q matches %s", name, m[1], command)
+				if !pattern.MatchString(command) {
+					t.Errorf("pattern %q misses %s", m[1], command)
 				}
+			}
+		}
+		if !pattern.MatchString("loadline serve --port 9000") {
+			t.Errorf("pattern %q misses a loadline serve started from PATH", m[1])
+		}
+		for _, command := range []string{
+			"/home/u/bin/loadline install", "/home/u/bin/loadline servers", "/home/u/bin/myloadline serve",
+			"grep loadline serve",
+		} {
+			if pattern.MatchString(command) {
+				t.Errorf("pattern %q matches %s", m[1], command)
 			}
 		}
 	})

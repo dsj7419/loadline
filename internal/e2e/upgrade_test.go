@@ -65,6 +65,8 @@ func TestUpgrade_InstallHandsARunningServerOverToTheNewBinary(t *testing.T) {
 	s := newSandbox(t)
 	oldExe := filepath.Join(s.tree, "build", "old", "loadline"+exeSuffix())
 	newExe := filepath.Join(s.tree, "build", "new", "loadline"+exeSuffix())
+	// Before the first check, which refuses every step until it is there.
+	s.writeConfig(t)
 
 	// 1. The stand-in claude, and the binary twice, each trusting the tree
 	// as a folder nobody else can move.
@@ -75,8 +77,7 @@ func TestUpgrade_InstallHandsARunningServerOverToTheNewBinary(t *testing.T) {
 			fmt.Sprintf("-X %s/internal/cli.Version=%s -X '%s/internal/cli.trustFrom=%s'", modulePath, version, modulePath, s.tree))
 	}
 
-	// 2. The tree: the config, and the session the stand-in lists as live.
-	s.writeConfig(t)
+	// 2. The tree: the session the stand-in lists as live.
 	writeAgents(t, s)
 	s.check(t)
 

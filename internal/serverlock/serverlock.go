@@ -10,11 +10,17 @@
 // The lock is the system's, on an open file, so it goes with the process:
 // a server that crashes or is ended leaves nothing behind for the next to
 // wait out.
+//
+// The server that holds the lock records its port and process in the file,
+// so that a server that cannot start, or install, can name it: it may serve
+// another port than the one now configured.
 package serverlock
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -86,15 +92,76 @@ func pause(after timer.AfterFunc, d time.Duration, waited <-chan struct{}) bool 
 	}
 }
 
-// Release lets go of the lock and closes its file, which stays in place for
-// the next server.
+// Release clears the holder's record, lets go of the lock and closes its
+// file, which stays in place for the next server.
 func (l *Lock) Release() error {
-	return errors.Join(unlock(l.file), l.file.Close())
+	return errors.Join(l.write(nil), unlock(l.file), l.file.Close())
 }
 
+// Holder is what the server that holds the lock records of itself.
+type Holder struct {
+	// Port is the port it serves.
+	Port int `json:"port"`
+	// PID is its process.
+	PID int `json:"pid"`
+	// PortGiven says it was given its port, as serve --port gives it,
+	// rather than taking the configured one. A record that does not say
+	// names a server on its configured port.
+	PortGiven bool `json:"portGiven,omitempty"`
+}
+
+// maxRecord is far more than a record takes.
+const maxRecord = 256
+
+// Record writes h into the lock's file, in place of what it held, for
+// ReadHolder to read while the lock is held.
+func (l *Lock) Record(h Holder) error {
+	record, err := json.Marshal(h)
+	if err != nil {
+		return fmt.Errorf("encode the holder of %s: %w", l.file.Name(), err)
+	}
+	return l.write(record)
+}
+
+// write replaces what the lock's file holds with record. One who reads the
+// file meanwhile may find it empty or part written.
+func (l *Lock) write(record []byte) error {
+	if err := l.file.Truncate(0); err != nil {
+		return fmt.Errorf("clear %s: %w", l.file.Name(), err)
+	}
+	if _, err := l.file.WriteAt(record, 0); err != nil {
+		return fmt.Errorf("write %s: %w", l.file.Name(), err)
+	}
+	return nil
+}
+
+// ReadHolder returns what the server that holds the lock on the file at
+// path recorded of itself, or false when the file holds no whole record:
+// no server holds the lock, or the one that does has yet to write it, or
+// came before servers recorded themselves.
+func ReadHolder(path string) (Holder, bool) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return Holder{}, false
+	}
+	defer func() { _ = file.Close() }()
+	record, err := io.ReadAll(io.LimitReader(file, maxRecord+1))
+	if err != nil || len(record) > maxRecord {
+		return Holder{}, false
+	}
+	var h Holder
+	if err := json.Unmarshal(record, &h); err != nil || h.Port < 1 || h.Port > maxPort || h.PID < 1 {
+		return Holder{}, false
+	}
+	return h, true
+}
+
+// maxPort is the highest TCP port.
+const maxPort = 1<<16 - 1
+
 // open opens the file at path, creating it and its folder private to the
-// user. The file holds nothing, but whoever could open it could hold the
-// lock, and keep every server from starting.
+// user. Whoever could open it could hold the lock, and keep every server
+// from starting.
 func open(path string) (*os.File, error) {
 	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create the folder of %s: %w", path, err)

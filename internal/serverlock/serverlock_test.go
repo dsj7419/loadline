@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,10 +41,18 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-// hold takes the lock at path, creates ready, and waits to be ended.
+// heldPort is the port the holder process records.
+const heldPort = 8289
+
+// hold takes the lock at path, records itself as serving heldPort, creates
+// ready, and waits to be ended.
 func hold(path, ready string) int {
 	lock, err := serverlock.Acquire(path, 0, nil)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := lock.Record(serverlock.Holder{Port: heldPort, PID: os.Getpid()}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -237,22 +246,23 @@ func TestAcquire_GivesUpWithErrHeldAfterWait(t *testing.T) {
 	}
 }
 
-// A server that crashes, or is ended, leaves no lock behind for the next
-// to wait out: the system lets go of a process's lock when it ends.
-func TestAcquire_TheSystemReleasesTheLockOfAProcessThatEnds(t *testing.T) {
-	path := lockPath(t)
+// startHolder starts a process that takes the lock at path and records
+// itself, and returns once it has. The test's end ends it, as end does
+// sooner.
+func startHolder(t *testing.T, path string) (holder *exec.Cmd, end func()) {
+	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	holder := exec.CommandContext(t.Context(), self, "-test.run=^$") //nolint:gosec // G204: the test binary itself
+	holder = exec.CommandContext(t.Context(), self, "-test.run=^$") //nolint:gosec // G204: the test binary itself
 	holder.Env = append(os.Environ(), holdEnv+"="+path, readyEnv+"="+ready)
 	if err := holder.Start(); err != nil {
 		t.Fatalf("start the holder: %v", err)
 	}
 	ended := false
-	end := func() {
+	end = func() {
 		if !ended {
 			ended = true
 			_ = holder.Process.Kill()
@@ -262,12 +272,19 @@ func TestAcquire_TheSystemReleasesTheLockOfAProcessThatEnds(t *testing.T) {
 	t.Cleanup(end)
 	for deadline := time.Now().Add(hangBound); ; time.Sleep(5 * time.Millisecond) {
 		if _, err := os.Stat(ready); err == nil {
-			break
+			return holder, end
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the holder did not take the lock within %v", hangBound)
 		}
 	}
+}
+
+// A server that crashes, or is ended, leaves no lock behind for the next
+// to wait out: the system lets go of a process's lock when it ends.
+func TestAcquire_TheSystemReleasesTheLockOfAProcessThatEnds(t *testing.T) {
+	path := lockPath(t)
+	_, end := startHolder(t, path)
 	if _, err := serverlock.Acquire(path, 0, nil); !errors.Is(err, serverlock.ErrHeld) {
 		t.Fatalf("Acquire while another process holds the lock = %v, want ErrHeld", err)
 	}
@@ -279,4 +296,106 @@ func TestAcquire_TheSystemReleasesTheLockOfAProcessThatEnds(t *testing.T) {
 		t.Fatalf("Acquire once the holder had ended = %v, want the lock", err)
 	}
 	release(t, lock)
+}
+
+// A server that cannot start names the one that holds the lock, as that
+// one recorded itself in the lock's file. The record must be readable while
+// the lock is held, from another process, which is when it is read.
+func TestReadHolder_ReadsTheRecordOfAHolderInAnotherProcess(t *testing.T) {
+	path := lockPath(t)
+	holder, _ := startHolder(t, path)
+
+	got, ok := serverlock.ReadHolder(path)
+
+	if want := (serverlock.Holder{Port: heldPort, PID: holder.Process.Pid}); !ok || got != want {
+		t.Errorf("ReadHolder while another process holds the lock = %+v, %v; want %+v", got, ok, want)
+	}
+}
+
+// Each record replaces what the file held, and reads back whole while the
+// lock is held.
+func TestLock_RecordReplacesWhatTheFileHeld(t *testing.T) {
+	path := lockPath(t)
+	lock := acquire(t, path)
+	defer release(t, lock)
+	for _, want := range []serverlock.Holder{{Port: 61234, PID: 42, PortGiven: true}, {Port: 1024, PID: 7}} {
+		if err := lock.Record(want); err != nil {
+			t.Fatalf("Record(%+v): %v", want, err)
+		}
+
+		if got, ok := serverlock.ReadHolder(path); !ok || got != want {
+			t.Errorf("ReadHolder after Record(%+v) = %+v, %v", want, got, ok)
+		}
+	}
+}
+
+// A record written before holders said whether they were given their port
+// names one that serves the port it was configured with.
+func TestReadHolder_ARecordThatDoesNotSayReadsAsTheConfiguredPort(t *testing.T) {
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"port":8289,"pid":4242}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := serverlock.ReadHolder(path); !ok || got != (serverlock.Holder{Port: 8289, PID: 4242}) {
+		t.Errorf("ReadHolder = %+v, %v; want port 8289, process 4242, not given its port", got, ok)
+	}
+}
+
+// Once let go of, the lock's file names no holder: a record left there
+// would name a server that is gone.
+func TestLock_ReleaseClearsTheRecord(t *testing.T) {
+	path := lockPath(t)
+	lock := acquire(t, path)
+	if err := lock.Record(serverlock.Holder{Port: 61234, PID: 42}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	release(t, lock)
+
+	if got, ok := serverlock.ReadHolder(path); ok {
+		t.Errorf("ReadHolder once the lock was let go of = %+v, want no holder", got)
+	}
+}
+
+// The file is read while its holder may be writing it, and a server from
+// before holders recorded themselves leaves it empty: whatever it holds
+// that is not a whole record names no holder.
+func TestReadHolder_NamesNoHolderFromAFileWithoutARecord(t *testing.T) {
+	for name, contents := range map[string]string{
+		"an empty file":            "",
+		"a record half written":    `{"port":8289,"pi`,
+		"no port":                  `{"pid":4242}`,
+		"no process":               `{"port":8289}`,
+		"a port out of range":      `{"port":65536,"pid":4242}`,
+		"a port of zero":           `{"port":0,"pid":4242}`,
+		"a process below one":      `{"port":8289,"pid":-1}`,
+		"a port that is no number": `{"port":"8289","pid":4242}`,
+		"words":                    "8289 4242",
+		"more after the record":    `{"port":8289,"pid":4242}{"port":8290}`,
+		"a record far too long":    `{"port":8289,"pid":4242,"pad":"` + strings.Repeat("x", 4096) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := lockPath(t)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if got, ok := serverlock.ReadHolder(path); ok {
+				t.Errorf("ReadHolder of %q = %+v, want no holder", contents, got)
+			}
+		})
+	}
+
+	t.Run("no file", func(t *testing.T) {
+		if got, ok := serverlock.ReadHolder(lockPath(t)); ok {
+			t.Errorf("ReadHolder with no file = %+v, want no holder", got)
+		}
+	})
 }

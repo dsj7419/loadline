@@ -266,14 +266,19 @@ func TestClient_SendReadsLittleOfTheAnswer(t *testing.T) {
 	}
 }
 
+// Healthy and ServerVersion take the same answers for a Loadline server's,
+// and ServerVersion gives the version that answer names.
 func TestClient_Healthy(t *testing.T) {
 	tests := []struct {
-		name   string
-		status int
-		body   string
-		want   bool
+		name    string
+		status  int
+		body    string
+		want    bool
+		version string
 	}{
-		{name: "loadline", status: http.StatusOK, body: `{"app":"loadline","version":"1.2.3"}`, want: true},
+		{name: "loadline", status: http.StatusOK, body: `{"app":"loadline","version":"1.2.3"}`, want: true, version: "1.2.3"},
+		{name: "loadline naming no version", status: http.StatusOK, body: `{"app":"loadline"}`, want: true},
+		{name: "a version that is no string", status: http.StatusOK, body: `{"app":"loadline","version":7}`},
 		{name: "another app", status: http.StatusOK, body: `{"app":"other"}`},
 		{name: "no app", status: http.StatusOK, body: `{}`},
 		{name: "not JSON", status: http.StatusOK, body: `loadline`},
@@ -304,10 +309,13 @@ func TestClient_Healthy(t *testing.T) {
 			if got := client.Healthy(t.Context()); got != tt.want {
 				t.Errorf("Healthy() = %v, want %v", got, tt.want)
 			}
+			if version, ok := client.ServerVersion(t.Context()); ok != tt.want || version != tt.version {
+				t.Errorf("ServerVersion() = %q, %v; want %q, %v", version, ok, tt.version, tt.want)
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(paths) != 1 || paths[0] != "GET /healthz" {
-				t.Errorf("requests = %v, want one GET /healthz", paths)
+			if len(paths) != 2 || paths[0] != "GET /healthz" || paths[1] != "GET /healthz" {
+				t.Errorf("requests = %v, want a GET /healthz each", paths)
 			}
 		})
 	}

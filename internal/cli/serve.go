@@ -129,10 +129,6 @@ func RunServe(ctx context.Context, args []string, stdio IO) int {
 	return Serve(ctx, ServeOptions{Paths: paths, Home: home, Port: *port, NoOpen: *noOpen, Demo: *demoMode}, stdio)
 }
 
-// errHistoryHeld is why a server gives up starting when the one before it
-// still has the history open once lockWait has passed.
-var errHistoryHeld = errors.New("another server still holds the data directory")
-
 // Serve runs the server until ctx ends, it is asked to stop or no session
 // has been live for the configured idle time, then shuts it down gracefully
 // and returns 0. It returns 1 when it cannot start, and 0 without a word
@@ -177,12 +173,13 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		return exitOK
 	}
 	// lockless is why the history goes without its lock, on a file system
-	// that takes none.
-	var lockless error
+	// that takes none, and unrecorded why the lock's file does not name
+	// this server.
+	var lockless, unrecorded error
 	if !o.Demo {
 		// A demo holds no history. Released last, once the log has closed
 		// too, so that the next server opens neither while this one has it.
-		lock, err := lockHistory(o)
+		lock, err := lockHistory(o, port)
 		if lock != nil {
 			defer func() { _ = lock.Release() }()
 		}
@@ -198,6 +195,8 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		case err != nil:
 			_ = listener.Close()
 			return failToStart(err)
+		default:
+			unrecorded = lock.Record(serverlock.Holder{Port: port, PID: os.Getpid(), PortGiven: o.Port != 0})
 		}
 	}
 	// Opened only once the port and the history are ours, so that one
@@ -217,6 +216,10 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 		log.Warn("the data directory's file system takes no lock: a server that starts as another stops "+
 			"may read the history before that one has written all of it", "err", lockless)
 	}
+	if unrecorded != nil {
+		log.Warn("could not record this server in the lock's file: a server that cannot start beside it "+
+			"cannot name it, and install cannot find it on another port", "err", unrecorded)
+	}
 	if !o.Demo {
 		// A demo serves a made-up machine and leaves the real one's files
 		// alone.
@@ -231,17 +234,39 @@ func Serve(ctx context.Context, o ServeOptions, stdio IO) int {
 var acquireLock = serverlock.Acquire
 
 // lockHistory takes the lock that keeps the history to one server, waiting
-// up to lockWait for the server before to let go of it, on o's timers.
-func lockHistory(o ServeOptions) (*serverlock.Lock, error) {
+// up to lockWait for the server before to let go of it, on o's timers. A
+// lock still held then is named for a server that was to serve port.
+func lockHistory(o ServeOptions, port int) (*serverlock.Lock, error) {
 	var after timer.AfterFunc
 	if o.Ticker != nil {
 		after = o.Ticker.AfterFunc
 	}
 	lock, err := acquireLock(o.Paths.ServerLock, lockWait, after)
 	if errors.Is(err, serverlock.ErrHeld) {
-		return nil, errHistoryHeld
+		return nil, historyHeldError(o.Paths.ServerLock, port)
 	}
 	return lock, err
+}
+
+// historyHeldError says which server holds the history's lock at lockPath,
+// as it recorded itself, and what ends it, for a server that was to serve
+// port. One that serves another port, as after the port changed in the
+// config, holds it for as long as a session keeps it busy. One recorded on
+// port no longer answers there, since this server has the port: it is
+// stopping.
+func historyHeldError(lockPath string, port int) error {
+	holder, known := serverlock.ReadHolder(lockPath)
+	switch {
+	case !known:
+		return errors.New("another Loadline server holds the data directory; if you changed port in the config, " +
+			"or started a server with serve --port, stop that one with loadline stop --port <its port>")
+	case holder.Port == port:
+		return fmt.Errorf("the Loadline server stopping on port %d (process %d) still holds the data directory; "+
+			"try again once it has exited", holder.Port, holder.PID)
+	default:
+		return fmt.Errorf("the Loadline server on port %d (process %d) holds the data directory; stop it with loadline stop --port %d",
+			holder.Port, holder.PID, holder.Port)
+	}
 }
 
 // removeAsideAndLog removes the binaries earlier upgrades moved aside in
@@ -285,8 +310,8 @@ func listenAddress(port int) string {
 // that a loadline already serves, which is no failure: two sessions that
 // start together each start a server, and the one that loses the race
 // leaves quietly. So does one that finds a server that holds the port and
-// the history's lock, but answers nothing, as it starts or stops. A demo is
-// not one of them, and says why it cannot start.
+// the history's lock, but answers nothing, as it starts, stops or is too
+// busy to. A demo is not one of them, and says why it cannot start.
 func listenRefusal(ctx context.Context, port int, o ServeOptions, err error) error {
 	switch {
 	case isAccessDenied(err):
@@ -295,11 +320,23 @@ func listenRefusal(ctx context.Context, port int, o ServeOptions, err error) err
 		return fmt.Errorf("listen on port %d: %w", port, err)
 	case o.Demo:
 		return fmt.Errorf("port %d is in use (a Loadline server may be running); pass --port to run the demo elsewhere", port)
-	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx), historyHeld(o.Paths.ServerLock):
+	case (forward.Client{BaseURL: forward.LoopbackURL(port)}).Healthy(ctx), historyHeldFor(o.Paths.ServerLock, port):
 		return nil
 	default:
 		return fmt.Errorf("port %d is in use by another program", port)
 	}
+}
+
+// historyHeldFor reports whether another server holds the history's lock at
+// lockPath, and may serve port: the lock is one per data directory, whatever
+// port its holder serves. A holder that has not recorded its port, as one
+// about to or one from before servers did, may serve any.
+func historyHeldFor(lockPath string, port int) bool {
+	if !historyHeld(lockPath) {
+		return false
+	}
+	holder, known := serverlock.ReadHolder(lockPath)
+	return !known || holder.Port == port
 }
 
 // historyHeld reports whether another server holds the history's lock at
