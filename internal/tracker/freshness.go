@@ -23,19 +23,20 @@ import (
 // process's API time, since such a line came with the responses that grew
 // it. A line whose API time grew by several calls is dated too early, since
 // it reports what the last of them heard: calls made one after another date
-// it at the first one's start, and calls made side by side, as subagents'
-// are, earlier still, as they grow the API time by more than the time they
-// took together. That errs toward the readings already held. A reading the
-// process heard after another's, such as a reset's, then waits for the
-// calls' records, which date the process's first line to grow once they have
-// come at the latest of the calls' starts, or else for a line whose own
-// growth dates it after the other reading. A line is never dated before the
-// response its process last heard (see date). The line's API time
-// is the signal rather than its cost: it grows by a whole number of
-// milliseconds with every response, whatever the call cost, where the cost
-// stays put for a call priced at nothing. Until either is seen, and so for
-// every session after a restart, as what the tracker knows of responses is
-// kept in memory only, no response is known.
+// it between the first one's start and the last's, at the first one's start
+// when they ran back to back and the line came as the last ended, and calls
+// made side by side, as subagents' are, earlier still, as they grow the API
+// time by more than the time they took together. That errs toward the
+// readings already held. A reading the process heard after another's, such
+// as a reset's, then waits for the calls' records, which date the process's
+// first line to grow once they have come at the latest of the calls' starts,
+// or else for a line whose own growth dates it after the other reading. A
+// line is never dated before the response its process last heard (see date).
+// The line's API time is the signal rather than its cost: it grows by a
+// whole number of milliseconds with every response, whatever the call cost,
+// where the cost stays put for a call priced at nothing. Until either is
+// seen, and so for every session after a restart, as what the tracker knows
+// of responses is kept in memory only, no response is known.
 //
 // One session ID can belong to two live processes at once, as Claude Code
 // keeps it when a session is resumed while its first terminal is still open,

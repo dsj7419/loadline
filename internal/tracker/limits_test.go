@@ -416,14 +416,15 @@ func TestTracker_ALineIsNeverDatedBeforeItsProcesssLastResponse(t *testing.T) {
 
 // A process makes three 20-second calls one after another, from 65 s, and its
 // line at 126 s counts them all: its API time grew by a minute, which dates
-// the line at the first call's start. The owner's mid-week reset, which kept
-// its reset time, came at 99 s, after another session's line dated 98 s held
-// 100%, so only the last call, begun at 105 s, heard it, and the line reports
-// that call's 0%. The calls' records date the process's first line to grow
-// once they have come at the latest of their starts, and the reset shows
-// there: at that very line when they come before it, and otherwise at the
-// next, even one whose own growth, from subagents' calls side by side, dates
-// it before the other session's reading.
+// the line at 66 s, between the first call's start and the last's, and next
+// to the first's, as the calls ran back to back. The owner's mid-week reset,
+// which kept its reset time, came at 99 s, after another session's line dated
+// 98 s held 100%, so only the last call, begun at 105 s, heard it, and the
+// line reports that call's 0%. The calls' records date the process's first
+// line to grow once they have come at the latest of their starts, and the
+// reset shows there: at that very line when they come before it, and
+// otherwise at the next, even one whose own growth, from subagents' calls
+// side by side, dates it before the other session's reading.
 func TestTracker_AResetTheLastOfSeveralCallsHeardShowsOnceTheirRecordsCome(t *testing.T) {
 	records := func(h *harness) {
 		for _, end := range []int{85, 105, 125} {
