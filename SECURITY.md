@@ -58,6 +58,16 @@ What it defends against:
   nothing in it. Only the files that Windows Explorer and the macOS Finder leave in a folder
   (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged
   by their owner as Loadline's own files are.
+  The dashboard's browser profile, `browser` in the data directory, holds the `loadline_ui` cookie
+  and whatever else the browser stores. Loadline creates it private before the browser first
+  launches: on Windows with an access list of its own, which the data directory's list, passed
+  down, does not reach, and on macOS and Linux with mode 0700. What the browser writes there is
+  its own, and Loadline never looks inside the profile or changes anything in it: the browser
+  gives files there access lists of its own on Windows, for its network sandbox, and keeps symbolic
+  links there on macOS and Linux, for its process lock. Install, the server and `loadline doctor`
+  judge the folder itself as they judge Loadline's own, and refuse a `browser` folder that is not
+  private as Loadline makes it, since the files in it may have inherited other users' access:
+  remove it, and Loadline makes it again.
   `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
   it did before, they may have read the token, so change it as described below. On macOS and Linux
   install also takes group and other permissions off the settings files it edits, which hold the

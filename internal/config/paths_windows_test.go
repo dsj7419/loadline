@@ -23,11 +23,12 @@ func TestDefaultPaths_Windows(t *testing.T) {
 
 	dataDir := filepath.Join(local, "loadline")
 	want := config.Paths{
-		DataDir:    dataDir,
-		ConfigFile: filepath.Join(roaming, "loadline", "config.json"),
-		TokenFile:  filepath.Join(dataDir, "token"),
-		SpoolDir:   filepath.Join(dataDir, "spool"),
-		DBFile:     filepath.Join(dataDir, "loadline.db"),
+		DataDir:           dataDir,
+		ConfigFile:        filepath.Join(roaming, "loadline", "config.json"),
+		TokenFile:         filepath.Join(dataDir, "token"),
+		SpoolDir:          filepath.Join(dataDir, "spool"),
+		DBFile:            filepath.Join(dataDir, "loadline.db"),
+		BrowserProfileDir: filepath.Join(dataDir, "browser"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)

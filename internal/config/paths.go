@@ -31,6 +31,11 @@ type Paths struct {
 	SpoolDir string
 	// DBFile is the SQLite database.
 	DBFile string
+	// BrowserProfileDir is the browser profile the dashboard's app window
+	// opens in, apart from the user's own browsing, which keeps the
+	// dashboard's sign-in cookie. It is in the data directory, so that it is
+	// as private as the rest of Loadline's state.
+	BrowserProfileDir string
 }
 
 // DefaultPaths returns the paths for this platform and user. When
@@ -54,11 +59,12 @@ func DefaultPaths() (Paths, error) {
 
 func layout(dataDir, configDir string) Paths {
 	return Paths{
-		DataDir:    dataDir,
-		ConfigFile: filepath.Join(configDir, "config.json"),
-		TokenFile:  filepath.Join(dataDir, "token"),
-		SpoolDir:   filepath.Join(dataDir, "spool"),
-		DBFile:     filepath.Join(dataDir, "loadline.db"),
+		DataDir:           dataDir,
+		ConfigFile:        filepath.Join(configDir, "config.json"),
+		TokenFile:         filepath.Join(dataDir, "token"),
+		SpoolDir:          filepath.Join(dataDir, "spool"),
+		DBFile:            filepath.Join(dataDir, "loadline.db"),
+		BrowserProfileDir: filepath.Join(dataDir, "browser"),
 	}
 }
 

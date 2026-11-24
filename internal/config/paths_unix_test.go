@@ -11,11 +11,12 @@ import (
 
 func wantUnixPaths(dataDir, configDir string) config.Paths {
 	return config.Paths{
-		DataDir:    dataDir,
-		ConfigFile: filepath.Join(configDir, "config.json"),
-		TokenFile:  filepath.Join(dataDir, "token"),
-		SpoolDir:   filepath.Join(dataDir, "spool"),
-		DBFile:     filepath.Join(dataDir, "loadline.db"),
+		DataDir:           dataDir,
+		ConfigFile:        filepath.Join(configDir, "config.json"),
+		TokenFile:         filepath.Join(dataDir, "token"),
+		SpoolDir:          filepath.Join(dataDir, "spool"),
+		DBFile:            filepath.Join(dataDir, "loadline.db"),
+		BrowserProfileDir: filepath.Join(dataDir, "browser"),
 	}
 }
 

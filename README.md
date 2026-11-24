@@ -212,6 +212,11 @@ delete them to remove Loadline completely.
   outside the binary and runs under a strict content security policy.
 - **Stored history.** The server keeps accounts, sessions, state changes, rate-limit samples and
   per-minute token and cost totals in a SQLite database in the data directory, for `retentionDays`.
+- **The dashboard's browser profile.** The browser keeps the dashboard's profile, its sign-in
+  cookie and whatever else it stores, in `browser` in the data directory, apart from your own
+  browsing. Loadline makes that folder private like the rest of the data directory, never looks
+  inside it, and refuses a `browser` folder that it did not make private. `loadline uninstall`
+  leaves it in place, as it leaves the rest of the data directory.
 
 [SECURITY.md](SECURITY.md) describes the threat model, its limits, and how to report a
 vulnerability.
