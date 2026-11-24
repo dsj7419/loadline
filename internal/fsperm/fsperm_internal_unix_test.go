@@ -44,8 +44,8 @@ func TestMovableAncestor_RefusesAFolderThatBelongsToAnotherAccount(t *testing.T)
 
 			got, err := MovableAncestor(dir, top)
 
-			if want := owned + " belongs to "; err != nil || !strings.HasPrefix(got, want) {
-				t.Errorf("MovableAncestor = %q, %v; want it to start %q", got, err, want)
+			if want := owned + " belongs to "; err != nil || !strings.HasPrefix(got.Problem, want) {
+				t.Errorf("MovableAncestor = %+v, %v; want it to start %q", got, err, want)
 			}
 		})
 	}
@@ -59,7 +59,22 @@ func TestMovableAncestor_TakesFoldersRootOwns(t *testing.T) {
 	}
 	ownedByUID(t, filepath.Dir(dir), 0)
 
-	if got, err := MovableAncestor(dir, top); err != nil || got != "" {
-		t.Errorf("MovableAncestor = %q, %v; want \"\" (uid %d runs the test)", got, err, os.Getuid())
+	if got, err := MovableAncestor(dir, top); err != nil || got != (Movable{}) {
+		t.Errorf("MovableAncestor = %+v, %v; want none (uid %d runs the test)", got, err, os.Getuid())
+	}
+}
+
+// No account reads as gone here: a user ID that the user database Loadline
+// reads, /etc/passwd, does not name may be an account of LDAP, SSSD or
+// systemd-homed that signs in all the same.
+func TestForeignOwner_NeverSaysAnAccountIsGone(t *testing.T) {
+	const unnamed = 4242424
+	dir := t.TempDir()
+	ownedByUID(t, dir, unnamed)
+
+	got, err := ForeignOwner(dir)
+
+	if want := (Owner{Name: "the account with user ID 4242424"}); err != nil || got != want {
+		t.Errorf("ForeignOwner of a folder user ID %d owns = %+v, %v; want %+v", unnamed, got, err, want)
 	}
 }

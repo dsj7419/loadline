@@ -79,7 +79,7 @@ func TestJudgements_HoldForAUserWhoseSIDTheFormatWritesByAnAlias(t *testing.T) {
 		}
 	}
 	ownedBySID(t, dir, admin)
-	if owner, err := ForeignOwner(dir); err != nil || owner != "" {
-		t.Errorf("ForeignOwner of a folder the user owns = %q, %v; want none", owner, err)
+	if owner, err := ForeignOwner(dir); err != nil || owner != (Owner{}) {
+		t.Errorf("ForeignOwner of a folder the user owns = %+v, %v; want none", owner, err)
 	}
 }

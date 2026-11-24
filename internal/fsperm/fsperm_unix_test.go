@@ -133,8 +133,8 @@ func TestMovableAncestor_NamesAFolderOthersCanWriteWithoutTheStickyBit(t *testin
 
 		got, err := fsperm.MovableAncestor(filepath.Join(shared, "loadline"), top)
 
-		if err != nil || got != tt.want {
-			t.Errorf("MovableAncestor under mode %v = %q, %v; want %q", tt.mode, got, err, tt.want)
+		if err != nil || got.Problem != tt.want {
+			t.Errorf("MovableAncestor under mode %v = %+v, %v; want %q", tt.mode, got, err, tt.want)
 		}
 	}
 }
@@ -158,8 +158,8 @@ func TestMovableAncestor_JudgesTheFoldersThatReallyHoldTheDirectory(t *testing.T
 
 	got, err := fsperm.MovableAncestor(filepath.Join(link, "loadline"), top)
 
-	if want := " lets group and others rename the folders in it"; err != nil || !strings.Contains(got, " is really ") || !strings.Contains(got, want) {
-		t.Errorf("MovableAncestor = %q, %v; want it to name the folder that really holds the directory, which%s", got, err, want)
+	if want := " lets group and others rename the folders in it"; err != nil || !strings.Contains(got.Problem, " is really ") || !strings.Contains(got.Problem, want) {
+		t.Errorf("MovableAncestor = %+v, %v; want it to name the folder that really holds the directory, which%s", got, err, want)
 	}
 }
 

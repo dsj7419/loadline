@@ -110,13 +110,38 @@ func andList(names []string) string {
 	return strings.Join(names[:last], ", ") + " and " + names[last]
 }
 
+// Owner is the owner of a path that Loadline does not trust with it, as
+// ForeignOwner tells. The zero Owner is one it trusts.
+type Owner struct {
+	// Name names the owner in the words a report gives.
+	Name string
+	// Gone reports an account this computer no longer has, as after a
+	// profile was moved or restored, which can never sign in again. Only
+	// Windows tells: elsewhere it is always false.
+	Gone bool
+}
+
+// Movable is what MovableAncestor found: the folder someone else could move
+// aside, and why.
+type Movable struct {
+	// Folder is the nearest folder that someone other than the user, SYSTEM
+	// or Administrators could delete or rename, or give themselves the right
+	// to.
+	Folder string
+	// Problem says so in a sentence, which names Folder.
+	Problem string
+	// Owner is Folder's owner when that is why, or zero when its access list
+	// is.
+	Owner Owner
+}
+
 // MovableAncestor looks at dir and the folders above it that already exist,
 // up to the volume root, or when top is set, up to top, which it trusts with
-// every folder above it. It returns what lets someone other than the user,
-// SYSTEM or Administrators delete or rename the nearest one that is not
-// safe, or give themselves the right to, and so put a folder of their own in
-// its place, or "" when none can. Folders on the way that do not exist yet
-// are left out: Loadline creates them private.
+// every folder above it. It returns the nearest one that is not safe, which
+// lets someone other than the user, SYSTEM or Administrators delete or
+// rename it, or give themselves the right to, and so put a folder of their
+// own in its place, or the zero Movable when none can. Folders on the way
+// that do not exist yet are left out: Loadline creates them private.
 //
 // A folder is not safe when it belongs to anyone else, who may always
 // change its permissions, or when it lets anyone else delete or rename
@@ -128,37 +153,38 @@ func andList(names []string) string {
 // target, which dir's own names do not show. So the folders that really
 // hold dir are judged too, as the system resolves them, against top
 // resolved the same way.
-func MovableAncestor(dir, top string) (string, error) {
+func MovableAncestor(dir, top string) (Movable, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("check the folders above %s: %w", dir, err)
+		return Movable{}, fmt.Errorf("check the folders above %s: %w", dir, err)
 	}
-	if found, err := movableChain(dir, top); err != nil || found != "" {
+	if found, err := movableChain(dir, top); err != nil || found.Problem != "" {
 		return found, err
 	}
 	held, err := resolved(dir)
 	if err != nil {
-		return "", unresolved(dir, err)
+		return Movable{}, unresolved(dir, err)
 	}
 	if samePath(held, dir) {
-		return "", nil
+		return Movable{}, nil
 	}
 	heldTop := top
 	if top != "" {
 		if heldTop, err = resolved(top); err != nil {
-			return "", unresolved(top, err)
+			return Movable{}, unresolved(top, err)
 		}
 	}
 	found, err := movableChain(held, heldTop)
-	if err != nil || found == "" {
-		return "", err
+	if err != nil || found.Problem == "" {
+		return Movable{}, err
 	}
 	// dir stays as the user gave it, so that they know it, as does any
 	// folder above it found by dir's own names. held, and the folder found
 	// among those that really hold dir, are as the system resolved them,
 	// which is the truth on disk: every link followed and, on Windows, each
 	// name in its long form, whatever short 8.3 name dir gave.
-	return dir + " is really " + held + ", and " + found, nil
+	found.Problem = dir + " is really " + held + ", and " + found.Problem
+	return found, nil
 }
 
 // unresolved says why the folders that really hold path cannot be found,
@@ -189,32 +215,32 @@ func (e *sentenceError) Unwrap() error { return e.cause }
 
 // movableChain judges dir and the folders above it, as MovableAncestor
 // does, by the names in dir alone.
-func movableChain(dir, top string) (string, error) {
+func movableChain(dir, top string) (Movable, error) {
 	if exists(dir) {
-		if found, err := foreignOwner(dir); err != nil || found != "" {
+		if found, err := foreignOwner(dir); err != nil || found.Problem != "" {
 			return found, err
 		}
 	}
 	for x := dir; ; x = filepath.Dir(x) {
 		parent := filepath.Dir(x)
 		if parent == x {
-			return "", nil
+			return Movable{}, nil
 		}
 		if x != dir && exists(x) {
-			if found, err := movable(x); err != nil || found != "" {
+			if found, err := byList(x, movable); err != nil || found.Problem != "" {
 				return found, err
 			}
 		}
 		if top != "" && samePath(parent, top) {
-			return "", nil
+			return Movable{}, nil
 		}
 		// Every folder between dir and top is judged here, as the one that
 		// holds the folder below it, before it is judged as itself.
 		if exists(parent) {
-			if found, err := foreignOwner(parent); err != nil || found != "" {
+			if found, err := foreignOwner(parent); err != nil || found.Problem != "" {
 				return found, err
 			}
-			if found, err := emptiable(parent); err != nil || found != "" {
+			if found, err := byList(parent, emptiable); err != nil || found.Problem != "" {
 				return found, err
 			}
 		}
@@ -222,13 +248,28 @@ func movableChain(dir, top string) (string, error) {
 }
 
 // foreignOwner reports folder as belonging to someone other than those
-// Loadline trusts with it (ForeignOwner), or "" when it does not.
-func foreignOwner(folder string) (string, error) {
+// Loadline trusts with it (ForeignOwner), or the zero Movable when it does
+// not.
+func foreignOwner(folder string) (Movable, error) {
 	owner, err := ForeignOwner(folder)
-	if err != nil || owner == "" {
-		return "", err
+	if err != nil || owner == (Owner{}) {
+		return Movable{}, err
 	}
-	return folder + " belongs to " + owner + ", who can give themselves the right to delete or rename it, or what it holds", nil
+	return Movable{
+		Folder:  folder,
+		Problem: folder + " belongs to " + owner.Name + ", who can give themselves the right to delete or rename it, or what it holds",
+		Owner:   owner,
+	}, nil
+}
+
+// byList reports folder as one that judge, movable or emptiable, finds its
+// access list lets someone else take, or the zero Movable when it does not.
+func byList(folder string, judge func(string) (string, error)) (Movable, error) {
+	problem, err := judge(folder)
+	if err != nil || problem == "" {
+		return Movable{}, err
+	}
+	return Movable{Folder: folder, Problem: problem}, nil
 }
 
 func exists(path string) bool {
@@ -244,6 +285,21 @@ func exists(path string) bool {
 // filepath.EvalSymlinks cannot stand in for it on Windows: it fails at a
 // junction on the way, which it takes for neither a folder nor a link.
 func FinalPath(path string) (string, error) { return finalPath(path) }
+
+// Resolved returns path, made absolute, as the system resolves it: every
+// link in it followed and, on Windows, each short 8.3 name in its long form,
+// as far as path exists, and the rest of it as written. It names the folder
+// that InProfile judges, and that a command given path would act on.
+func Resolved(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		abs, err = resolved(abs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return abs, nil
+}
 
 // resolved returns path with every link in it followed (finalPath), as far
 // as path exists, and the rest of it as written. The rest does not exist

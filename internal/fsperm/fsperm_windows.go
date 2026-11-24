@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -700,27 +701,146 @@ func emptiable(folder string) (string, error) {
 	return folder + " lets " + andList(others) + " change its permissions or owner, and with that delete or rename it, or what it holds", nil
 }
 
-// ForeignOwner names the owner of path when that is anyone but the user,
-// SYSTEM, Administrators or TrustedInstaller, which owns the system's own
-// folders, or returns "" when it is one of them. The owner may always
-// change who can use path, whatever its access list says.
-func ForeignOwner(path string) (string, error) {
+// ForeignOwner tells who owns path when that is anyone but the user, SYSTEM,
+// Administrators or TrustedInstaller, which owns the system's own folders, or
+// returns the zero Owner when it is one of them. The owner may always change
+// who can use path, whatever its access list says.
+func ForeignOwner(path string) (Owner, error) {
 	owner, err := ownerOf(path)
 	if err != nil {
-		return "", err
+		return Owner{}, err
 	}
 	trusted, err := trustedSIDs()
 	if err != nil {
-		return "", err
+		return Owner{}, err
 	}
 	trustedInstaller, err := windows.StringToSid(trustedInstallerSID)
 	if err != nil {
-		return "", fmt.Errorf("identify TrustedInstaller: %w", err)
+		return Owner{}, fmt.Errorf("identify TrustedInstaller: %w", err)
 	}
 	if slices.ContainsFunc(append(trusted, trustedInstaller), owner.Equals) {
-		return "", nil
+		return Owner{}, nil
 	}
-	return accountName(owner), nil
+	return ownerAccount(owner), nil
+}
+
+// lookupAccount names the account sid stands for, and the domain that holds
+// it, and tells its kind (SidType…), as LookupAccountSid answers on this
+// computer. Tests replace it: no computer at hand holds a deleted account,
+// nor fails to reach a domain controller, on cue.
+var lookupAccount = func(sid *windows.SID) (account, domain string, use uint32, err error) {
+	return sid.LookupAccount("")
+}
+
+// ownerAccount names sid, the owner of a path, and tells whether it is an
+// account this computer no longer has, which Windows answers for in two ways
+// alone. It says the account was deleted; or it names no account for a SID
+// of this computer's own account domain, plus one RID. The computer answers
+// for its own accounts without asking anyone, and never gives a new one an
+// old one's RID. Any other SID that it cannot name may be an account whose
+// domain controller does not answer right now, which may still sign in.
+func ownerAccount(sid *windows.SID) Owner {
+	account, domain, use, err := lookupAccount(sid)
+	switch {
+	case err == nil && account == "":
+		// An answer that names no account, as one for a deleted account
+		// may be, leaves the SID to name it.
+		return Owner{Name: sid.String(), Gone: use == windows.SidTypeDeletedAccount}
+	case err == nil:
+		return Owner{Name: domain + `\` + account, Gone: use == windows.SidTypeDeletedAccount}
+	case errors.Is(err, windows.ERROR_NONE_MAPPED) && accountOfThisComputer(sid):
+		return Owner{Name: sid.String(), Gone: true}
+	}
+	return Owner{Name: sid.String() + " (an account this computer cannot name right now)"}
+}
+
+// accountOfThisComputer reports whether sid is that of an account of this
+// computer's own: the SID of its account domain, plus one RID. When that
+// domain cannot be told, it reports none, so that no account is taken for
+// gone that may not be.
+//
+// The two are compared in the S-1-… form ConvertSidToStringSid writes, which
+// names each part of a SID the same way every time. x/sys reads the parts
+// themselves through pointers that the race detector's pointer checks
+// reject for a SID held in Go's memory, as every SID here is.
+func accountOfThisComputer(sid *windows.SID) bool {
+	domain, err := machineDomain()
+	if err != nil {
+		return false
+	}
+	rid, ok := strings.CutPrefix(sid.String(), domain.String()+"-")
+	_, err = strconv.ParseUint(rid, 10, 32)
+	return ok && err == nil
+}
+
+// machineDomain returns the SID of this computer's own account domain, which
+// holds its local accounts and has the computer's name. Tests replace it:
+// every computer at hand can tell its own.
+var machineDomain = func() (*windows.SID, error) {
+	name, err := windows.ComputerName()
+	if err != nil {
+		return nil, fmt.Errorf("name this computer: %w", err)
+	}
+	sid, _, use, err := windows.LookupSID("", name)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("identify the account domain of %s: %w", name, err)
+	case use != windows.SidTypeDomain:
+		return nil, fmt.Errorf("identify the account domain of %s: its name stands for an account of kind %d, not a domain", name, use)
+	}
+	return sid, nil
+}
+
+// userProfile returns the folder of the profile of the user Loadline runs
+// as. Tests replace it: they build a profile of their own, with junctions
+// into and out of it, where the user's holds what it holds.
+var userProfile = func() (string, error) {
+	profile, err := windows.GetCurrentProcessToken().GetUserProfileDirectory()
+	if err != nil {
+		return "", fmt.Errorf("find your user profile: %w", err)
+	}
+	return profile, nil
+}
+
+// InProfile reports whether path is the folder of the user's profile, or is
+// in it. It compares both as the system resolves them (resolved): each link
+// on the way followed and each short 8.3 name in its long form, and the part
+// of path that does not exist yet as written. So a short name cannot hide
+// that a path is in the profile, nor a junction in the profile that leads
+// out of it make one read as in it, nor one outside it that leads in make one
+// read as outside.
+func InProfile(path string) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("find whether %s is in your user profile: %w", path, err)
+	}
+	profile, err := userProfile()
+	if err != nil {
+		return false, err
+	}
+	heldProfile, err := resolved(profile)
+	if err != nil {
+		return false, fmt.Errorf("find your user profile: %w", err)
+	}
+	held, err := resolved(abs)
+	if err != nil {
+		return false, fmt.Errorf("find whether %s is in your user profile: %w", path, err)
+	}
+	return within(held, heldProfile), nil
+}
+
+// within reports whether path is folder or in it, comparing names as Windows
+// does, without regard to case. A separator must follow folder's name in
+// path, so that C:\Users\me2 is not in C:\Users\me.
+func within(path, folder string) bool {
+	path, folder = filepath.Clean(path), filepath.Clean(folder)
+	if strings.EqualFold(path, folder) {
+		return true
+	}
+	if !strings.HasSuffix(folder, `\`) {
+		folder += `\`
+	}
+	return len(path) > len(folder) && strings.EqualFold(path[:len(folder)], folder)
 }
 
 // othersGranted names the trustees besides the user, SYSTEM and
