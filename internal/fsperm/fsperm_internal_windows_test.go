@@ -2,6 +2,7 @@ package fsperm
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -153,6 +154,49 @@ func TestDOSPath_TakesOffTheExtendedLengthPrefix(t *testing.T) {
 		if got := dosPath(in); got != want {
 			t.Errorf("dosPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Every volume has a GUID name, but only one with a drive letter, or a folder
+// it is mounted in, has a DOS name for GetFinalPathNameByHandle to give. So a
+// volume has no drive letter only when the path on its DOS name could not be
+// had and the path on its GUID name could. When neither could, the file
+// system cannot say where the path leads at all.
+func TestNoDriveLetter(t *testing.T) {
+	refused := errors.New("the file system cannot say")
+	for _, tt := range []struct {
+		name            string
+		dosErr, guidErr error
+		want            bool
+	}{
+		{"both names", nil, nil, false},
+		{"the DOS name alone", nil, refused, false},
+		{"the GUID name alone", windows.ERROR_PATH_NOT_FOUND, nil, true},
+		{"neither name", windows.ERROR_PATH_NOT_FOUND, refused, false},
+	} {
+		if got := noDriveLetter(tt.dosErr, tt.guidErr); got != tt.want {
+			t.Errorf("noDriveLetter(%v, %v), %s = %t, want %t", tt.dosErr, tt.guidErr, tt.name, got, tt.want)
+		}
+	}
+}
+
+// Some RAM disks, container mounts and network redirectors get no drive
+// letter. The folders that really hold a data directory there cannot be
+// found by a name Loadline judges, so it is refused, in words that say why
+// and where to put it instead.
+func TestMovableAncestor_SaysWhenTheVolumeHasNoDriveLetter(t *testing.T) {
+	previous := finalPath
+	finalPath = func(path string) (string, error) { return "", fmt.Errorf("resolve %s: %w", path, ErrNoDriveLetter) }
+	t.Cleanup(func() { finalPath = previous })
+	top := t.TempDir()
+	dir := filepath.Join(top, "loadline")
+
+	got, err := MovableAncestor(dir, top)
+
+	want := dir + " is on a volume Windows gives no drive letter to, as some RAM disks, container mounts and network redirectors are, " +
+		"so Loadline cannot check the folders that hold it: set LOADLINE_HOME to a folder on a disk with a drive letter, such as one in your user profile"
+	if got != "" || err == nil || err.Error() != want || !errors.Is(err, ErrNoDriveLetter) {
+		t.Errorf("MovableAncestor = %q, %v; want the error %q, which wraps ErrNoDriveLetter", got, err, want)
 	}
 }
 
