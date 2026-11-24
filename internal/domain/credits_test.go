@@ -384,6 +384,27 @@ func TestOnCreditsMarks_ReturnsSamplesThatAreAllMarksWithoutCopyingThem(t *testi
 	}
 }
 
+// Samples that are not all marks are copied once, into room made for no more
+// samples than were given: the marks are a subset of them, so any room past
+// that is left behind for nothing, in every view that prunes.
+func TestOnCreditsMarks_CopiesTheMarksOnceIntoNoMoreRoomThanTheSamples(t *testing.T) {
+	samples := []domain.Sample{sample(60, 100), sample(120, 100), full(300, 900), sample(420, 20), sample(480, 30)}
+
+	got := domain.OnCreditsMarks(samples)
+	allocs := testing.AllocsPerRun(10, func() { domain.OnCreditsMarks(samples) })
+
+	want := []domain.Sample{sample(60, 100), full(300, 900), sample(420, 20)}
+	if !slices.Equal(got, want) {
+		t.Errorf("OnCreditsMarks() = %v, want %v", got, want)
+	}
+	if allocs != 1 {
+		t.Errorf("OnCreditsMarks() made %v allocations, want one", allocs)
+	}
+	if cap(got) > len(samples) {
+		t.Errorf("OnCreditsMarks() made room for %d samples, want no more than the %d given", cap(got), len(samples))
+	}
+}
+
 // Forgetting copies none of the samples it keeps when no span runs across the
 // cut: each view forgets what has aged out of the credit history.
 func TestForgetOnCreditsBefore_KeepsTheRestWithoutCopyingThem(t *testing.T) {
