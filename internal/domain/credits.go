@@ -106,15 +106,25 @@ type CreditEstimate struct {
 // moment is in two spans. Samples may come in any order; the caller's slices
 // are not changed.
 func OnCreditsSpans(samples WindowSamples, now time.Time) []OnCreditsSpan {
-	spans := slices.Concat(windowSpans(samples.FiveHour, now), windowSpans(samples.SevenDay, now))
-	slices.SortFunc(spans, func(a, b OnCreditsSpan) int { return a.From.Compare(b.From) })
-	var merged []OnCreditsSpan
-	for _, s := range spans {
-		if n := len(merged); n > 0 && reachesInto(merged[n-1], s.From) {
-			merged[n-1].To = laterEnd(merged[n-1].To, s.To)
+	return mergeSpans(windowSpans(samples.FiveHour, now), windowSpans(samples.SevenDay, now))
+}
+
+// mergeSpans merges two windows' spans, each in time order, in one pass,
+// joining those that overlap or meet.
+func mergeSpans(a, b []OnCreditsSpan) []OnCreditsSpan {
+	merged := make([]OnCreditsSpan, 0, len(a)+len(b))
+	for len(a) > 0 || len(b) > 0 {
+		var next OnCreditsSpan
+		if len(b) == 0 || (len(a) > 0 && !b[0].From.Before(a[0].From)) {
+			next, a = a[0], a[1:]
+		} else {
+			next, b = b[0], b[1:]
+		}
+		if n := len(merged); n > 0 && reachesInto(merged[n-1], next.From) {
+			merged[n-1].To = laterEnd(merged[n-1].To, next.To)
 			continue
 		}
-		merged = append(merged, s)
+		merged = append(merged, next)
 	}
 	return merged
 }
@@ -122,9 +132,15 @@ func OnCreditsSpans(samples WindowSamples, now time.Time) []OnCreditsSpan {
 // spanWalk follows one window's samples in time order, opening and closing
 // its spans.
 type spanWalk struct {
-	spans []OnCreditsSpan
-	open  bool
-	from  time.Time
+	// keepsSpans says the walk keeps the spans it closes, in spans. A walk
+	// that needs only where spans open and close leaves it unset, and so
+	// allocates nothing.
+	keepsSpans bool
+	spans      []OnCreditsSpan
+	// opened counts the spans the walk has opened.
+	opened int
+	open   bool
+	from   time.Time
 	// resetsAt is the newest reset time the open span's samples gave, or
 	// zero when none did.
 	resetsAt time.Time
@@ -147,6 +163,7 @@ func (w *spanWalk) step(s Sample) bool {
 	}
 	if !w.open {
 		w.open, w.from, w.resetsAt = true, s.At, time.Time{}
+		w.opened++
 		changed = true
 	}
 	if !s.ResetsAt.IsZero() && !s.ResetsAt.Equal(w.resetsAt) {
@@ -157,13 +174,23 @@ func (w *spanWalk) step(s Sample) bool {
 }
 
 func (w *spanWalk) close(at time.Time) {
-	w.spans = append(w.spans, OnCreditsSpan{From: w.from, To: at})
+	if w.keepsSpans {
+		w.spans = append(w.spans, OnCreditsSpan{From: w.from, To: at})
+	}
 	w.open = false
 }
 
+// windowSpans returns one window's spans, in time order. A first walk counts
+// them, so that the second keeps them in a slice of their size: one grown as
+// the walk went would leave several times their size behind, in every view.
 func windowSpans(samples []Sample, now time.Time) []OnCreditsSpan {
-	var w spanWalk
-	for _, s := range inTimeOrder(samples) {
+	ordered := inTimeOrder(samples)
+	var counting spanWalk
+	for _, s := range ordered {
+		counting.step(s)
+	}
+	w := spanWalk{keepsSpans: true, spans: make([]OnCreditsSpan, 0, counting.opened)}
+	for _, s := range ordered {
 		w.step(s)
 	}
 	if w.open {
@@ -203,9 +230,15 @@ func laterEnd(a, b time.Time) time.Time {
 	return a
 }
 
+// inTimeOrder returns samples in time order: themselves when they are, and a
+// sorted copy otherwise.
 func inTimeOrder(samples []Sample) []Sample {
+	byTime := func(a, b Sample) int { return a.At.Compare(b.At) }
+	if slices.IsSortedFunc(samples, byTime) {
+		return samples
+	}
 	sorted := slices.Clone(samples)
-	slices.SortStableFunc(sorted, func(a, b Sample) int { return a.At.Compare(b.At) })
+	slices.SortStableFunc(sorted, byTime)
 	return sorted
 }
 
@@ -213,16 +246,27 @@ func inTimeOrder(samples []Sample) []Sample {
 // needs from samples: each one that opens or closes a span, or moves the
 // reset time of the one open. The spans of the marks followed by any later
 // samples are the spans of all the samples followed by them, so a keeper of
-// samples can forget the rest once no projection reads them.
+// samples can forget the rest once no projection reads them. Samples in time
+// order that are all marks already are returned as they are, not copied.
 func OnCreditsMarks(samples []Sample) []Sample {
+	ordered := inTimeOrder(samples)
 	var w spanWalk
-	var marks []Sample
-	for _, s := range inTimeOrder(samples) {
+	for i, s := range ordered {
 		if w.step(s) {
-			marks = append(marks, s)
+			continue
 		}
+		// The first sample that is no mark: from here the marks are copied,
+		// into room for every sample but this one.
+		marks := make([]Sample, i, len(ordered)-1)
+		copy(marks, ordered[:i])
+		for _, s := range ordered[i+1:] {
+			if w.step(s) {
+				marks = append(marks, s)
+			}
+		}
+		return marks
 	}
-	return marks
+	return ordered
 }
 
 // ForgetOnCreditsBefore returns samples, which must be in time order, without
@@ -233,7 +277,8 @@ func OnCreditsMarks(samples []Sample) []Sample {
 // included, so a span never ends before the calls it holds have aged out.
 // That sample depends on the samples before oldest alone, so forgetting
 // before one time and then before a later one forgets what forgetting before
-// the later one does.
+// the later one does. Unless a span runs across oldest, the samples kept are
+// not copied: the result is the end of samples.
 func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
 	cut, _ := slices.BinarySearchFunc(samples, oldest, func(s Sample, t time.Time) int { return s.At.Compare(t) })
 	var w spanWalk
@@ -242,7 +287,7 @@ func ForgetOnCreditsBefore(samples []Sample, oldest time.Time) []Sample {
 	}
 	kept := samples[cut:]
 	if !w.open || reached(w.resetsAt, oldest) {
-		return slices.Clone(kept)
+		return kept
 	}
 	return slices.Concat([]Sample{{At: w.from, UsedPct: limitPct, ResetsAt: w.resetsAt}}, kept)
 }

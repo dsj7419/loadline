@@ -117,6 +117,10 @@ func TestOnCreditsSpans_OpenAndClosedOnDropOrReset(t *testing.T) {
 			samples: domain.WindowSamples{SevenDay: []domain.Sample{sample(120, 40), sample(0, 100), sample(60, 100)}},
 			want:    []domain.OnCreditsSpan{span(0, 120)},
 		},
+		"a window that resets into a new one at the limit stays one span": {
+			samples: domain.WindowSamples{FiveHour: []domain.Sample{full(0, 300), full(300, 20_000)}},
+			want:    []domain.OnCreditsSpan{span(0, -1)},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := slices.Clone(tc.samples.SevenDay)
@@ -132,6 +136,40 @@ func TestOnCreditsSpans_OpenAndClosedOnDropOrReset(t *testing.T) {
 				t.Error("OnCreditsSpans changed the caller's samples")
 			}
 		})
+	}
+}
+
+// Samples already in time order, as the tracker keeps them, are read where
+// they lie: every view works out the spans of up to a month of samples, and
+// copying them each time would make the month's garbage over again.
+func TestOnCreditsSpans_ReadsSamplesInTimeOrderWithoutCopyingThem(t *testing.T) {
+	samples := domain.WindowSamples{
+		FiveHour: []domain.Sample{sample(0, 40), sample(60, 70), sample(120, 99)},
+		SevenDay: []domain.Sample{sample(0, 20), sample(60, 21), sample(120, 22)},
+	}
+
+	allocs := testing.AllocsPerRun(10, func() { domain.OnCreditsSpans(samples, creditsNow) })
+
+	if allocs != 0 {
+		t.Errorf("OnCreditsSpans() over samples in time order, none at the limit, made %v allocations, want none", allocs)
+	}
+}
+
+// A window's spans are kept in room made once, whatever their number: a slice
+// grown span by span leaves several times their size behind, and a month of
+// short stretches on credits holds tens of thousands of spans.
+func TestOnCreditsSpans_AllocatesAsOftenForManySpansAsForFew(t *testing.T) {
+	allocsFor := func(spanCount int) float64 {
+		var samples []domain.Sample
+		for i := range spanCount {
+			samples = append(samples, sample(60*i, 100), sample(60*i+30, 0))
+		}
+		windows := domain.WindowSamples{SevenDay: samples}
+		return testing.AllocsPerRun(5, func() { domain.OnCreditsSpans(windows, creditsNow) })
+	}
+
+	if few, many := allocsFor(10), allocsFor(10_000); many != few {
+		t.Errorf("OnCreditsSpans() made %v allocations over 10 spans and %v over 10,000, want as many", few, many)
 	}
 }
 
@@ -157,6 +195,51 @@ func randomSamples(rng *rand.Rand, resets []int) ([]domain.Sample, int) {
 		samples = append(samples, s)
 	}
 	return samples, sec
+}
+
+// joined is spans in time order, those that overlap or meet joined into one,
+// worked out the simple way: sorted, then each laid against the one before.
+func joined(spans []domain.OnCreditsSpan) []domain.OnCreditsSpan {
+	sorted := slices.SortedFunc(slices.Values(spans), func(a, b domain.OnCreditsSpan) int { return a.From.Compare(b.From) })
+	var out []domain.OnCreditsSpan
+	for _, s := range sorted {
+		n := len(out)
+		if n == 0 || (!out[n-1].To.IsZero() && out[n-1].To.Before(s.From)) {
+			out = append(out, s)
+			continue
+		}
+		if out[n-1].To.IsZero() || s.To.IsZero() {
+			out[n-1].To = time.Time{}
+		} else if s.To.After(out[n-1].To) {
+			out[n-1].To = s.To
+		}
+	}
+	return out
+}
+
+// The spans of both windows are the spans of each, joined where they overlap
+// or meet, whatever order the samples come in.
+func TestOnCreditsSpans_BothWindowsAreEachWindowsSpansJoined(t *testing.T) {
+	rng := seeded(77)
+	for range 5000 {
+		fiveHour, fiveHourLast := randomSamples(rng, []int{0, 3_000, 6_000})
+		sevenDay, sevenDayLast := randomSamples(rng, []int{0, 5_000, 12_000})
+		now := at(rng.IntN(max(fiveHourLast, sevenDayLast) + 2_000))
+		if rng.IntN(2) == 0 {
+			rng.Shuffle(len(sevenDay), func(i, j int) { sevenDay[i], sevenDay[j] = sevenDay[j], sevenDay[i] })
+		}
+
+		got := domain.OnCreditsSpans(domain.WindowSamples{FiveHour: fiveHour, SevenDay: sevenDay}, now)
+
+		want := joined(slices.Concat(
+			domain.OnCreditsSpans(domain.WindowSamples{FiveHour: fiveHour}, now),
+			domain.OnCreditsSpans(domain.WindowSamples{SevenDay: sevenDay}, now)))
+		if len(got) != 0 || len(want) != 0 {
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("five-hour %v\nseven-day %v\nnow %v\nOnCreditsSpans() = %v, want %v", fiveHour, sevenDay, now, got, want)
+			}
+		}
+	}
 }
 
 // OnCreditsMarks keeps only the samples where a run at the limit starts or
@@ -278,6 +361,54 @@ func TestForgetOnCreditsBefore_ASpanAcrossTheCut(t *testing.T) {
 				if !reflect.DeepEqual(got, tc.want) {
 					t.Errorf("spans %v, want %v", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// Samples that are all marks already, in time order, are returned as they
+// are. Past the projections' horizon the tracker keeps only marks, and every
+// view prunes its samples, so a view finds them as they were and copies
+// nothing.
+func TestOnCreditsMarks_ReturnsSamplesThatAreAllMarksWithoutCopyingThem(t *testing.T) {
+	marks := []domain.Sample{sample(120, 100), full(300, 900), sample(420, 20), sample(480, 100), sample(540, 99)}
+
+	got := domain.OnCreditsMarks(marks)
+	allocs := testing.AllocsPerRun(10, func() { domain.OnCreditsMarks(marks) })
+
+	if !slices.Equal(got, marks) {
+		t.Errorf("OnCreditsMarks() = %v, want the marks as they are: %v", got, marks)
+	}
+	if allocs != 0 {
+		t.Errorf("OnCreditsMarks() of samples that are all marks made %v allocations, want none", allocs)
+	}
+}
+
+// Forgetting copies none of the samples it keeps when no span runs across the
+// cut: each view forgets what has aged out of the credit history.
+func TestForgetOnCreditsBefore_KeepsTheRestWithoutCopyingThem(t *testing.T) {
+	for name, tc := range map[string]struct {
+		samples []domain.Sample
+		want    []domain.Sample
+	}{
+		"nothing before the cut": {
+			samples: []domain.Sample{sample(1000, 100), sample(1500, 40)},
+			want:    []domain.Sample{sample(1000, 100), sample(1500, 40)},
+		},
+		"a span that ended before the cut": {
+			samples: []domain.Sample{sample(0, 100), sample(500, 30), sample(1200, 100), sample(1500, 40)},
+			want:    []domain.Sample{sample(1200, 100), sample(1500, 40)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := domain.ForgetOnCreditsBefore(tc.samples, at(1000))
+			allocs := testing.AllocsPerRun(10, func() { domain.ForgetOnCreditsBefore(tc.samples, at(1000)) })
+
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("ForgetOnCreditsBefore() = %v, want %v", got, tc.want)
+			}
+			if allocs != 0 {
+				t.Errorf("ForgetOnCreditsBefore() made %v allocations, want none", allocs)
 			}
 		})
 	}

@@ -75,6 +75,49 @@ func newBenchTracker(b *testing.B, credits map[domain.ConfigDir][]domain.CreditG
 	return tr, clock
 }
 
+// megabyte is the unit the views' allocation budgets are set in.
+const megabyte = 1_000_000
+
+// The bytes a view may allocate: what it allocated once it stopped copying
+// the history it reads, plus a quarter, rounded up to a whole megabyte. A
+// day's view allocated 16.6 kB and a month's 8.3 MB; while they copied the
+// history, 21.2 MB and 134.8 MB.
+const (
+	dayViewBudget   = 1 * megabyte
+	monthViewBudget = 11 * megabyte
+)
+
+// A view after a day of readings allocates within its budget: everything a
+// view allocates is garbage once it is sent, so a view that copies the
+// history it reads raises the tracker's peak memory with every look.
+func TestTracker_ADayViewAllocatesWithinItsBudget(t *testing.T) {
+	assertViewAllocatesWithin(t, BenchmarkTracker_ViewAfterADayOfIdleReadings, dayViewBudget)
+}
+
+// A view of a month of stretches on credits allocates within its budget.
+func TestTracker_AMonthViewAllocatesWithinItsBudget(t *testing.T) {
+	assertViewAllocatesWithin(t, BenchmarkTracker_ViewOverManySpansAndCalls, monthViewBudget)
+}
+
+// assertViewAllocatesWithin fails t unless a view, as benchmark measures it,
+// allocates at most budget bytes. The race detector slows a view several
+// times over, so under it the budget is left to the runs without it, as CI's
+// "linear costs" step makes.
+func assertViewAllocatesWithin(t *testing.T, benchmark func(*testing.B), budget int64) {
+	t.Helper()
+	if raceEnabled {
+		t.Skip("the allocation budgets are checked without the race detector")
+	}
+	result := testing.Benchmark(benchmark)
+	if result.N == 0 {
+		t.Fatal("the benchmark took no views")
+	}
+	if got := result.AllocedBytesPerOp(); got > budget {
+		t.Errorf("a view allocated %d bytes (%.1f MB), want at most %d (%.1f MB)",
+			got, float64(got)/megabyte, budget, float64(budget)/megabyte)
+	}
+}
+
 // BenchmarkTracker_ViewAfterADayOfIdleReadings measures a view after a day of
 // an idle session's readings disagreeing with a busy one's.
 func BenchmarkTracker_ViewAfterADayOfIdleReadings(b *testing.B) {

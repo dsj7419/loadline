@@ -246,7 +246,9 @@ func (a *accountEntry) pruneSamples(horizon, oldest time.Time) {
 	a.samples.SevenDay = pruneWindow(a.samples.SevenDay, horizon, oldest)
 }
 
-// pruneWindow prunes one window's samples, which are in time order.
+// pruneWindow prunes one window's samples, which are in time order. Pruning
+// never leaves more samples than it found, so what it keeps is written over
+// them in place: every view prunes, and most find nothing to forget.
 func pruneWindow(samples []domain.Sample, horizon, oldest time.Time) []domain.Sample {
 	recent := slices.IndexFunc(samples, func(s domain.Sample) bool { return !s.At.Before(horizon) })
 	if recent < 0 {
@@ -255,7 +257,10 @@ func pruneWindow(samples []domain.Sample, horizon, oldest time.Time) []domain.Sa
 	if recent == 0 {
 		return samples
 	}
-	return slices.Concat(domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples[:recent]), oldest), samples[recent:])
+	older := domain.ForgetOnCreditsBefore(domain.OnCreditsMarks(samples[:recent]), oldest)
+	pruned := append(append(samples[:0], older...), samples[recent:]...)
+	clear(samples[len(pruned):])
+	return pruned
 }
 
 // currentLimits returns the account's limits as they stand at now. A window
