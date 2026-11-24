@@ -54,8 +54,14 @@ func TestServe_RestoresAfterRestart(t *testing.T) {
 		s, ok := session(before, s1)
 		return ok && len(s.Models) > 0 && s.State == domain.StateWorking
 	})
+	// Until it stops, the server may still poll, which finds s1 busy as the
+	// wait did, and probe the account, which sets who owns it: nothing that
+	// is compared below changes.
 	first.stop()
 
+	// The server restores the history before it listens. Its own poll and
+	// probe may come before this snapshot, and change nothing compared, as
+	// above.
 	second := serve(t, options())
 	after := second.snapshot()
 

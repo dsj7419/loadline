@@ -107,10 +107,17 @@ func (c *claude) pollCount() int {
 	return c.polls
 }
 
-// eventually polls cond until it holds, failing the test after five seconds.
+// hangBound is how long any wait in these tests lasts before the run is
+// taken to have hung. It decides nothing: each wait ends as soon as what it
+// waits for holds, and a loaded machine with the race detector on can take
+// seconds to start the server, open the history and restore it.
+const hangBound = 30 * time.Second
+
+// eventually polls cond until it holds, failing the test once hangBound has
+// passed without it.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangBound)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -148,11 +155,6 @@ type machine struct {
 	stop func()
 }
 
-// serveStartPatience is how long serve waits for the server to listen. How
-// soon it starts is no test's concern, and a loaded machine with the race
-// detector on can take seconds to open the history and restore it.
-const serveStartPatience = 30 * time.Second
-
 // serve runs the server in-process until it is stopped or the test ends.
 func serve(t *testing.T, o cli.ServeOptions) *machine {
 	t.Helper()
@@ -172,8 +174,8 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 				if code != 0 {
 					t.Errorf("Serve = %d, want 0", code)
 				}
-			case <-time.After(10 * time.Second):
-				t.Error("Serve did not stop")
+			case <-time.After(hangBound):
+				t.Errorf("Serve did not stop within %v", hangBound)
 			}
 		})
 	}
@@ -182,8 +184,8 @@ func serve(t *testing.T, o cli.ServeOptions) *machine {
 	case <-ready:
 	case code := <-done:
 		t.Fatalf("Serve returned %d before listening: %s", code, stderr.String())
-	case <-time.After(serveStartPatience):
-		t.Fatalf("Serve did not listen within %v", serveStartPatience)
+	case <-time.After(hangBound):
+		t.Fatalf("Serve did not listen within %v", hangBound)
 	}
 
 	token, err := config.EnsureToken(o.Paths.TokenFile)
@@ -254,6 +256,15 @@ func session(v tracker.View, id domain.SessionID) (tracker.SessionView, bool) {
 	return tracker.SessionView{}, false
 }
 
+func account(v tracker.View, dir domain.ConfigDir) (tracker.AccountView, bool) {
+	for _, a := range v.Accounts {
+		if a.Dir == dir {
+			return a, true
+		}
+	}
+	return tracker.AccountView{}, false
+}
+
 func needsYouAlerts(v tracker.View, id domain.SessionID) int {
 	n := 0
 	for _, a := range v.Alerts {
@@ -287,7 +298,9 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	clock := clocktest.New(t0)
 	fake := &claude{agents: make(map[domain.ConfigDir]string)}
 
-	// 1. The server, polling a claude that lists nothing yet.
+	// 1. The server, polling a claude that lists nothing yet. That first
+	// answer may be applied after the feeds below, and then changes nothing:
+	// s1 is too new for an absence to end it.
 	m := serve(t, cli.ServeOptions{
 		Paths: paths, Home: home, Port: freePort(t), NoOpen: true, Runner: fake, Clock: clock.Now,
 	})
@@ -300,36 +313,51 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 	fake.list(dirB, `[{"sessionId":"`+string(s2)+`","kind":"interactive","pid":4343,"status":"busy",`+
 		`"cwd":"/work/other","startedAt":1795299700000}]`)
 
-	// 3. The feeds, stamped a second before the polls that follow them.
+	// 3. The feeds, stamped a second before the polls that follow them. A
+	// round polls the accounts the server knows as it starts, so the hook
+	// goes only once the server shows s2 under its account: the round the
+	// hook asks for then polls dirB as well as dirA.
 	fedAt := t0
 	clock.Advance(time.Second)
+	m.send(forward.StatusPath, protocol.KindStatus, dirB, fedAt,
+		`{"session_id":"`+string(s2)+`","model":{"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"}}`)
+	eventually(t, "s2's status line", func() bool {
+		s, ok := session(m.snapshot(), s2)
+		return ok && s.Dir == dirB
+	})
 	m.send(forward.HookPath, protocol.KindHook, dirA, fedAt,
 		`{"session_id":"`+string(s1)+`","hook_event_name":"SessionStart","source":"startup","cwd":"/work/demo"}`)
 	m.send(forward.StatusPath, protocol.KindStatus, dirA, fedAt,
 		`{"session_id":"`+string(s1)+`","model":{"id":"claude-opus-5-5","display_name":"Opus 5.5"},`+
 			`"context_window":{"used_percentage":31},"rate_limits":{"seven_day":{"used_percentage":42,"resets_at":1795400000}}}`)
-	m.send(forward.StatusPath, protocol.KindStatus, dirB, fedAt,
-		`{"session_id":"`+string(s2)+`","model":{"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"}}`)
 	m.postLogs(logs)
 
-	// 4. The hook asked for a poll, which finds s1 waiting.
-	eventually(t, "s1 to need the user", func() bool {
-		s, ok := session(m.snapshot(), s1)
-		return ok && s.State == domain.StateNeedsYou
+	// 4. The hook asked for a poll, which finds s1 waiting and s2 busy. The
+	// round applies each account's answer as it comes, and the prober asks
+	// who account A is on its own schedule, with the model call's email
+	// standing in until then, so one snapshot must show all three.
+	var v tracker.View
+	eventually(t, "s1 to need the user, s2 to work and account A's probed email", func() bool {
+		v = m.snapshot()
+		first, firstOK := session(v, s1)
+		second, secondOK := session(v, s2)
+		a, aOK := account(v, dirA)
+		return firstOK && first.State == domain.StateNeedsYou &&
+			secondOK && second.State == domain.StateWorking &&
+			aOK && a.Email == "dev@example.com"
 	})
-	v := m.snapshot()
 	if len(v.Accounts) != 2 || v.Accounts[0].Dir != dirA || v.Accounts[1].Dir != dirB {
 		t.Errorf("accounts %+v, want %s and %s", v.Accounts, dirA, dirB)
 	}
-	if v.Accounts[0].SevenDay == nil || v.Accounts[0].SevenDay.UsedPct != 42 || v.Accounts[0].Email != "dev@example.com" {
-		t.Errorf("account A = %+v, want its status line's week and its probed email", v.Accounts[0])
+	if a, _ := account(v, dirA); a.SevenDay == nil || a.SevenDay.UsedPct != 42 {
+		t.Errorf("account A = %+v, want its status line's week", a)
 	}
 	first, _ := session(v, s1)
 	if first.WaitReason != "permission prompt" || first.Model != "Opus 5.5" || first.ContextPct != 31 {
 		t.Errorf("s1 = %+v, want it waiting on a permission prompt, on Opus 5.5 at 31%% context", first)
 	}
-	if second, ok := session(v, s2); !ok || second.State != domain.StateWorking || second.Dir != dirB {
-		t.Errorf("s2 = %+v, want it working under %s", second, dirB)
+	if second, _ := session(v, s2); second.Dir != dirB {
+		t.Errorf("s2 = %+v, want it under %s", second, dirB)
 	}
 	if len(v.Models) == 0 || v.Models[0].Requests == 0 || v.Models[0].CostUSD <= 0 || len(first.Models) == 0 {
 		t.Errorf("models %+v, s1's %+v; want the fixture's model call counted", v.Models, first.Models)
@@ -338,7 +366,9 @@ func TestE2E_HookStatusOTLPAndPollProduceView(t *testing.T) {
 		t.Errorf("%d needs-you alerts for s1 at once, want none before 20 s", n)
 	}
 
-	// 5. Once s1 has waited past 20 s, it alerts.
+	// 5. Once s1 has waited past 20 s, it alerts. A snapshot evaluates the
+	// alerts at the clock's time, and a poll that comes meanwhile finds s1
+	// still waiting, which keeps when its wait began.
 	clock.Advance(19 * time.Second)
 	if n := needsYouAlerts(m.snapshot(), s1); n != 0 {
 		t.Errorf("%d needs-you alerts after 19 s, want none", n)
