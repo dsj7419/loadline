@@ -9,15 +9,12 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/dsj7419/loadline/internal/config"
 	"github.com/dsj7419/loadline/internal/forward"
-	"github.com/dsj7419/loadline/internal/install"
 	"github.com/dsj7419/loadline/internal/timer"
 )
 
@@ -215,7 +212,7 @@ func runStopCommand(ctx context.Context, args []string, stdio IO) int {
 	case noServer:
 		return printStdout(stdio, fmt.Sprintf("No Loadline server is running on port %d.\n", *port))
 	case cannotAsk:
-		_, _ = io.WriteString(stdio.Err, oldServerInstruction(runtime.GOOS, binDir(paths.DataDir), *port))
+		_, _ = io.WriteString(stdio.Err, oldServerInstruction(runtime.GOOS, *port))
 		return exitFailure
 	case notOurs:
 		return fail(stdio, notOursError(*port))
@@ -249,64 +246,35 @@ func stillRunningError(port int, outcome stopOutcome) error {
 	return fmt.Errorf("the server on port %d was asked to stop, but its process %d still runs after %v", port, outcome.pid, stopWait)
 }
 
-// binDir is the folder of the installed binary in dataDir.
-func binDir(dataDir string) string {
-	return filepath.Dir(filepath.FromSlash(install.InstalledPath(dataDir)))
-}
-
 // oldServerInstruction says how to end, once, a server on port that cannot
 // be asked to stop, as one from before 0.1.1 cannot, and then start the new
-// one. Loadline never ends a process itself. binDir is the folder of the
-// installed binary on goos.
+// one. Loadline never ends a process itself. Such a server may run from any
+// folder: 0.1.0's open and serve start the binary the user ran, often the
+// one in the download's folder, not the one install puts in bin. Each line
+// says what it did.
 //
 // On Windows a server that a hook started has no console, and gets no
 // signal, so the line ends the process. It goes by the port, which one
-// process alone listens on: once install has moved the running binary
-// aside, Windows PowerShell and WMI still report the path the process
-// started from, and only some versions the name it was moved to. Its path,
-// under either name, must be in binDir. Elsewhere an upgrade replaces the
-// file under the running server, which keeps its command line, so the line
-// matches that.
-func oldServerInstruction(goos, binDir string, port int) string {
+// process alone listens on, and by the process's name, so that it ends
+// nothing that is not Loadline's: install has just had a Loadline server's
+// answer from that port. Its name is the one it started with, whatever an
+// upgrade renamed its binary to since. Elsewhere the line goes by the
+// command line, and ends every loadline serve of the user's, as it says:
+// not every Linux comes with a tool that tells which process listens on a
+// port.
+func oldServerInstruction(goos string, port int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The Loadline server on port %d is from an earlier version, which cannot be asked to stop.\n", port)
 	if goos == "windows" {
-		image := likeEscape(binDir+`\loadline.exe`) + "*"
-		fmt.Fprintf(&b, "End it once, in PowerShell:\n  Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort %d).OwningProcess | "+
-			"Where-Object { $_.Path -like %s } | Stop-Process\n", port, psQuote(image))
+		fmt.Fprintf(&b, "End it once, in PowerShell:\n"+
+			"  $server = Get-NetTCPConnection -State Listen -LocalPort %d -ErrorAction SilentlyContinue | "+
+			"ForEach-Object { Get-Process -Id $_.OwningProcess } | Where-Object { $_.ProcessName -like 'loadline*' }; "+
+			"if ($server) { $server | Stop-Process -PassThru } else { 'Nothing was ended: no Loadline server listens on port %d.' }\n",
+			port, port)
 	} else {
-		exe := binDir + "/loadline"
-		if strings.ContainsRune(exe, '\'') {
-			// No single-quoted line holds the path as it is.
-			fmt.Fprintf(&b, "End it once with pkill -f, matching its command line, which begins:\n  %s serve\n", exe)
-		} else {
-			fmt.Fprintf(&b, "End it once:\n  pkill -f '^%s serve'\n", regexp.QuoteMeta(exe))
-		}
+		b.WriteString("End it once; this ends every loadline serve that runs as you, wherever it was started from:\n" +
+			"  pkill -f '(^|/)loadline serve( |$)' && echo 'Ended the Loadline server.' || echo 'Nothing was ended: no loadline serve runs as you.'\n")
 	}
 	b.WriteString("Then start the new one:\n  loadline open\n")
-	return b.String()
-}
-
-// likeEscape escapes the characters PowerShell's -like takes as wildcards in
-// path, and the backtick that escapes them.
-func likeEscape(path string) string {
-	return strings.NewReplacer("`", "``", "[", "`[", "]", "`]", "*", "`*", "?", "`?").Replace(path)
-}
-
-// psSingleQuotes are the characters PowerShell reads as a single quote.
-const psSingleQuotes = "'‘’‚‛"
-
-// psQuote quotes s as a PowerShell string that takes it as it is: in one,
-// each of its single quotes is doubled, which PowerShell reads as the one.
-func psQuote(s string) string {
-	var b strings.Builder
-	b.WriteByte('\'')
-	for _, r := range s {
-		if strings.ContainsRune(psSingleQuotes, r) {
-			b.WriteRune(r)
-		}
-		b.WriteRune(r)
-	}
-	b.WriteByte('\'')
 	return b.String()
 }

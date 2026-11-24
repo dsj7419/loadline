@@ -116,11 +116,10 @@ func StopServer(ctx context.Context, client forward.Client, after timer.AfterFun
 	return stopKindNames[outcome.kind], outcome.err
 }
 
-// OldServerInstruction says how to end a server of goos that cannot be asked
-// to stop, whose binary install moved aside in binDir, and then start the
-// new one.
-func OldServerInstruction(goos, binDir string, port int) string {
-	return oldServerInstruction(goos, binDir, port)
+// OldServerInstruction says how to end a server of goos on port that cannot
+// be asked to stop, and then start the new one.
+func OldServerInstruction(goos string, port int) string {
+	return oldServerInstruction(goos, port)
 }
 
 // SetServerSpawn makes install start the server with spawn, for the rest of

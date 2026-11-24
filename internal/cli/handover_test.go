@@ -163,7 +163,7 @@ func TestInstall_DoesNotStartAServerWhenElevated(t *testing.T) {
 // A server from 0.1.0 has no stop route. Install says how to end it once,
 // and ends nothing itself.
 func TestInstall_PrintsHowToStopAServerThatCannotBeAsked(t *testing.T) {
-	home, dir, fake := handOverHome(t, earlier(http.StatusMethodNotAllowed))
+	_, dir, fake := handOverHome(t, earlier(http.StatusMethodNotAllowed))
 	noStarts(t)
 
 	got := run(t, "install", "--config-dir", dir, "--yes")
@@ -171,7 +171,7 @@ func TestInstall_PrintsHowToStopAServerThatCannotBeAsked(t *testing.T) {
 	if got.code != 0 || got.stderr != "" {
 		t.Fatalf("install = %d, stderr %q; want 0 and nothing", got.code, got.stderr)
 	}
-	instruction := cli.OldServerInstruction(runtime.GOOS, filepath.Dir(filepath.FromSlash(installedExe(home))), fake.port)
+	instruction := cli.OldServerInstruction(runtime.GOOS, fake.port)
 	if !strings.Contains(got.stdout, instruction) {
 		t.Errorf("stdout lacks the instruction %q:\n%s", instruction, got.stdout)
 	}

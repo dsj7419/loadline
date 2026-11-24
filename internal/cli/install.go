@@ -125,7 +125,7 @@ func runInstall(ctx context.Context, args []string, stdio IO) int {
 	home, _ := os.UserHomeDir()
 	stoppedOld, handoverErr := handOver(ctx, out, handoverOptions{
 		port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
-		dataDir: paths.DataDir, lockPath: paths.ServerLock, replaced: install.HasEdits(binary),
+		lockPath: paths.ServerLock, replaced: install.HasEdits(binary),
 		spawn: spawnServer, elevated: isElevated(),
 	})
 	if stoppedOld {

@@ -35,8 +35,6 @@ type handoverOptions struct {
 	// exe is the binary install has just put in place, which the new
 	// server runs.
 	exe string
-	// dataDir holds exe's folder.
-	dataDir string
 	// lockPath is the history's lock, whose holder records the port it
 	// serves.
 	lockPath string
@@ -148,7 +146,7 @@ func stopToHandOver(ctx context.Context, out *printer, o handoverOptions, port i
 	case noServer:
 		return false, nil
 	case cannotAsk:
-		out.printf("%s", oldServerInstruction(runtime.GOOS, binDir(o.dataDir), port))
+		out.printf("%s", oldServerInstruction(runtime.GOOS, port))
 		return false, nil
 	case notOurs:
 		out.printf("Note: %v.\n", notOursError(port))
