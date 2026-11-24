@@ -24,6 +24,10 @@ const LockWait = lockWait
 // server's graceful shutdown ran out of time.
 const ShutdownTimedOutMessage = shutdownTimedOutMessage
 
+// ShutdownTimeout bounds a server's graceful shutdown, before it writes and
+// closes the history.
+const ShutdownTimeout = shutdownTimeout
+
 // TapSendTimeout returns the bound on the tap's post.
 func TapSendTimeout() time.Duration { return tapSendTimeout }
 
@@ -175,6 +179,13 @@ func SetHandoverStartWait(t *testing.T, wait time.Duration) {
 	handoverStartWait = wait
 	t.Cleanup(func() { handoverStartWait = previous })
 }
+
+// HandoverStartWait is how long install waits for the server it starts in a
+// hand-over to answer, unless a test has replaced it.
+func HandoverStartWait() time.Duration { return handoverStartWait }
+
+// ServerStartWait bounds the wait for a server that open started to answer.
+const ServerStartWait = serverStartWait
 
 // LocksUnsupported makes the data directory's file system take no lock, as
 // some network shares do not, for the rest of the test.

@@ -3,6 +3,7 @@ package install_test
 import (
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dsj7419/loadline/internal/install"
@@ -197,6 +198,35 @@ func TestDetectShell(t *testing.T) {
 			files: []string{`\\host\share\Git\cmd\git.exe`, `\\host\share\Git\bin\bash.exe`},
 			want:  install.ShellBash,
 		},
+		// Windows takes a drive letter in either case, from a to z.
+		{
+			name:  "windows with Git on PATH on drive a:",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `a:\Git\cmd`},
+			files: []string{`a:\Git\cmd\git.exe`, `a:\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with Git on PATH on drive z:",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `z:\Git\cmd`},
+			files: []string{`z:\Git\cmd\git.exe`, `z:\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with Git on PATH on drive A:",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `A:\Git\cmd`},
+			files: []string{`A:\Git\cmd\git.exe`, `A:\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
+		{
+			name:  "windows with Git on PATH on drive Z:",
+			goos:  "windows",
+			env:   map[string]string{"PATH": `Z:\Git\cmd`},
+			files: []string{`Z:\Git\cmd\git.exe`, `Z:\Git\bin\bash.exe`},
+			want:  install.ShellBash,
+		},
 		{
 			name:  "windows with Git on PATH under a path with the long-path prefix",
 			goos:  "windows",
@@ -236,6 +266,37 @@ func TestDetectShell(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Windows reads a doubled separator after a share's host as one, so a PATH
+// entry that has one still names that share, and the Git Bash for its git
+// is one folder up within the share, not below the entry.
+func TestDetectShell_ReadsADoubledSeparatorAfterAShareHostAsOne(t *testing.T) {
+	files := []string{`\\host\share\Git\cmd\git.exe`, `\\host\share\Git\bin\bash.exe`}
+	getenv := func(key string) string {
+		if key == "PATH" {
+			return `\\host\\share\Git\cmd`
+		}
+		return ""
+	}
+	exists := func(path string) bool { return slices.Contains(files, oneSeparatorEach(path)) }
+
+	if got := install.DetectShellOn("windows", getenv, exists); got != install.ShellBash {
+		t.Errorf("detectShell = %d, want %d (Git Bash)", got, install.ShellBash)
+	}
+}
+
+// oneSeparatorEach reads the Windows path p as Windows does: after the two
+// separators that open a share, each run of separators counts as one.
+func oneSeparatorEach(p string) string {
+	if len(p) < 2 {
+		return p
+	}
+	rest := p[2:]
+	for strings.Contains(rest, `\\`) {
+		rest = strings.ReplaceAll(rest, `\\`, `\`)
+	}
+	return p[:2] + rest
 }
 
 func TestDetectShell_ReadsTheSettingsEnvFirst(t *testing.T) {
@@ -354,6 +415,21 @@ func TestRelativeGitEntries(t *testing.T) {
 			path:    `E:tools`,
 			files:   []string{`E:\tools\git.exe`},
 			want:    []string{`E:tools`},
+		},
+		{
+			// A drive alone names the folder current on it.
+			name:    "a bare drive, the working directory's, from the working directory",
+			workDir: workDir,
+			path:    `d:`,
+			files:   []string{`D:\work\project\git.exe`},
+			want:    []string{`d:`},
+		},
+		{
+			name:    "a bare drive, another, from that drive's root",
+			workDir: workDir,
+			path:    `E:`,
+			files:   []string{`E:\git.exe`},
+			want:    []string{`E:`},
 		},
 		{
 			name:    "a working directory on a share",

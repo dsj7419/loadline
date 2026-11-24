@@ -51,6 +51,38 @@ func TestInstall_RemovesTheBinaryTheOldServerRanOnceItIsLetGo(t *testing.T) {
 	}
 }
 
+// A binary that stays held, as by a scanner that does not let go, is tried
+// again for the half second install gives it, with pauses that double from
+// 1 ms up to 50 ms: no more than 15 tries fit in it, however fast the
+// machine, where a loop that did not pause makes hundreds.
+func TestInstall_PausesBetweenTriesAtABinaryThatStaysHeld(t *testing.T) {
+	home, dir, fake := handOverHome(t)
+	aside := asideBinary(t, home)
+	held, err := os.Open(aside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	tries := 0
+	cli.AfterAsideRemoval(t, func() { tries++ })
+	cli.SetServerSpawn(t, func(string, ...string) error {
+		fakeAt(t, fake.port)
+		return nil
+	})
+
+	got := run(t, "install", "--config-dir", dir, "--yes")
+
+	if got.code != 0 || got.stderr != "" {
+		t.Fatalf("install = %d, stderr %q; want 0 and nothing", got.code, got.stderr)
+	}
+	if tries < 2 || tries > 15 {
+		t.Errorf("install tried %d times to remove a binary that stayed held, want it to try again, pausing between tries: from 2 to 15 times", tries)
+	}
+	if _, err := os.Lstat(aside); err != nil {
+		t.Errorf("%s, which stayed held, is gone (%v); want it left for a later run", aside, err)
+	}
+}
+
 // Install tries again only once it has stopped the server that may have run
 // what an upgrade moved aside. With a server it could not ask, or none, a
 // binary still held stays held, and one try is all it takes.
