@@ -701,12 +701,18 @@ func TestOldServerInstruction(t *testing.T) {
 				}
 			}
 		}
-		if !pattern.MatchString("loadline serve --port 9000") {
-			t.Errorf("pattern %q misses a loadline serve started from PATH", m[1])
+		for _, command := range []string{"loadline serve --port 9000", "./loadline serve", "bin/loadline serve --no-open"} {
+			if !pattern.MatchString(command) {
+				t.Errorf("pattern %q misses %s, a loadline serve started from PATH or a folder", m[1], command)
+			}
 		}
+		// pkill -f matches the whole command line, so a program that names a
+		// loadline folder and serve among its arguments is no server, and
+		// must be left alone.
 		for _, command := range []string{
 			"/home/u/bin/loadline install", "/home/u/bin/loadline servers", "/home/u/bin/myloadline serve",
-			"grep loadline serve",
+			"grep loadline serve", "make -C /home/u/src/loadline serve", "npm --prefix /home/u/src/loadline serve",
+			"vim /home/u/notes/loadline serve", "sh -c /home/u/bin/loadline serve --no-open",
 		} {
 			if pattern.MatchString(command) {
 				t.Errorf("pattern %q matches %s", m[1], command)

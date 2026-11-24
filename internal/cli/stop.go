@@ -262,7 +262,12 @@ func stillRunningError(port int, outcome stopOutcome) error {
 // command line, and ends every loadline serve of the user's, as it says:
 // not every Linux comes with a tool that tells which process listens on a
 // port. It keeps to the user's own processes, which pkill run as root would
-// not.
+// not. pkill matches the whole command line, arguments and all, so the
+// pattern asks for loadline serve at its start: run from PATH, from a
+// relative path, or from an absolute one that may hold blanks. A command
+// such as make -C ~/src/loadline serve is left alone; one run by an absolute
+// path that names an absolute .../loadline serve later on is not, since
+// pkill sees no boundary between arguments.
 func oldServerInstruction(goos string, port int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The Loadline server on port %d is from an earlier version, which cannot be asked to stop.\n", port)
@@ -274,7 +279,7 @@ func oldServerInstruction(goos string, port int) string {
 			port, port)
 	} else {
 		b.WriteString("End it once; this ends every loadline serve that runs as you, wherever it was started from:\n" +
-			"  pkill -u \"$(id -u)\" -f '(^|/)loadline serve( |$)' && echo 'Ended the Loadline server.' || echo 'Nothing was ended: no loadline serve runs as you.'\n")
+			"  pkill -u \"$(id -u)\" -f '^([^ ]*/|/.*/)?loadline serve( |$)' && echo 'Ended the Loadline server.' || echo 'Nothing was ended: no loadline serve runs as you.'\n")
 	}
 	b.WriteString("Then start the new one:\n  loadline open\n")
 	return b.String()
