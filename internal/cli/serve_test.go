@@ -1935,13 +1935,17 @@ func TestServe_ANewServerWaitsForTheOldOneToCloseItsHistory(t *testing.T) {
 		second.awaitReady(t)
 	})
 
+	// The old one served this port, and no longer answers there: it is
+	// stopping, and there is nothing to ask it.
 	t.Run("the old one holds it past the wait", func(t *testing.T) {
 		f, first, second, clock, release, aside := begin(t)
 
 		clock.Advance(cli.LockWait)
 
-		if code := second.returned(t); code != 1 || second.stderr.String() != "loadline: another server still holds the data directory\n" {
-			t.Errorf("the second Serve = %d, stderr %q; want 1 and the data directory named as held", code, second.stderr.String())
+		held := fmt.Sprintf("the Loadline server stopping on port %d (process %d) still holds the data directory; try again once it has exited",
+			f.port, os.Getpid())
+		if code := second.returned(t); code != 1 || second.stderr.String() != "loadline: "+held+"\n" {
+			t.Errorf("the second Serve = %d, stderr %q; want 1 and %q", code, second.stderr.String(), held)
 		}
 		close(release)
 		if code := first.returned(t); code != 0 {
@@ -1954,7 +1958,7 @@ func TestServe_ANewServerWaitsForTheOldOneToCloseItsHistory(t *testing.T) {
 		if n := strings.Count(log, `msg="history restored"`); n != 1 {
 			t.Errorf("the log shows the history restored %d times, want by the first alone:\n%s", n, log)
 		}
-		if !strings.Contains(log, `msg="loadline could not start" err="another server still holds the data directory"`) {
+		if !strings.Contains(log, `msg="loadline could not start" err="`+held+`"`) {
 			t.Errorf("the log does not say why the second server did not start:\n%s", log)
 		}
 		// Tidying the data directory is for a server that starts, as it is
@@ -2029,6 +2033,131 @@ func TestServe_LeavesQuietlyWhileAnotherServerStartsOrStops(t *testing.T) {
 
 	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Errorf("Serve = %d, stdout %q, stderr %q; want 0 and no output", code, stdout.String(), stderr.String())
+	}
+}
+
+// holdHistory takes the history's lock at path, as a server does, records
+// holder in it unless holder is the zero Holder, as a server from before
+// servers recorded themselves leaves it, and holds it until the test ends.
+func holdHistory(t *testing.T, path string, holder serverlock.Holder) {
+	t.Helper()
+	lock, err := serverlock.Acquire(path, 0, nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+	if holder == (serverlock.Holder{}) {
+		return
+	}
+	if err := lock.Record(holder); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+}
+
+// A server busy enough to miss the health check, as one under load is,
+// still holds the port and the history: a spare server, as a hook starts
+// one, leaves as quietly as it does beside a server that answers, and logs
+// nothing. So it does when the lock's file does not say which port its
+// holder serves, as a server that has yet to write it, or one from before
+// servers did, leaves it.
+func TestServe_ASpareLeavesQuietlyBesideABusyServerOnItsPort(t *testing.T) {
+	for name, record := range map[string]func(port int) serverlock.Holder{
+		"its record names this port": func(port int) serverlock.Holder { return serverlock.Holder{Port: port, PID: os.Getpid()} },
+		"it records nothing":         func(int) serverlock.Holder { return serverlock.Holder{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newServeFixture(t)
+			holdHistory(t, f.paths.ServerLock, record(f.port))
+			busy, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			server := &http.Server{
+				// It answers nothing before the client gives up.
+				Handler:           http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }),
+				ReadHeaderTimeout: hangBound,
+			}
+			go func() { _ = server.Serve(busy) }()
+			t.Cleanup(func() { _ = server.Close() })
+
+			code, stderr := serveOnce(t, f.options())
+
+			if code != 0 || stderr != "" {
+				t.Errorf("Serve = %d, stderr %q; want 0 and nothing", code, stderr)
+			}
+			if lines := logLines(t, f); len(lines) != 0 {
+				t.Errorf("the spare server logged %q, want nothing", lines)
+			}
+		})
+	}
+}
+
+// The history's lock is one per data directory, whatever port its holder
+// serves. A server that finds its port taken by another program says so,
+// whichever Loadline server holds the history on another port: none of
+// Loadline's answers on this one, and none will.
+func TestServe_PortHeldByAnotherProgramWhileAServerOnAnotherPortHoldsTheHistory(t *testing.T) {
+	f := newServeFixture(t)
+	elsewhere := freePort(t)
+	f.start(func(o *cli.ServeOptions) { o.Port = elsewhere })
+	other, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+
+	code, stderr := serveOnce(t, f.options())
+
+	if want := fmt.Sprintf("loadline: port %d is in use by another program\n", f.port); code != 1 || stderr != want {
+		t.Errorf("Serve = %d, stderr %q; want 1 and %q", code, stderr, want)
+	}
+}
+
+// After the port changes in the config, every hook starts the server on the
+// new port, while the one on the old port holds the history for as long as
+// a session keeps it busy. The server that cannot start names it, and what
+// ends it.
+func TestServe_OnANewlyConfiguredPortWhileTheOldPortsServerRuns(t *testing.T) {
+	f := newServeFixture(t)
+	old := f.start()
+	f.hook(f.defaultDir(), "s1", "SessionStart")
+	clock := clocktest.New(t0)
+
+	second := f.launch(onClock(clock), func(o *cli.ServeOptions) { o.Port = freePort(t) })
+	clock.WaitForTimers(t, 2)
+	clock.Advance(cli.LockWait)
+	code := second.returned(t)
+
+	held := fmt.Sprintf("the Loadline server on port %d (process %d) holds the data directory; stop it with loadline stop --port %d",
+		f.port, os.Getpid(), f.port)
+	if stderr := second.stderr.String(); code != 1 || stderr != "loadline: "+held+"\n" {
+		t.Errorf("the server on the new port: Serve = %d, stderr %q; want 1 and %q", code, stderr, held)
+	}
+	if !strings.Contains(f.logText(), `msg="loadline could not start" err="`+held+`"`) {
+		t.Errorf("the log does not name the server that holds the data directory:\n%s", f.logText())
+	}
+	if _, done := old.exited(); done {
+		t.Error("the old port's server exited")
+	}
+}
+
+// A server that holds the history without saying which port it serves, as
+// one from before servers recorded themselves does, is named as far as it
+// can be, with what ends it.
+func TestServe_SaysWhatEndsAHolderOfTheHistoryThatRecordedNothing(t *testing.T) {
+	f := newServeFixture(t)
+	holdHistory(t, f.paths.ServerLock, serverlock.Holder{})
+	clock := clocktest.New(t0)
+
+	second := f.launch(onClock(clock))
+	clock.WaitForTimers(t, 2)
+	clock.Advance(cli.LockWait)
+	code := second.returned(t)
+
+	held := "another Loadline server holds the data directory; if you changed port in the config, or started a server with serve --port, " +
+		"stop that one with loadline stop --port <its port>"
+	if stderr := second.stderr.String(); code != 1 || stderr != "loadline: "+held+"\n" {
+		t.Errorf("Serve = %d, stderr %q; want 1 and %q", code, stderr, held)
 	}
 }
 

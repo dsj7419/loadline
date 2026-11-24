@@ -11,12 +11,18 @@ import (
 // hand refuses locks.
 var lockFileEx = windows.LockFileEx
 
-// lock takes the exclusive lock on the first byte of file, or returns
-// errLocked when another handle holds it. A lock is a handle's own, so two
-// opens in one process exclude each other as two processes do.
+// lockedByte is where the lock is taken: far past the holder's record,
+// since Windows keeps other handles from reading a range one holds locked,
+// and the record is there for others to read. A lock past the end of a
+// file is allowed; SQLite takes its locks at this offset too.
+const lockedByte = 1 << 30
+
+// lock takes the exclusive lock on lockedByte of file, or returns errLocked
+// when another handle holds it. A lock is a handle's own, so two opens in
+// one process exclude each other as two processes do.
 func lock(file *os.File) error {
-	var whole windows.Overlapped
-	err := lockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &whole)
+	at := windows.Overlapped{Offset: lockedByte}
+	err := lockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &at)
 	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 		return errLocked
 	}
@@ -26,8 +32,8 @@ func lock(file *os.File) error {
 // unlock lets go of the lock at once. Windows would let go of it when the
 // handle closes too, but only once it gets to it.
 func unlock(file *os.File) error {
-	var whole windows.Overlapped
-	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &whole)
+	at := windows.Overlapped{Offset: lockedByte}
+	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &at)
 }
 
 // lockError is err, which LockFileEx gave, marked ErrUnsupported when it

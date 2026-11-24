@@ -28,8 +28,9 @@ const (
 // runInstall wires Loadline into each settings file and puts the running
 // binary where the settings point. It shows the changes first and asks
 // unless --yes; --dry-run writes nothing at all: not the settings, not the
-// binary, not the token. Once it has replaced the binary, it hands a server
-// that answers on the configured port over to the new one (handOver).
+// binary, not the token. Once it has written them, it hands the running
+// server over to the one the hooks start (handOver): a server on another
+// port than the configured one, or one whose binary it replaced.
 func runInstall(ctx context.Context, args []string, stdio IO) int {
 	flags := newFlagSet("install", stdio)
 	edit := addEditFlags(flags)
@@ -119,17 +120,14 @@ func runInstall(ctx context.Context, args []string, stdio IO) int {
 	if err := writeEdits(out, edits); err != nil {
 		return fail(stdio, err)
 	}
-	var stoppedOld bool
-	var handoverErr error
-	if install.HasEdits(binary) {
-		// The port the hooks start the server on. Without a home directory,
-		// the config's port and the defaults' are the same.
-		home, _ := os.UserHomeDir()
-		stoppedOld, handoverErr = handOver(ctx, out, handoverOptions{
-			port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
-			dataDir: paths.DataDir, spawn: spawnServer, elevated: isElevated(),
-		})
-	}
+	// The port the hooks start the server on. Without a home directory, the
+	// config's port and the defaults' are the same.
+	home, _ := os.UserHomeDir()
+	stoppedOld, handoverErr := handOver(ctx, out, handoverOptions{
+		port: loadConfig(paths, home).Port, token: []byte(opts.Token), exe: filepath.FromSlash(opts.Exe),
+		dataDir: paths.DataDir, lockPath: paths.ServerLock, replaced: install.HasEdits(binary),
+		spawn: spawnServer, elevated: isElevated(),
+	})
 	if stoppedOld {
 		removeAsideSettlingAndSay(out, stdio, paths.DataDir)
 	} else {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/dsj7419/loadline/internal/cli"
 	"github.com/dsj7419/loadline/internal/exetest"
+	"github.com/dsj7419/loadline/internal/serverlock"
 )
 
 // fakeAt starts a fake on port, which must be free, as edit sets it up.
@@ -228,6 +229,7 @@ func TestInstall_DoesNotHandOverWhenTheBinaryIsUnchanged(t *testing.T) {
 		t.Fatalf("install: %s", got.stderr)
 	}
 	fake := newFakeLoadline(t, ours(installToken(t, home)))
+	holdHistoryUntilGone(t, home, fake)
 	writeConfigPort(t, home, fake.port)
 	writeSettings(t, dir, ownerSettings)
 	noStarts(t)
@@ -243,6 +245,113 @@ func TestInstall_DoesNotHandOverWhenTheBinaryIsUnchanged(t *testing.T) {
 	if strings.Contains(got.stdout, "Restarted") {
 		t.Errorf("stdout says the server restarted:\n%s", got.stdout)
 	}
+}
+
+// holdHistoryUntilGone holds the history's lock of the installation in home
+// for fake, recorded as fake's, as a running server holds it, and lets go of
+// it once fake has stopped.
+func holdHistoryUntilGone(t *testing.T, home string, fake *fakeLoadline) {
+	t.Helper()
+	lock, err := serverlock.Acquire(filepath.Join(home, "server.lock"), 0, nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := lock.Record(serverlock.Holder{Port: fake.port, PID: fake.process.PID()}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	letGo := sync.OnceFunc(func() { _ = lock.Release() })
+	t.Cleanup(letGo)
+	go func() {
+		select {
+		case <-fake.gone:
+			letGo()
+		case <-t.Context().Done():
+		}
+	}()
+}
+
+// The README has the user set another port in the config and run install
+// again. The server on the old port holds the history for as long as a
+// session keeps it busy, and with it no server can start on the new port:
+// install hands it over as it does a server whose binary it replaced, with
+// the installation's token and never by ending a process, and starts the
+// server on the configured port.
+func TestInstall_HandsTheServerOnTheOldPortOverWhenThePortChanges(t *testing.T) {
+	// portChanged installs, starts a server on a port of its own, as the
+	// old configured port, that holds the history, made as edit says, and
+	// then names another port in the config, which it returns.
+	portChanged := func(t *testing.T, edit ...func(*fakeLoadline)) (home, dir string, old *fakeLoadline, port int) {
+		t.Helper()
+		setVersion(t, "0.1.1-test")
+		cli.SetElevated(t, false)
+		home, dir = sandbox(t, ownerSettings)
+		if got := run(t, "install", "--config-dir", dir, "--yes"); got.code != 0 {
+			t.Fatalf("the first install: %s", got.stderr)
+		}
+		old = newFakeLoadline(t, append([]func(*fakeLoadline){ours(installToken(t, home))}, edit...)...)
+		holdHistoryUntilGone(t, home, old)
+		port = freePort(t)
+		writeConfigPort(t, home, port)
+		return home, dir, old, port
+	}
+
+	t.Run("from a normal shell", func(t *testing.T) {
+		home, dir, old, port := portChanged(t)
+		starts := &serverStarts{}
+		cli.SetServerSpawn(t, func(exe string, args ...string) error {
+			starts.record(exe, args...)
+			if !exited(t, old.process.PID()) {
+				t.Error("install started the new server while the old one's process still ran")
+			}
+			fakeAt(t, port, func(f *fakeLoadline) { f.version = "0.1.1-test" })
+			return nil
+		})
+
+		got := run(t, "install", "--config-dir", dir, "--yes")
+
+		want := fmt.Sprintf("Moved the Loadline server from port %d to port %d; run loadline open to see its dashboard.\n", old.port, port)
+		if got.code != 0 || got.stderr != "" || !strings.HasSuffix(got.stdout, want+restartNotice+"\n") {
+			t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and %q", got.code, got.stderr, got.stdout, want)
+		}
+		if n := old.stopsAsked(); n != 1 {
+			t.Errorf("the old port's server was asked to stop %d times, want once", n)
+		}
+		if want := []string{filepath.FromSlash(installedExe(home)) + " serve --no-open"}; !slices.Equal(starts.started(), want) {
+			t.Errorf("install started %q, want %q", starts.started(), want)
+		}
+	})
+
+	t.Run("elevated", func(t *testing.T) {
+		_, dir, old, _ := portChanged(t)
+		cli.SetElevated(t, true)
+		noStarts(t)
+
+		got := run(t, "install", "--config-dir", dir, "--yes")
+
+		if want := "Stopped the old server; run loadline open from a normal shell to start the new one.\n"; got.code != 0 || !strings.Contains(got.stdout, want) {
+			t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and %q", got.code, got.stderr, got.stdout, want)
+		}
+		if old.answers() || !exited(t, old.process.PID()) {
+			t.Error("the old port's server still runs, want it stopped")
+		}
+	})
+
+	// The token is the installation's: a server that refuses it was started
+	// with another, and is left as a server of another installation is.
+	t.Run("a server that refuses the token", func(t *testing.T) {
+		_, dir, old, _ := portChanged(t, ours(tokenFor(2)))
+		noStarts(t)
+
+		got := run(t, "install", "--config-dir", dir, "--yes")
+
+		want := fmt.Sprintf("Note: the server on port %d did not take this installation's token: it belongs to another installation, and was left running.\n", old.port)
+		if got.code != 0 || got.stderr != "" || !strings.Contains(got.stdout, want) {
+			t.Errorf("install = %d, stderr %q, stdout:\n%s\nwant 0 and %q", got.code, got.stderr, got.stdout, want)
+		}
+		if !old.answers() || exited(t, old.process.PID()) {
+			t.Error("the old port's server was stopped, want it left running")
+		}
+	})
 }
 
 // By the time the hand-over fails, the settings and the binary are in

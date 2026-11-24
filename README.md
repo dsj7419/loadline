@@ -56,7 +56,7 @@ With Go 1.26 or later you can also build it yourself:
 | `loadline uninstall [--config-dir DIR]... [--dry-run] [--yes]` | Takes Loadline's entries out again and restores your status line. |
 | `loadline doctor [--config-dir DIR]...` | Checks the setup, the server and the feeds that reach it. Changes nothing. |
 | `loadline open` | Opens the dashboard, starting the server first if none is running. |
-| `loadline stop [--port N]` | Asks the running server to stop, and waits until its process has exited. Exits 0 once it has stopped or when none is running, 1 when it could not stop it, saying what to do, and 2 for a usage error. It does not keep the server down: a live session's status line starts it again within 30 seconds. |
+| `loadline stop [--port N]` | Asks the server on the configured port, or on `--port` for one started with `serve --port`, to stop, and waits until its process has exited. Exits 0 once it has stopped or when none is running, 1 when it could not stop it, saying what to do, and 2 for a usage error. It does not keep the server down: a live session's status line starts it again within 30 seconds. |
 | `loadline status` | Prints the accounts and the sessions that have not ended, as a table. |
 | `loadline serve [--port N] [--no-open] [--demo]` | Runs the server in the foreground, logging to `loadline.log` in the data directory. The hooks start it in the background for you. `--no-open` keeps it from opening the dashboard; `--demo` serves made-up data and takes no events. |
 | `loadline hook` | Run by Claude Code's hooks. Forwards the hook event on stdin and prints nothing. |
@@ -91,7 +91,7 @@ Loadline works without a config file. To change a default, create one with just 
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `port` | `8289` | Loopback port of the dashboard and the ingest endpoint, 1024 to 65535. Run `loadline install` again after changing it, so the settings send telemetry to the new port. |
+| `port` | `8289` | Loopback port of the dashboard and the ingest endpoint, 1024 to 65535. Run `loadline install` again after changing it: it points the settings at the new port, and moves a running server from the old port to the new one. A server started with `loadline serve --port` stops with `loadline stop --port` and that port. |
 | `openOnStart` | `once_per_login` | When a starting server opens the dashboard: `once_per_login` (the first start after the computer boots), `always` or `never`. |
 | `browser` | `auto` | `auto` for the system default, `brave`, `chrome`, `edge`, `firefox`, or the absolute path of a browser, or of a batch file (`.cmd` or `.bat`) that starts one. A batch file, named with its extension or without, opens the dashboard in your normal profile, with `--app=<url>` alone: Windows runs it through cmd.exe, which would cut a profile path at an `&` or `^`. |
 | `appWindow` | `true` | Opens a Chromium-family browser as an app window, without tabs or an address bar. Firefox and the system default ignore it. |
@@ -398,6 +398,10 @@ It exits 1 when any check fails. Common fixes:
   starting by the data directory itself writes nothing there; the **data directory** line says why.
 - **"port 8289 is in use by another program".** Set `port` in the config file and run
   `loadline install` again.
+- **"the Loadline server on port N … holds the data directory".** One server at a time keeps the
+  history, and this one serves another port: the one `port` named before you changed it, or one
+  you gave `serve --port`. Run `loadline install` again after changing `port`, or stop that server
+  with `loadline stop --port N`.
 - **"This sign-in link has expired or was already used".** Run `loadline open` for a new one.
 - **A browser extension acts on the dashboard window, or opens more windows like it.** The
   dashboard is in your normal profile, with your extensions: `browser` is `auto` or `firefox`,
