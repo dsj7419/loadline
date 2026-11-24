@@ -40,8 +40,15 @@ var errMoreNames = errors.New("the file has more than one name")
 // naming the file, and a temporary name is looked at again
 // (temporaryRefusal), which only a deletion still pending refuses, so that
 // a file being deleted is passed over and one that keeps the user out is
-// refused. A second name that outlasts the budget is no token being put in
-// place (errMoreNames).
+// refused.
+//
+// A second name (errMoreNames) is returned only from an attempt that began
+// after an earlier one found it too, however long either took, so op runs
+// once more when the first that finds it ends after the budget. The token
+// has a second name for an instant alone, while another caller links it into
+// place, so only one attempt can find it: the next finds the token's
+// temporary name gone, or the token in place. A name elsewhere lasts, and
+// the next attempt finds it again.
 func settle(op func() error) error {
 	return settleWithin(settleBudget, op)
 }
@@ -50,12 +57,16 @@ func settle(op func() error) error {
 func settleWithin(budget time.Duration, op func() error) error {
 	deadline := time.Now().Add(budget)
 	delay := time.Millisecond
+	foundMoreNames := false
 	for {
 		err := op()
-		mayPass := fsperm.Transient(err) || errors.Is(err, errMoreNames)
-		if !mayPass || !time.Now().Add(delay).Before(deadline) {
+		moreNames := errors.Is(err, errMoreNames)
+		mayPass := fsperm.Transient(err) || moreNames
+		spent := !time.Now().Add(delay).Before(deadline)
+		if !mayPass || spent && (!moreNames || foundMoreNames) {
 			return err
 		}
+		foundMoreNames = foundMoreNames || moreNames
 		time.Sleep(delay)
 		delay = min(2*delay, maxSettleDelay)
 	}

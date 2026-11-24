@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/dsj7419/loadline/internal/fsperm"
 )
@@ -145,6 +147,185 @@ func TestMake_JudgesATemporaryNameAgainWhenItsNamesChangeMeanwhile(t *testing.T)
 	if !removed {
 		t.Errorf("nothing came between the look at %s and the count of its names, so the test proves nothing", temporary)
 	}
+}
+
+// beyondSettle is longer than settle waits for a file: a walk held up that
+// long, as on a loaded computer or while a scanner holds the folder, finds
+// the budget spent when it comes to its next attempt. The tests that hold a
+// walk up run in a synctest bubble, whose clock moves only while they wait.
+const beyondSettle = settleBudget + 50*time.Millisecond
+
+// tokenBeingPutInPlace makes a data directory whose token was just linked
+// into place from its temporary file, as createToken in config does, and has
+// the token's writer remove the temporary name, as it does next, between the
+// walk's look at that name and its count of the file's names. The walk then
+// does not get to go on until settle's budget is spent (beyondSettle).
+// stalled reports that the walk came to that moment.
+func tokenBeingPutInPlace(t *testing.T) (dir, temporary string, stalled *bool) {
+	t.Helper()
+	dir = filepath.Join(t.TempDir(), "loadline")
+	if err := fsperm.MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	temporary = filepath.Join(dir, ".token-7")
+	if err := os.WriteFile(temporary, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(temporary, filepath.Join(dir, "token")); err != nil {
+		t.Skipf("cannot make a hard link here: %v", err)
+	}
+	stalled = new(bool)
+	previous := betweenLookAndCount
+	betweenLookAndCount = func(path string) {
+		if path != temporary || *stalled {
+			return
+		}
+		*stalled = true
+		if err := os.Remove(temporary); err != nil {
+			t.Errorf("remove %s: %v", temporary, err)
+		}
+		time.Sleep(beyondSettle)
+	}
+	t.Cleanup(func() { betweenLookAndCount = previous })
+	return dir, temporary, stalled
+}
+
+// The token has two names for an instant alone: its writer links its
+// temporary file into place, then removes the temporary name. A look at that
+// name in between finds two names, and the count of them in the folder finds
+// one once the name has gone, which is no verdict yet. However long that
+// attempt took, the name is looked at again, and found gone, never taken for
+// a hard link elsewhere.
+func TestJudgeTemporary_LooksAgainAfterAShortCountWhateverTheTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, temporary, stalled := tokenBeingPutInPlace(t)
+
+		_, verdict, err := judgeTemporary(temporary)
+
+		if !*stalled {
+			t.Fatal("nothing came between the look and the count, so the test proves nothing")
+		}
+		if err != nil || verdict != goneOrGoing {
+			t.Errorf("judgeTemporary = %s, %v; want %s: its writer removed the name, and the file has no name elsewhere",
+				verdictName(verdict), err, verdictName(goneOrGoing))
+		}
+	})
+}
+
+// Make, which creates the token on a hook's path, and Verify, install's
+// first check, whose walk doctor's Check shares, take a data directory whose
+// token is being put in place while their walk is held up.
+func TestMake_TakesATokenBeingPutInPlaceWhileTheWalkIsHeldUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir, _, stalled := tokenBeingPutInPlace(t)
+
+		err := Make(dir)
+
+		if !*stalled {
+			t.Fatal("nothing came between the look and the count, so the test proves nothing")
+		}
+		if err != nil {
+			t.Errorf("Make = %v; want nil: the data directory holds the token alone, with no name elsewhere", err)
+		}
+	})
+}
+
+func TestVerify_TakesATokenBeingPutInPlaceWhileTheWalkIsHeldUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir, _, stalled := tokenBeingPutInPlace(t)
+
+		err := Verify(dir, filepath.Dir(dir))
+
+		if !*stalled {
+			t.Fatal("nothing came between the look and the count, so the test proves nothing")
+		}
+		if err != nil {
+			t.Errorf("Verify = %v; want nil: the data directory holds the token alone, with no name elsewhere", err)
+		}
+	})
+}
+
+// The same holds for the look at the token itself (judgeNames): it finds two
+// names, the writer removes the temporary one before the walk looks for it
+// beside the token, and the walk is held up until settle's budget is spent.
+// The token is looked at again, and found with one name.
+func TestJudge_LooksAgainAtTheTokenAfterAShortCountWhateverTheTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "loadline")
+		if err := fsperm.MkdirAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		token, temporary := filepath.Join(dir, "token"), filepath.Join(dir, ".token-7")
+		if err := os.WriteFile(temporary, []byte(strings.Repeat("ab", 32)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(temporary, token); err != nil {
+			t.Skipf("cannot make a hard link here: %v", err)
+		}
+		stalled := false
+		lookAs(t, token, func() (fsperm.Entry, error) {
+			entry, err := fsperm.Inspect(token)
+			if !stalled {
+				stalled = true
+				if err := os.Remove(temporary); err != nil {
+					t.Errorf("remove %s: %v", temporary, err)
+				}
+				time.Sleep(beyondSettle)
+			}
+			return entry, err
+		})
+		var found tree
+
+		_, judged, err := found.judge(token, false)
+
+		if !stalled {
+			t.Fatal("nothing came between the look and the count, so the test proves nothing")
+		}
+		if err != nil || !judged || found.link != "" {
+			t.Errorf("judge = judged %t, %v, stopped at %q (another name: %t); want the token taken, with its one name",
+				judged, err, found.link, found.moreNames)
+		}
+	})
+}
+
+// A name elsewhere lasts: the attempt after the one that found it finds it
+// too, and the temporary name is refused as a hard link, however long each
+// attempt takes, and after no more attempts than that.
+func TestJudgeTemporary_RefusesANameElsewhereHoweverLongEachAttemptTakes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "loadline")
+		if err := fsperm.MkdirAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		temporary := filepath.Join(dir, ".token-7")
+		if err := os.WriteFile(temporary, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := filepath.Join(filepath.Dir(dir), "elsewhere")
+		if err := os.Link(temporary, elsewhere); err != nil {
+			t.Skipf("cannot make a hard link here: %v", err)
+		}
+		attempts := 0
+		previous := betweenLookAndCount
+		betweenLookAndCount = func(string) {
+			attempts++
+			if attempts == 3 {
+				// Ends a walk that would otherwise look again for ever.
+				if err := os.Remove(elsewhere); err != nil {
+					t.Errorf("remove %s: %v", elsewhere, err)
+				}
+			}
+			time.Sleep(beyondSettle)
+		}
+		t.Cleanup(func() { betweenLookAndCount = previous })
+
+		_, verdict, err := judgeTemporary(temporary)
+
+		if err != nil || verdict != linkedElsewhere || attempts != 2 {
+			t.Errorf("judgeTemporary = %s, %v after %d attempts; want %s after 2, the second finding the name elsewhere again",
+				verdictName(verdict), err, attempts, verdictName(linkedElsewhere))
+		}
+	})
 }
 
 // verdictName names verdict as the code does.
