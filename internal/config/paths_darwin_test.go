@@ -21,11 +21,12 @@ func TestDefaultPaths_Darwin(t *testing.T) {
 
 	dir := filepath.Join(home, "Library", "Application Support", "loadline")
 	want := config.Paths{
-		DataDir:    dir,
-		ConfigFile: filepath.Join(dir, "config.json"),
-		TokenFile:  filepath.Join(dir, "token"),
-		SpoolDir:   filepath.Join(dir, "spool"),
-		DBFile:     filepath.Join(dir, "loadline.db"),
+		DataDir:           dir,
+		ConfigFile:        filepath.Join(dir, "config.json"),
+		TokenFile:         filepath.Join(dir, "token"),
+		SpoolDir:          filepath.Join(dir, "spool"),
+		DBFile:            filepath.Join(dir, "loadline.db"),
+		BrowserProfileDir: filepath.Join(dir, "browser"),
 	}
 	if got != want {
 		t.Errorf("DefaultPaths() = %+v, want %+v", got, want)
