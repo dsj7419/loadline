@@ -328,8 +328,8 @@ func anyName(string) bool { return true }
 type temporaryVerdict uint8
 
 const (
-	// inPlace is a file with that name alone, or whose every name is in its
-	// folder: the token while its writer links it into place, and after,
+	// inPlace is a file with that name alone, or all of whose names are in
+	// its folder: the token while its writer links it into place, and after,
 	// when the writer left the temporary name behind (judgeNames). It is its
 	// writer's, and left alone.
 	inPlace temporaryVerdict = iota + 1
@@ -346,9 +346,9 @@ const (
 	aLink
 )
 
-// judgeTemporary tells what path, a temporary name that its folder's
-// listing gave as a regular file, is, and changes nothing. A look at the
-// file and a count of its names in the folder make one attempt. A count
+// judgeTemporary tells what is under path, a temporary name that its
+// folder's listing gave as a regular file, and changes nothing. A look at
+// the file and a count of its names in the folder make one attempt. A count
 // short of the names the look found is no verdict yet, since the file's
 // writer may have removed one of them meanwhile: the attempt is made again
 // (settle), and only a shortfall that lasts is a name elsewhere. A healthy
