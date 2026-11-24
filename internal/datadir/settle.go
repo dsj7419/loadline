@@ -35,9 +35,13 @@ var errMoreNames = errors.New("the file has more than one name")
 // while a drain deletes it, an old log while a rotation replaces it, or the
 // history's write-ahead log while the server closes it. Once such a file is
 // gone, op fails with fs.ErrNotExist, and the caller leaves the file out. A
-// refusal that outlasts the budget cannot be told from a file the user may
-// not open, so op's error is returned as it is. A second name that outlasts
-// it is no token being put in place (errMoreNames).
+// refusal that outlasts the budget is returned as it is, for the caller to
+// judge: one of Loadline's own files that it may not open is an error,
+// naming the file, and a temporary name is looked at again
+// (temporaryRefusal), which only a deletion still pending refuses, so that
+// a file being deleted is passed over and one that keeps the user out is
+// refused. A second name that outlasts the budget is no token being put in
+// place (errMoreNames).
 func settle(op func() error) error {
 	return settleWithin(settleBudget, op)
 }

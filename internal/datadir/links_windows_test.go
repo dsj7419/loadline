@@ -462,10 +462,11 @@ func TestSecure_RefusesANameElsewhereHiddenBesideALeftoverTemporaryName(t *testi
 
 // A refused Secure still puts right each of Loadline's files and folders
 // that the walk judged before it came to what it refused: a file as soon as
-// it is judged, since its list reaches nothing else, and a folder once the
-// walk has been through what it holds, which its list reaches. The data
-// directory passes nothing down, so a file another process began there
-// before it was private keeps what it had. Nothing outside changes.
+// it is judged, since its list reaches nothing else, another process's file
+// with one name among them, and a folder once the walk has been through
+// what it holds, which its list reaches. The data directory passes nothing
+// down, so a file another process began there before it was private, with a
+// second name beside it, keeps what it had. Nothing outside changes.
 func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
 	top := privateTop(t)
 	_, doc := elsewhere(t, top)
@@ -480,8 +481,10 @@ func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
 	}
 	writeFile(t, binary)
 	fspermtest.Grant(t, binary, windows.FILE_GENERIC_READ, windows.NO_INHERITANCE)
-	begun := filepath.Join(dir, ".token-1234")
-	writeFile(t, begun)
+	writing := filepath.Join(dir, ".token-1234")
+	writeFile(t, writing)
+	begun := filepath.Join(dir, ".token-5678")
+	beganUnderTwoNames(t, begun)
 	// The token's name comes after the spool's, so the binary, which the walk
 	// comes to before the spool, stands for Loadline's files here.
 	if err := os.Link(doc, filepath.Join(spool, "1-0000000b.json")); err != nil {
@@ -489,7 +492,7 @@ func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
 	}
 	fspermtest.SetAccessListAsIs(t, spool, "D:P(A;OICI;FA;;;SY)")
 	t.Cleanup(func() { _ = fsperm.ClearExplicit(spool) })
-	for _, path := range []string{bin, binary, begun} {
+	for _, path := range []string{bin, binary, writing, begun} {
 		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) == 0 {
 			t.Fatalf("%s admits nobody else, so the test proves nothing", path)
 		}
@@ -500,7 +503,7 @@ func TestSecure_RepairsWhatItHasJudgedEvenWhenItRefuses(t *testing.T) {
 		t.Fatalf("Secure = %v, want it refused for the hard link in the spool", err)
 	}
 
-	for _, path := range []string{bin, binary} {
+	for _, path := range []string{bin, binary, writing} {
 		if others := fspermtest.Others(t, path, fspermtest.Any); len(others) > 0 {
 			t.Errorf("the refused Secure left %s admitting %v, want it put right", path, others)
 		}

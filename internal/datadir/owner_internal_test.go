@@ -56,17 +56,20 @@ func homeAt(t *testing.T, dir string) string {
 }
 
 // Whoever owns one of Loadline's files or folders may always let anyone at
-// it, whatever Loadline makes of its access list. Install, the server and
-// the creation of the token refuse it, and doctor reports it.
+// it, whatever Loadline makes of its access list, a file another process is
+// writing among them. Install, its first check, the server and the creation
+// of the token refuse it, and doctor reports it.
 func TestMake_RefusesAFileOfLoadlinesThatBelongsToSomeoneElse(t *testing.T) {
-	for _, name := range []string{"token", filepath.Join("spool", "1-0000000a.json"), "bin"} {
+	for _, name := range []string{"token", filepath.Join("spool", "1-0000000a.json"), "bin", ".token-1234"} {
 		t.Run(name, func(t *testing.T) {
 			dir := home(t)
 			path := filepath.Join(dir, name)
 			ownedByStranger(t, path)
 			want := path + " belongs to a stranger"
 
-			for step, err := range map[string]error{"Make": Make(dir), "Secure": Secure(dir, filepath.Dir(dir))} {
+			for step, err := range map[string]error{
+				"Verify": Verify(dir, filepath.Dir(dir)), "Make": Make(dir), "Secure": Secure(dir, filepath.Dir(dir)),
+			} {
 				if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.HasSuffix(err.Error(), "run loadline install") {
 					t.Errorf("%s = %v; want it refused, starting %q", step, err, want)
 				}
@@ -75,16 +78,6 @@ func TestMake_RefusesAFileOfLoadlinesThatBelongsToSomeoneElse(t *testing.T) {
 				t.Errorf("Check = %q, %v; want it to report %q", got, err, want)
 			}
 		})
-	}
-}
-
-// A file another process is writing is its own, whoever owns it.
-func TestMake_DoesNotJudgeTheOwnerOfAFileBeingWritten(t *testing.T) {
-	dir := home(t)
-	ownedByStranger(t, filepath.Join(dir, ".token-1234"))
-
-	if err := Make(dir); err != nil {
-		t.Errorf("Make = %v, want nil", err)
 	}
 }
 
@@ -227,11 +220,12 @@ func linkOutOf(t *testing.T, path string) {
 }
 
 // A profile that was moved or restored can leave Loadline's files owned by
-// the account it was moved from, which this computer no longer has. The data
-// directory is in the profile, so the report offers the command that takes
-// it back, with everything in it.
+// the account it was moved from, which this computer no longer has, a file
+// another process is writing among them. The data directory is in the
+// profile, so the report offers the command that takes it back, with
+// everything in it.
 func TestOwnerProblem_OffersToTakeBackAFolderOfAGoneAccountInTheProfile(t *testing.T) {
-	for _, name := range []string{"token", filepath.Join("spool", "1-0000000a.json"), "bin"} {
+	for _, name := range []string{"token", filepath.Join("spool", "1-0000000a.json"), "bin", ".token-1234"} {
 		t.Run(name, func(t *testing.T) {
 			dir := home(t)
 			path := filepath.Join(dir, name)

@@ -150,9 +150,9 @@ func TestSecure_PassesNothingDownIntoTheBrowserProfile(t *testing.T) {
 		t.Fatalf("%s has %s, with no entry for the network service, so the test proves nothing", state, before)
 	}
 	// Another Loadline process's file, which only the data directory's list,
-	// passed down, makes private.
+	// passed down, makes private: it has a second name beside it.
 	writing := filepath.Join(home, ".token-1234")
-	writeFile(t, writing)
+	beganUnderTwoNames(t, writing)
 	if others := fspermtest.Others(t, writing, fspermtest.Read); len(others) == 0 {
 		t.Fatalf("%s admits nobody else, so the test proves nothing", writing)
 	}

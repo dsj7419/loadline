@@ -2,6 +2,8 @@ package fspermtest
 
 import (
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"unsafe"
@@ -93,6 +95,47 @@ func SetAccessListAsIs(tb testing.TB, path, sddl string) {
 	if err := windows.SetKernelObjectSecurity(handle, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
 		tb.Fatalf("store %s on %s: %v", sddl, path, err)
 	}
+}
+
+// PrivateInAnotherOrder stores on path, a file the test created in a
+// private folder, the three entries that folder passes down, but in another
+// order than the folder passes them, and returns that list. It is private,
+// as fsperm.EntryPrivate judges a list, while anything that works out again
+// what path inherits puts the entries back in the folder's order: the list
+// shows whether anything did.
+func PrivateInAnotherOrder(tb testing.TB, path string) List {
+	tb.Helper()
+	sddl := "D:AI(A;ID;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;" + UserSID(tb) + ")"
+	SetAccessListAsIs(tb, path, sddl)
+	list := AccessList(tb, path)
+	if !list.SameEntries(ParseList(tb, sddl)) {
+		tb.Fatalf("%s holds %s, not %s as stored, so the test proves nothing", path, list, sddl)
+	}
+	if passed := passedDown(tb, filepath.Dir(path)); list.SameEntries(passed) {
+		tb.Fatalf("%s holds %s, which is what its folder passes down, %s, so the test proves nothing", path, list, passed)
+	}
+	return list
+}
+
+// passedDown returns the access list that folder passes down to a file
+// created in it, read from a file created there for that alone, and
+// removed at once.
+func passedDown(tb testing.TB, folder string) List {
+	tb.Helper()
+	file, err := os.CreateTemp(folder, "fspermtest-")
+	if err != nil {
+		tb.Fatalf("create a file in %s: %v", folder, err)
+	}
+	name := file.Name()
+	if err := file.Close(); err != nil {
+		tb.Fatalf("close %s: %v", name, err)
+	}
+	defer func() {
+		if err := os.Remove(name); err != nil {
+			tb.Errorf("remove %s: %v", name, err)
+		}
+	}()
+	return AccessList(tb, name)
 }
 
 // AllowEntry is a plain allow entry, as an access list holds it, that gives

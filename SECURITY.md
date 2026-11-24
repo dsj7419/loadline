@@ -68,18 +68,42 @@ What it defends against:
   everything it holds has been, even when something later is refused, and the data directory
   passes its list down only when nothing is, so that nothing reaches a file elsewhere through a
   hard link before it is refused. The files another Loadline process is still writing there under
-  a temporary name (`.token-…`, `.put-….tmp`, `.loadline-….tmp`) they leave to that process,
-  changing nothing of them, but they count each one's names first, and refuse one with a name
-  outside its own folder as they refuse any other hard link: the token has its temporary name
-  beside its own while it is linked into place, but no file Loadline writes has a name elsewhere.
-  A name they cannot judge, because its file goes or Windows will not let them look at it while
-  it is being deleted, keeps the data directory, and the folder that holds it, from passing a list
-  down, which would reach that file; the next run judges what is there then. Since everything in
-  the data directory is made private with it, `LOADLINE_HOME` must be a folder of Loadline's own:
-  install, the server and the creation of the token refuse one that holds anything else, and
-  change nothing in it. Only the files that Windows Explorer and the macOS Finder leave in a folder
-  (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and they are made private and judged
-  by their owner as Loadline's own files are.
+  a temporary name (`.token-…`, `.put-….tmp`, `.loadline-….tmp`) they judge where they are. They
+  count each one's names first, and refuse one with a name outside its own folder as they refuse
+  any other hard link: the token has its temporary name beside its own while it is linked into
+  place, but no file Loadline writes has a name elsewhere. One with no other name they refuse when
+  it belongs to anyone else, as they refuse Loadline's own files, and otherwise put back on it
+  what the data directory passes down if it has anything else, as one begun there before the data
+  directory was private has. They do so where it is, in every run, a refused one too, so that it
+  never waits for a list passed down; the process writing it goes on through the handle it holds.
+  One begun since has the private list, and they change nothing of it. A file that goes
+  meanwhile, or whose deletion is pending, they pass over at every step, `loadline doctor`
+  included, never failing on it. Windows refuses to let them read or change the permissions of a
+  file whose deletion is pending with the same "access denied" as one whose permissions keep you
+  out, as when it belongs to someone else or an OWNER RIGHTS entry takes your rights as its owner
+  away. So when such a refusal lasts, they look at the file again, asking only to read its
+  attributes, which the right to list its folder allows whatever the file's own permissions say,
+  and which only a pending deletion refuses. A file they find there, and one whose permissions
+  they would put right but you may not change, install, the server and `loadline doctor` refuse
+  in the same words: "<file> does not let you both read and change who may use it, so Loadline
+  cannot make sure it is private; it belongs to <owner>: remove it, or have an administrator
+  remove it if you cannot, then run loadline install", or "its owner cannot be read" when they
+  may not read that either. Its folder is yours, so you may remove it, unless it is read-only and
+  its permissions also take away your right to change its attributes, which only an
+  administrator may then do. A file with a second temporary name beside it in its folder, which
+  no Loadline process makes, they neither judge by its owner nor put right, and doctor does not
+  report it: it stays as it is, but for what the data directory passes down when it is first
+  made private, which leaves what was given to the file explicitly, and a data directory that is
+  private already passes nothing down again. The impact is low: no Loadline process writes into
+  such a file, since each writes to a new file that it creates under a name of its own, and
+  never opens one that is there already. A name they cannot judge, because its file goes or its
+  deletion is pending, keeps the data directory, and the folder that holds it, from passing a
+  list down, which would reach that file; the next run judges what is there then.
+  Since everything in the data directory is made private with it, `LOADLINE_HOME` must be a
+  folder of Loadline's own: install, the server and the creation of the token refuse one that
+  holds anything else, and change nothing in it. Only the files that Windows Explorer and the
+  macOS Finder leave in a folder (`desktop.ini`, `Thumbs.db`, `.DS_Store`) may be there too, and
+  they are made private and judged by their owner as Loadline's own files are.
   The dashboard's browser profile, `browser` in the data directory, which a Chromium app window
   opens the dashboard in unless `browserProfile` is `default`, holds the `loadline_ui` cookie
   and whatever else the browser stores. Loadline creates it private before the browser first
@@ -94,11 +118,12 @@ What it defends against:
   and `loadline doctor` judge the folder itself as they judge Loadline's own, and refuse a
   `browser` folder that is not private as Loadline makes it, since the files in it may have
   inherited other users' access: remove it, and Loadline makes it again.
-  `loadline doctor` fails while the data directory or one of Loadline's files in it lets anyone else in. If
-  it did before, they may have read the token, so change it as described below. On macOS and Linux
-  install also takes group and other permissions off the settings files it edits, which hold the
-  token too, and off their backups. On Windows those files rely on the permissions of the folder
-  they are in, which in your profile by default admits only you, administrators and the system.
+  `loadline doctor` fails while the data directory or one of Loadline's files in it, one still
+  being written among them, lets anyone else in. If it did before, they may have read the token,
+  so change it as described below. On macOS and Linux install also takes group and other
+  permissions off the settings files it edits, which hold the token too, and off their backups.
+  On Windows those files rely on the permissions of the folder they are in, which in your profile
+  by default admits only you, administrators and the system.
 - **Other users and the folders above the data directory.** Whoever can delete or rename a folder
   above the data directory, or give themselves the right to, can put a folder of their own, and a
   binary of their own, at the path the hooks run. Install and the server judge each folder above
@@ -209,21 +234,6 @@ outside your profile, or an unusual profile. The default location (`%LOCALAPPDAT
 Windows) on a standard profile meets none of them. Each one either fails closed, refusing to run,
 or is narrow.
 
-- **A file left over from before a refused run.**
-  - *What it takes:* a `LOADLINE_HOME` that was not private yet, holding two things. One is a
-    temporary file that another Loadline process began there before, whose name starts with
-    `.token-`, `.put-` or `.loadline-`. The other is something install or the server refuses,
-    such as a hard link, a link or a file that belongs to someone else, inside a folder of
-    Loadline's that kept you out, or another such temporary name that they cannot judge while they
-    run, because its file goes, as a spooled event's does when it is put in place, or is being
-    deleted.
-  - *Impact:* the run makes the data directory private and puts right what it has judged, but it
-    passes the directory's list down only when it refuses nothing and has judged every temporary
-    name, and puts a folder of Loadline's right only when it has judged every temporary name in
-    it. That temporary file keeps what it inherited before, which can let others read it. Later
-    runs find the directory private and leave such a file to its writer.
-  - *Mitigation:* keep `LOADLINE_HOME` inside your profile, or use the default. Otherwise delete
-    the file and run `loadline install`.
 - **A data directory that keeps you out.**
   - *What it takes:* a `LOADLINE_HOME` folder whose own permissions keep you out in a way Loadline
     cannot undo without letting anyone else in: they deny you the right to list it, or they do not
@@ -289,15 +299,16 @@ or is narrow.
     - The command names the folder where it really is, every link followed and every short 8.3
       name in full: the folder Loadline checks is in your profile, and the one `takeown` takes.
     - For the data directory, or one of Loadline's files in it, the dashboard's browser profile
-      among them, the command names the data directory and adds `/r`, which takes all it holds
-      too. It does so only while `takeown /r` would reach nothing else. The data directory must
-      hold nothing at its top but Loadline's own entries and the files the system leaves there.
-      Nothing anywhere below it, the files the browser keeps in its profile and those Loadline is
-      still writing included, may be a reparse point of any kind, such as a junction or a symbolic
-      link, or a file with a name outside the data directory, a hard link: `takeown /r` would
-      follow either out of it. Nor may any folder below it be one you may not list, or anything in
-      it be one Loadline cannot look at, since either could hide one. To tell, Loadline lists the
-      tree and looks at each entry's attributes, reading no file's content and changing nothing.
+      and a file Loadline is still writing among them, the command names the data directory and
+      adds `/r`, which takes all it holds too. It does so only while `takeown /r` would reach
+      nothing else. The data directory must hold nothing at its top but Loadline's own entries and
+      the files the system leaves there. Nothing anywhere below it, the files the browser keeps in
+      its profile and those Loadline is still writing included, may be a reparse point of any
+      kind, such as a junction or a symbolic link, or a file with a name outside the data
+      directory, a hard link: `takeown /r` would follow either out of it. Nor may any folder below
+      it be one you may not list, or anything in it be one Loadline cannot look at, since either
+      could hide one. To tell, Loadline lists the tree and looks at each entry's attributes,
+      reading no file's content and changing nothing.
       Otherwise the command names what the message reports alone, the data directory or the file
       or folder in it, without `/r`, and calls a file a file: "if the file is yours, run takeown /f
       "<file>" and then loadline install". A folder above the data directory never gets `/r`.
