@@ -98,11 +98,13 @@ jobs:
         # one shell, to stay inside CI time; without it they run every case
         # under every shell.
         run: go test -timeout 10m -run 'TestBashForm_KeepsTheOriginalsMeaning|TestBashForm_RealTapBeforeOriginalsThatNeverRead|TestReadHookInput_' ./internal/install/ ./internal/protocol/
-      - name: Test the linear costs at a larger scale
+      - name: Test the linear costs at a larger scale, and the views' allocation budgets
         # Under the race detector these tests hold the credit estimate and the
         # tracker's views to a cost that grows linearly at a small scale, to
         # stay inside CI time; without it they check the same at a larger one.
-        run: go test -count=1 -timeout 10m -run 'TestEstimateCredits_OnePassOverManySpansAndCalls$|TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap$|TestTracker_AViewTakesOnePassOverTheSpansAndCalls$' ./internal/domain/ ./internal/tracker/
+        # The views' allocation budgets are checked only here: under the race
+        # detector, which slows a view several times over, they are skipped.
+        run: go test -count=1 -timeout 10m -run 'TestEstimateCredits_OnePassOverManySpansAndCalls$|TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap$|TestTracker_AViewTakesOnePassOverTheSpansAndCalls$|TestTracker_ADayViewAllocatesWithinItsBudget$|TestTracker_AMonthViewAllocatesWithinItsBudget$' ./internal/domain/ ./internal/tracker/
       - name: Report the hot-path and view benchmarks
         # The figures are for reading, such as the tap's echo-ms/op against
         # the spec's 30 ms p95 budget. No benchmark asserts a time, and the

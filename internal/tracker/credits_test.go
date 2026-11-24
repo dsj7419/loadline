@@ -591,12 +591,10 @@ func TestTracker_ADayOfAnIdleSessionsReadingsKeepsViewsCheap(t *testing.T) {
 	// plainly. The race detector slows building them several times over, and
 	// a loaded machine as much again, so under it two hours against eight,
 	// which build in seconds where a day of a quadratic cost takes minutes.
-	// The margin is narrower here than in the other cost checks: on the
-	// machine these sizes were set on, a day's view takes about 4.9 times
-	// as long as six hours' (3.9 to 4.2 at two hours against eight), 1.6
-	// times short of costtest's limit of 8, while a quadratic cost comes
-	// out at 10 or more. A failure just past 8 points first at the
-	// machine's memory: a view after a day allocates some 30 MB.
+	// On the machine these sizes were set on, a day's view takes 3.4 to 3.7
+	// times as long as six hours' (3.1 to 3.7 at two hours against eight),
+	// more than twice short of costtest's limit of 8, while a quadratic cost
+	// comes out at 10 or more.
 	hours := 6
 	if raceEnabled {
 		hours = 2

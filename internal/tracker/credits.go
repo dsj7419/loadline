@@ -30,6 +30,10 @@ type accountCredits struct {
 	// since a status line that arrives late can still show it was made at a
 	// limit, and older ones only while a span on credits holds them.
 	calls []creditCall
+	// held is where callsIn collects the calls a view's spans hold. It is
+	// kept from one view to the next, so that a view does not allocate a
+	// fresh copy of every call it counts.
+	held []domain.APIRequest
 	// reported is the spend limit of the newest status line that reported
 	// one, at reportedAt.
 	reported   *domain.SpendLimit
@@ -101,16 +105,17 @@ func (a *accountEntry) creditEstimate(grants []domain.CreditGrant, now time.Time
 }
 
 // callsIn returns the calls that spans hold, which are all a credit estimate
-// counts, as the requests it reads, in time order.
+// counts, as the requests it reads, in time order. The slice is the
+// account's own, and the next call to callsIn overwrites it.
 func (c *accountCredits) callsIn(spans []domain.OnCreditsSpan) []domain.APIRequest {
 	holding := domain.NewSpanCursor(spans)
-	var requests []domain.APIRequest
+	c.held = c.held[:0]
 	for _, call := range c.calls {
 		if _, held := holding.Find(call.at); held {
-			requests = append(requests, domain.APIRequest{At: call.at, CostUSD: call.costUSD})
+			c.held = append(c.held, domain.APIRequest{At: call.at, CostUSD: call.costUSD})
 		}
 	}
-	return requests
+	return c.held
 }
 
 // cloneGrants copies the grants, so the tracker never shares a slice its
